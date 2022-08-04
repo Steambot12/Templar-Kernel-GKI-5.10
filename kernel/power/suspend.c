@@ -15,7 +15,6 @@
 #include <linux/init.h>
 #include <linux/console.h>
 #include <linux/cpu.h>
-#include <linux/cpuidle.h>
 #include <linux/gfp.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
