@@ -1169,6 +1169,82 @@ extern void nfs_sb_deactive(struct super_block *sb);
 #define NFSD42_INTERSSC_MOUNTOPS "vers=4.2,addr=%s,sec=sys"
 
 /*
+ * setup a work entry in the ssc delayed unmount list.
+ */
+static __be32 nfsd4_ssc_setup_dul(struct nfsd_net *nn, char *ipaddr,
+				  struct nfsd4_ssc_umount_item **nsui)
+{
+	struct nfsd4_ssc_umount_item *ni = NULL;
+	struct nfsd4_ssc_umount_item *work = NULL;
+	struct nfsd4_ssc_umount_item *tmp;
+	DEFINE_WAIT(wait);
+	__be32 status = 0;
+
+	*nsui = NULL;
+	work = kzalloc(sizeof(*work), GFP_KERNEL);
+try_again:
+	spin_lock(&nn->nfsd_ssc_lock);
+	list_for_each_entry_safe(ni, tmp, &nn->nfsd_ssc_mount_list, nsui_list) {
+		if (strncmp(ni->nsui_ipaddr, ipaddr, sizeof(ni->nsui_ipaddr)))
+			continue;
+		/* found a match */
+		if (ni->nsui_busy) {
+			/*  wait - and try again */
+			prepare_to_wait(&nn->nfsd_ssc_waitq, &wait, TASK_IDLE);
+			spin_unlock(&nn->nfsd_ssc_lock);
+
+			/* allow 20secs for mount/unmount for now - revisit */
+			if (kthread_should_stop() ||
+					(freezable_schedule_timeout(20*HZ) == 0)) {
+				finish_wait(&nn->nfsd_ssc_waitq, &wait);
+				kfree(work);
+				return nfserr_eagain;
+			}
+			finish_wait(&nn->nfsd_ssc_waitq, &wait);
+			goto try_again;
+		}
+		*nsui = ni;
+		refcount_inc(&ni->nsui_refcnt);
+		spin_unlock(&nn->nfsd_ssc_lock);
+		kfree(work);
+
+		/* return vfsmount in (*nsui)->nsui_vfsmount */
+		return 0;
+	}
+	if (work) {
+		strscpy(work->nsui_ipaddr, ipaddr, sizeof(work->nsui_ipaddr) - 1);
+		refcount_set(&work->nsui_refcnt, 2);
+		work->nsui_busy = true;
+		list_add_tail(&work->nsui_list, &nn->nfsd_ssc_mount_list);
+		*nsui = work;
+	} else
+		status = nfserr_resource;
+	spin_unlock(&nn->nfsd_ssc_lock);
+	return status;
+}
+
+static void nfsd4_ssc_update_dul(struct nfsd_net *nn,
+				 struct nfsd4_ssc_umount_item *nsui,
+				 struct vfsmount *ss_mnt)
+{
+	spin_lock(&nn->nfsd_ssc_lock);
+	nsui->nsui_vfsmount = ss_mnt;
+	nsui->nsui_busy = false;
+	wake_up_all(&nn->nfsd_ssc_waitq);
+	spin_unlock(&nn->nfsd_ssc_lock);
+}
+
+static void nfsd4_ssc_cancel_dul(struct nfsd_net *nn,
+				 struct nfsd4_ssc_umount_item *nsui)
+{
+	spin_lock(&nn->nfsd_ssc_lock);
+	list_del(&nsui->nsui_list);
+	wake_up_all(&nn->nfsd_ssc_waitq);
+	spin_unlock(&nn->nfsd_ssc_lock);
+	kfree(nsui);
+}
+
+/*
  * Support one copy source server for now.
  */
 static __be32
@@ -1989,7 +2065,6 @@ nfsd4_layoutcommit(struct svc_rqst *rqstp,
 	const struct nfsd4_layout_seg *seg = &lcp->lc_seg;
 	struct svc_fh *current_fh = &cstate->current_fh;
 	const struct nfsd4_layout_ops *ops;
-	loff_t new_size = lcp->lc_last_wr + 1;
 	struct inode *inode;
 	struct nfs4_layout_stateid *ls;
 	__be32 nfserr;
@@ -2004,18 +2079,20 @@ nfsd4_layoutcommit(struct svc_rqst *rqstp,
 		goto out;
 	inode = d_inode(current_fh->fh_dentry);
 
-	nfserr = nfserr_inval;
-	if (new_size <= seg->offset) {
-		dprintk("pnfsd: last write before layout segment\n");
-		goto out;
-	}
-	if (new_size > seg->offset + seg->length) {
-		dprintk("pnfsd: last write beyond layout segment\n");
-		goto out;
-	}
-	if (!lcp->lc_newoffset && new_size > i_size_read(inode)) {
-		dprintk("pnfsd: layoutcommit beyond EOF\n");
-		goto out;
+	lcp->lc_size_chg = false;
+	if (lcp->lc_newoffset) {
+		loff_t new_size = lcp->lc_last_wr + 1;
+
+		nfserr = nfserr_inval;
+		if (new_size <= seg->offset)
+			goto out;
+		if (new_size > seg->offset + seg->length)
+			goto out;
+
+		if (new_size > i_size_read(inode)) {
+			lcp->lc_size_chg = true;
+			lcp->lc_newsize = new_size;
+		}
 	}
 
 	nfserr = nfsd4_preprocess_layout_stateid(rqstp, cstate, &lcp->lc_sid,
@@ -2031,13 +2108,6 @@ nfsd4_layoutcommit(struct svc_rqst *rqstp,
 
 	/* LAYOUTCOMMIT does not require any serialization */
 	mutex_unlock(&ls->ls_mutex);
-
-	if (new_size > i_size_read(inode)) {
-		lcp->lc_size_chg = 1;
-		lcp->lc_newsize = new_size;
-	} else {
-		lcp->lc_size_chg = 0;
-	}
 
 	nfserr = ops->proc_layoutcommit(inode, lcp);
 	nfs4_put_stid(&ls->ls_stid);
