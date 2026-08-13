@@ -122,6 +122,18 @@ config CPU_FREQ_DEFAULT_GOV_SCHEDHORIZON
 	  have a look at the help section of that governor. The fallback
 	  governor will be 'performance'.
 
+config CPU_FREQ_DEFAULT_GOV_VORPAL
+	bool "vorpal"
+	depends on SMP
+	select CPU_FREQ_GOV_VORPAL
+	select CPU_FREQ_GOV_SCHEDUTIL
+	select CPU_FREQ_GOV_PERFORMANCE
+	help
+	  Use the 'vorpal' CPUFreq governor by default. Vorpal is a
+	  schedutil-derived governor optimized for gaming and daily use
+	  with dual-profile support. The fallback governor will be
+	  'performance'.
+
 endchoice
 
 config CPU_FREQ_GOV_PERFORMANCE
@@ -221,15 +233,16 @@ config CPU_FREQ_GOV_SCHEDUTIL
 	  If in doubt, say N.
 
 config CPU_FREQ_GOV_VORPAL
-	tristate "'vorpal' cpufreq policy governor"
-	default m
+	bool "'vorpal' cpufreq policy governor"
+	default y
 	depends on CPU_FREQ && SMP && CPU_FREQ_GOV_SCHEDUTIL
 	select CPU_FREQ_GOV_ATTR_SET
 	select IRQ_WORK
 	help
-	  Vorpal CPUFreq Governor v1.0 (GKI 5.10).
-	  Combines interactive hispeed ramp-up with PELT tracking.
-	  Module: cpufreq_vorpal. If in doubt, say M.
+	  Vorpal CPUFreq Governor v2.1 (GKI 5.10).
+	  Schedutil-derived governor with dual-profile gaming/daily modes,
+	  tri-cluster awareness, frame-risk detection and thermal integration.
+	  If in doubt, say Y.
 
 comment "CPU frequency scaling drivers"
 
