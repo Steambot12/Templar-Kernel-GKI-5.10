@@ -182,8 +182,13 @@ struct bbr_context {
 #define bbr_priv(sk) ((struct bbr *)(tcp_sk(sk)->bbr_v3_state))
 
 
-/* Window length of min_rtt filter (in sec): */
-static const u32 bbr_min_rtt_win_sec = 7;
+/* Window length of min_rtt filter (in sec).
+ * 10s (upstream default) gives the filter enough time to see a true min_rtt
+ * sample even on jittery cellular paths (4G/5G RTT jitter ±10-30ms).  The
+ * previous 7s expired too quickly on cellular, triggering unnecessary
+ * PROBE_RTT entries that spiked gaming latency every few seconds.
+ */
+static const u32 bbr_min_rtt_win_sec = 10;
 /* Minimum time (in ms) spent at bbr_cwnd_min_target in BBR_PROBE_RTT mode.
  * Balanced at 140ms: short enough for low latency, long enough to avoid
  * excessive throughput dips. Tuned for stable performance across varied workloads.
@@ -205,12 +210,15 @@ static const u32 bbr_probe_rtt_cwnd_gain = BBR_UNIT * 1 / 2;
  */
 static const u32 bbr_tso_rtt_shift = 9;
 
-/* Pace at ~1.5% below estimated bw for balanced throughput and latency.
- * Lower margin than aggressive gaming tuning (2%) to maximize throughput,
- * but still enough headroom to prevent queue buildup and maintain stable RTT.
- * This value balances full-speed downloads/uploads with minimal latency variance.
+/* Pace at ~2% below estimated bw to absorb cellular bandwidth fluctuations.
+ * On 4G/5G, channel fading and cell handovers can drop available bw by 5-15%
+ * in under 100ms.  1% margin left no headroom — the pacing rate exceeded
+ * available bw during these transients, filling the carrier's deep buffer
+ * and causing loss bursts.  2% absorbs mild fluctuations without a measurable
+ * throughput cost (<2% on steady links) and keeps queues shallow enough for
+ * stable gaming RTT.
  */
-static const int bbr_pacing_margin_percent = 1;
+static const int bbr_pacing_margin_percent = 2;
 
 /* We use a startup_pacing_gain of 4*ln(2) because it's the smallest value
  * that will allow a smoothly increasing pacing rate that will double each RTT
