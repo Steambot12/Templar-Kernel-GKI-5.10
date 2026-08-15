@@ -2,7 +2,7 @@
 /*
  * Adaptive Deadline I/O Scheduler (ADIOS)
  * Copyright (C) 2025 Masahito Suzuki
- * UFS-optimized fork for GKI 5.10
+ * Balanced UFS/eMMC fork for GKI 5.10
  */
 #include <linux/bio.h>
 #include <linux/blkdev.h>
@@ -25,7 +25,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "3.2.1-ufs"
+#define ADIOS_VERSION "3.2.2-balanced"
 
 /* Request Types:
  *
@@ -79,11 +79,10 @@
  * 3. Barrier-pending requests are handled only after the main queues are empty.
  */
 
-// UFS-tuned latency windows (ns)
-static u64 default_global_latency_window = 8000000ULL;  // 8ms for UFS
-static u8  default_bq_refill_below_ratio = 40;
-static u8  default_bq_refill_above_ratio = 60;  // ponytail: hysteresis prevents oscillation
-static u64 default_lat_model_latency_limit = 200 * NSEC_PER_MSEC;  // 200ms cap
+// Balanced latency windows for UFS + eMMC (ns)
+static u64 default_global_latency_window = 12000000ULL;  // 12ms
+static u8  default_bq_refill_below_ratio = 25;
+static u64 default_lat_model_latency_limit = 500 * NSEC_PER_MSEC;  // 500ms cap (eMMC-safe)
 static u64 default_batch_order = 0;
 
 /* Compliance Flags:
@@ -108,18 +107,18 @@ enum adios_optype {
 	ADIOS_OPTYPES = 4,
 };
 
-// UFS-optimized latency targets
+// Balanced latency targets (async only; sync writes bypass via Tier-2)
 static u64 default_latency_target[ADIOS_OPTYPES] = {
 	[ADIOS_READ]    =    2ULL * NSEC_PER_MSEC,  // 2ms
-	[ADIOS_WRITE]   =    8ULL * NSEC_PER_MSEC,  // 8ms (down from 100ms)
+	[ADIOS_WRITE]   =  250ULL * NSEC_PER_MSEC,  // 250ms: coalesce writeback to let storage idle
 	[ADIOS_DISCARD] = 5000ULL * NSEC_PER_MSEC,  // 5s
 	[ADIOS_OTHER]   =    0ULL * NSEC_PER_MSEC,
 };
 
-// Batch limits tuned for UFS queue depth (32+)
+// Batch limits: moderate caps; async_depth auto-scales to device queue depth
 static u32 default_batch_limit[ADIOS_OPTYPES] = {
-	[ADIOS_READ]    = 24,  // Higher for UFS parallelism
-	[ADIOS_WRITE]   = 48,  // Double for async write throughput
+	[ADIOS_READ]    = 32,
+	[ADIOS_WRITE]   = 64,
 	[ADIOS_DISCARD] =  1,
 	[ADIOS_OTHER]   =  1,
 };
@@ -242,8 +241,6 @@ struct adios_data {
 	u32 async_depth;
 	u32 lat_model_latency_limit;
 	u8  bq_refill_below_ratio;
-	u8  bq_refill_above_ratio;
-	u64 last_io_time;
 	u8  batch_order;
 
 	bool bq_page;
@@ -1261,18 +1258,14 @@ found:
 	return rq;
 }
 
-// Timer callback for model updates
+// Timer callback for model updates. Armed on-demand from the completion path
+// (timer_reduce) and deliberately does NOT re-arm itself: when I/O stops the
+// timer fires once, updates the models, then stays idle so the CPU can sleep.
 static void update_timer_callback(struct timer_list *t) {
 	struct adios_data *ad = from_timer(ad, t, update_timer);
-	u64 idle_ms, next_interval_ms;
 
 	for (u8 optype = 0; optype < ADIOS_OPTYPES; optype++)
 		latency_model_update(ad, &ad->latency_model[optype]);
-
-	// ponytail: adaptive interval - longer when idle, shorter when active
-	idle_ms = jiffies_to_msecs(jiffies - ad->last_io_time);
-	next_interval_ms = (idle_ms > 2000) ? 2000 : 500;
-	mod_timer(&ad->update_timer, jiffies + msecs_to_jiffies(next_interval_ms));
 }
 
 // Completion handler (SIMPLIFIED for UFS - no rotational logic)
@@ -1280,8 +1273,6 @@ static void adios_completed_request(struct request *rq, u64 now) {
 	struct adios_data *ad = rq->q->elevator->elevator_data;
 	struct adios_rq_data *rd = get_rq_data(rq);
 	union adios_in_flight_rqs ifr = { .scalar = 0 };
-
-	ad->last_io_time = jiffies;
 
 	if (!rd)
 		return;
@@ -1322,9 +1313,14 @@ static void adios_completed_request(struct request *rq, u64 now) {
 	if (latency > ad->lat_model_latency_limit)
 		return;
 
-	// UFS: uniform weight (no seek distance calculation)
+	// Uniform weight (flash: no seek distance calculation)
 	latency_model_input(ad, &ad->latency_model[optype],
 		rd->block_size, latency, rd->pred_lat, 1);
+
+	// Arm the model-update timer ~100ms out. timer_reduce() only pulls it
+	// earlier, so a burst of completions collapses into one update and an
+	// idle device leaves the timer unarmed entirely (no wakeups when idle).
+	timer_reduce(&ad->update_timer, jiffies + msecs_to_jiffies(100));
 }
 
 // Finish request
@@ -1444,8 +1440,6 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 
 	ad->global_latency_window = default_global_latency_window;
 	ad->bq_refill_below_ratio = default_bq_refill_below_ratio;
-	ad->bq_refill_above_ratio = default_bq_refill_above_ratio;
-	ad->last_io_time = jiffies;
 	ad->lat_model_latency_limit = default_lat_model_latency_limit;
 	ad->batch_order = default_batch_order;
 	ad->compliance_flags = default_compliance_flags;
