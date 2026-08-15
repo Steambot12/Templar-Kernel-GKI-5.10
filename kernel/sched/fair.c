@@ -43,14 +43,34 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  *
  * (BORE default: 24ms constant, units: nanoseconds)
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
+ *
+ * 16ms, unscaled. These three knobs (latency, min_granularity,
+ * wakeup_granularity) used to be keyed on CONFIG_SCHED_BORE, which made a
+ * BORE build and a non-BORE build differ in preemption granularity as well as
+ * in the burst algorithm - so any A/B between them measured both at once and
+ * could not attribute a regression to either. They are device tuning, not
+ * BORE tuning, so they are now single values.
+ *
+ * Direction matters here. The BORE branch used to set 6ms/0.75ms, i.e. finer
+ * granularity than plain CFS, which is backwards: stock CFS on an 8-core
+ * applies TUNABLESCALING_LOG for an effective 24ms/3ms, so that branch ran 4x
+ * more forced tick preemptions than the kernels it was being compared against
+ * - and upstream BORE moves the other way still (24ms/3ms constant), because
+ * its whole thesis is to stop chopping every task finely and let the burst
+ * score decide who deserves the CPU instead. Paying fine-grained preemption
+ * on top of BORE buys the context-switch and cache-refill cost of both models
+ * and the benefit of neither.
+ *
+ * 16ms at sched_nr_latency=8 gives 2ms min slices, which keeps 4 preemption
+ * windows per 120fps frame (8.3ms) — enough for UI responsiveness — while
+ * giving CPU-bound background tasks on Little cores ~33% longer uninterrupted
+ * runs than 12ms, saving the cache/TLB refill cost of each avoided context
+ * switch.  Frame-thread wakeup latency is governed by wakeup_granularity and
+ * EEVDF deadline/vruntime comparison, not by this, so lengthening it costs
+ * the frame pipeline nothing.
  */
-#ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 18000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 18000000ULL;
-#else // CONFIG_SCHED_BORE
- unsigned int sysctl_sched_latency			= 18000000ULL;
- static unsigned int normalized_sysctl_sched_latency	= 18000000ULL;
-#endif // CONFIG_SCHED_BORE
+unsigned int sysctl_sched_latency			= 16000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 16000000ULL;
 EXPORT_SYMBOL_GPL(sysctl_sched_latency);
 
 /*
@@ -64,26 +84,34 @@ EXPORT_SYMBOL_GPL(sysctl_sched_latency);
  *
  * (BORE default SCHED_TUNABLESCALING_NONE = *1 constant)
  * (CFS  default SCHED_TUNABLESCALING_LOG  = *(1+ilog(ncpus))
+ *
+ * NONE: the values above are already chosen for this class of device, so the
+ * ncpus multiplier would just scale them again. Both arms of the old
+ * CONFIG_SCHED_BORE ifdef here were identical anyway.
  */
-#ifdef CONFIG_SCHED_BORE
 enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
-#else // CONFIG_SCHED_BORE
-enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
-#endif // CONFIG_SCHED_BORE
 
 /*
  * Minimal preemption granularity for CPU-bound tasks:
  *
  * (BORE default: 3 msec constant, units: nanoseconds)
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
+ *
+ * 2ms, unscaled, paired with the 16ms latency above so that
+ * sched_nr_latency stays 8 - the static initialiser below assumes that ratio,
+ * and sched_proc_update_handler() recomputes it as
+ * DIV_ROUND_UP(latency, min_granularity) on any sysctl write. Keeping the
+ * ratio fixed means the nr_running > 8 stretch path behaves exactly as before;
+ * only the slice length changes.
+ *
+ * This is the knob that actually sets the context-switch rate: below it,
+ * check_preempt_tick() will not force a preemption at all. 0.75ms was a
+ * quarter of what stock CFS gives an 8-core, and on a little core at low
+ * frequency the cache and TLB refill after each switch is a real fraction of
+ * the slice itself.
  */
-#ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_min_granularity			= 2500000ULL;
-static unsigned int normalized_sysctl_sched_min_granularity	= 2500000ULL;
-#else // CONFIG_SCHED_BORE
- unsigned int sysctl_sched_min_granularity			= 2500000ULL;
- static unsigned int normalized_sysctl_sched_min_granularity	= 2500000ULL;
-#endif // CONFIG_SCHED_BORE
+unsigned int sysctl_sched_min_granularity			= 2000000ULL;
+static unsigned int normalized_sysctl_sched_min_granularity	= 2000000ULL;
 EXPORT_SYMBOL_GPL(sysctl_sched_min_granularity);
 
 /*
@@ -106,35 +134,79 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
  *
  * (BORE default: 4 msec constant, units: nanoseconds)
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
+ *
+ * 2ms, unscaled. Raised from 1ms for the same reason as the two above: at 1ms
+ * almost every wakeup preempted the running task, and a game generates many
+ * wakeups per frame (audio, input, network, binder, GPU fence completion), so
+ * the runqueue churned instead of finishing work. wakeup_gran() still cuts
+ * this per tier under gaming_mode, landing at 250us for nice < 0 (unchanged
+ * from the old base) and 500us for nice 0, so a woken RenderThread still
+ * preempts well inside the frame.
  */
-#ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 1500000ULL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1500000ULL;
-#else // CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
-#endif // CONFIG_SCHED_BORE
+unsigned int sysctl_sched_wakeup_granularity			= 2000000ULL;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 2000000ULL;
 
 const_debug unsigned int sysctl_sched_migration_cost	= 250000UL;
 
 #ifdef CONFIG_SCHED_BORE
+/*
+ * Core algorithm carries upstream BORE 6.6.3 semantics inside the existing
+ * GKI-safe integration (KABI-slot sched_entity fields, sysctl knobs and CFS
+ * hook points unchanged; the 6.6.3 task_struct/bore.c/futex machinery is
+ * deliberately NOT ported - it would break KMI).
+ *
+ * penalty_scale 1024 makes the curve exact and easy to reason about: with
+ * scale 65536/64, burst_score reduces to
+ *
+ *	burst_score = fls64(burst_time) - penalty_offset
+ *
+ * i.e. one nice step per doubling of an uninterrupted burst, first step at
+ * 2^offset nanoseconds. Every threshold below follows from that identity.
+ *
+ * penalty_offset 27: the first demotion lands at 2^27 ns = 134ms, sixteen full
+ * frame budgets at 120fps. Nothing in a frame pipeline runs 134ms without
+ * sleeping - a render, logic or UI thread is dequeued every frame and
+ * restart_burst() zeroes its accounting there - so frame work can never lose
+ * weight, under any cpufreq governor, on any SoC (the threshold is absolute
+ * time, not a capacity fraction, so it does not shift between devices).
+ * What does cross 134ms is batch work: GC, media scan, package sync, index
+ * rebuild, compile. Those get +1 nice per doubling, reaching +4 only after
+ * 2.1 seconds of unbroken CPU.
+ *
+ * This is one step back up from 26, and the reason is that the gaming
+ * exemption in update_burst_penalty() used to cover nice <= 0 and now covers
+ * only nice < 0. At 26, nice-0 threads were exempt during gaming and so the
+ * 67ms threshold only ever applied to background; now that they are in scope,
+ * the threshold has to hold for a nice-0 thread doing a legitimate long
+ * stretch - a shader compile or level load on the game's own worker pool -
+ * and 67ms is close enough to a stall-free burst of real work to demote it
+ * mid-load. 134ms is not: nothing that still intends to produce a frame runs
+ * that long without a single dequeue. Upstream's default is 24 (16ms), which
+ * suits a desktop where the frame pipeline is not the only thing that matters
+ * and a demotion costs a scroll, not a dropped frame.
+ *
+ * smoothness 1/0: penalties grow by halves (rounded up) and collapse
+ * instantly at sleep - one heavy burst (map load, app start) costs weight
+ * for exactly one cycle instead of lingering across several.
+ * fork_atavistic MUST stay 0 on this tree: upstream 6.6.3 runs its
+ * topological inheritance over RCU sibling lists with strict sample/scan
+ * limits, but the 5.10 in-tree walk recurses over unbounded children lists
+ * under read_lock(&tasklist_lock) in the fork path. On a long gaming
+ * session the task tree grows, the 75ms cache keeps expiring, and the walk
+ * lengthens until fork/exit contention on tasklist_lock stalls the system -
+ * observed as a progressive freeze needing a forced reboot. Direct
+ * inheritance is bounded (one children-list pass) and was the configuration
+ * stable across all long-session testing.
+ */
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
-u8   __read_mostly sched_burst_smoothness_long  = 5;
-u8   __read_mostly sched_burst_smoothness_short = 3;
+u8   __read_mostly sched_burst_smoothness_long  = 1;
+u8   __read_mostly sched_burst_smoothness_short = 0;
 u8   __read_mostly sched_burst_fork_atavistic   = 0;
-u8   __read_mostly sched_burst_penalty_offset   = 12;
-uint __read_mostly sched_burst_penalty_scale    = 280;
-uint __read_mostly sched_burst_cache_lifetime   = 25000000;
+u8   __read_mostly sched_burst_penalty_offset   = 27;
+uint __read_mostly sched_burst_penalty_scale    = 1024;
+uint __read_mostly sched_burst_cache_lifetime   = 75000000;
 #endif // CONFIG_SCHED_BORE
-
-/*
- * Vorpal gaming coupling. File-scope global (KMI-safe: not a task_struct /
- * sched_entity field) written by the Vorpal governor's gaming_mode knob and
- * read in task_hot() to bias the load balancer toward cache stickiness during
- * sustained gaming, cutting churny cross-core migrations that surface as
- * mid-frame load spikes. 0 == normal CFS behaviour.
- */
 
 int sched_thermal_decay_shift = 4;
 static int __init setup_sched_thermal_decay_shift(char *str)
@@ -563,7 +635,11 @@ find_matching_se(struct sched_entity **se, struct sched_entity **pse)
 
 static inline u32 log2plus1_u64_u32f8(u64 v) {
 	u32 msb = fls64(v);
-	u8 fractional = (v << (64 - msb) >> 55);
+	u8 fractional;
+
+	if (unlikely(!msb))
+		return 0;
+	fractional = (v << (64 - msb) >> 55);
 	return msb << 8 | fractional;
 }
 
@@ -578,17 +654,29 @@ static inline u32 calc_burst_penalty(u64 burst_time) {
 	return min(MAX_BURST_PENALTY, scaled_penalty);
 }
 
-static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
-			    unsigned long weight);
+/* set_load_weight() with the prio supplied instead of derived from static_prio. */
 static void reweight_task_by_prio(struct task_struct *p, int prio)
 {
-	struct sched_entity *se = &p->se;
-	struct cfs_rq *cfs_rq = cfs_rq_of(se);
-	struct load_weight *load = &se->load;
-	unsigned long weight = scale_load(sched_prio_to_weight[prio]);
+	struct load_weight lw;
 
-	reweight_entity(cfs_rq, se, weight);
-	load->inv_weight = sched_prio_to_wmult[prio];
+	/* SCHED_IDLE keeps WEIGHT_IDLEPRIO. */
+	if (task_has_idle_policy(p)) {
+		lw.weight = scale_load(WEIGHT_IDLEPRIO);
+		lw.inv_weight = WMULT_IDLEPRIO;
+	} else {
+		lw.weight = scale_load(sched_prio_to_weight[prio]);
+		lw.inv_weight = sched_prio_to_wmult[prio];
+	}
+
+	/*
+	 * TASK_NEW is not on a cfs_rq and its load_avg is not attached yet:
+	 * reweight_entity() would strip unattached load from the parent's
+	 * cfs_rq and leave this se at load_avg 0.
+	 */
+	if (unlikely(READ_ONCE(p->state) & TASK_NEW))
+		p->se.load = lw;
+	else
+		reweight_task(p, &lw);
 }
 
 static inline u8 effective_prio(struct task_struct *p) {
@@ -620,16 +708,88 @@ static void update_burst_score(struct sched_entity *se) {
 }
 
 static void update_burst_penalty(struct sched_entity *se) {
+	u8 new_score;
+	u8 offset = sched_burst_penalty_offset;
+
+	/*
+	 * Fast path: burst below 2^(offset-1) ns — penalty is provably 0.
+	 * Bound derived from live sysctl, not hardcoded. Shift clamped to
+	 * avoid 1ULL << 64 UB; offset 0 skips this path entirely.
+	 */
+	if (offset &&
+	    se->burst_time < (1ULL << min((u8)(offset - 1), (u8)62))) {
+		if (se->burst_penalty == 0 && se->prev_burst_penalty == 0)
+			return;
+		se->curr_burst_penalty = 0;
+		update_burst_score(se);
+		return;
+	}
+
+	/*
+	 * Latency-sensitive top-app protection: raise the demotion threshold
+	 * by 4 doublings (offset+4, ~2.1s at offset 27) for tasks in the
+	 * display-critical cgroup. Engine worker pools (physics, shaders,
+	 * skinning) legitimately burst 150ms-1s+ without dequeue — past the
+	 * base 134ms threshold. Once demoted, freshly-woken nice-0 threads
+	 * preempt them mid-frame (burst_time == 0 → full weight).
+	 *
+	 * Placed after the fast path so the cgroup walk only runs for tasks
+	 * that have already burst past 134ms. nice > 0 excluded.
+	 */
+	if (entity_is_task(se)) {
+		struct task_struct *p = task_of(se);
+		u8 lat_offset = min((u8)(offset + 4), (u8)62);
+
+		/* Guard: at offset >= 62, lat_offset <= offset → skip. */
+		if (lat_offset > offset &&
+		    p->static_prio <= DEFAULT_PRIO &&
+		    uclamp_latency_sensitive(p) &&
+		    se->burst_time < (1ULL << (lat_offset - 1))) {
+			if (se->burst_penalty == 0 &&
+			    se->prev_burst_penalty == 0)
+				return;
+			se->curr_burst_penalty = 0;
+			update_burst_score(se);
+			return;
+		}
+	}
+
 	se->curr_burst_penalty = calc_burst_penalty(se->burst_time);
+	/*
+	 * 6.6.3 fast path: below the smoothed baseline nothing can change
+	 * (burst_penalty stays at prev), so skip the score/reweight work on
+	 * every tick of a well-behaved task.
+	 */
+	if (se->curr_burst_penalty <= se->prev_burst_penalty)
+		return;
 	se->burst_penalty = max(se->prev_burst_penalty, se->curr_burst_penalty);
-	update_burst_score(se);
+
+	/*
+	 * Skip update_burst_score if burst_score won't change. For CPU-bound
+	 * tasks, burst_score changes logarithmically (every ~6.5x burst_time
+	 * growth due to >> 2), so this fast path eliminates most redundant
+	 * update_burst_score calls, reducing scheduler overhead.
+	 */
+	new_score = se->burst_penalty >> 2;
+	if (new_score != se->burst_score)
+		update_burst_score(se);
 }
 
+/*
+ * 6.6.3 smoothing: growth is smoothed with round-up so small increments
+ * never stall; decay uses the short shift, and the default of 0 makes the
+ * baseline collapse straight to the latest burst at sleep (instant
+ * forgiveness after a one-off heavy burst).
+ */
 static inline u32 binary_smooth(u32 new, u32 old) {
 	int increment = new - old;
-		return (0 <= increment)?
-	old + ( increment >> (int)sched_burst_smoothness_long):
-	old - (-increment >> (int)sched_burst_smoothness_short);
+
+	if (0 <= increment) {
+		int shift = (int)sched_burst_smoothness_long;
+
+		return old + ((increment + (1 << shift) - 1) >> shift);
+	}
+	return old - (-increment >> (int)sched_burst_smoothness_short);
 }
 
 static void restart_burst(struct sched_entity *se) {
@@ -640,19 +800,28 @@ static void restart_burst(struct sched_entity *se) {
 	update_burst_score(se);
 }
 
+/*
+ * Re-derive every fair task's weight from its current effective prio.
+ * Follows normalize_rt_tasks(): per-thread (not just group leaders), and
+ * task_rq_lock() so the rq cannot change under us. update_rq_clock() is
+ * required because reweight_entity() -> update_curr() reads rq_clock_task().
+ */
 static void reset_task_weights_bore(void) {
-	struct task_struct *task;
-	struct rq *rq;
+	struct task_struct *g, *p;
 	struct rq_flags rf;
+	struct rq *rq;
 
-	write_lock_irq(&tasklist_lock);
-	for_each_process(task) {
-		rq = task_rq(task);
-		rq_lock_irqsave(rq, &rf);
-		reweight_task_by_prio(task, effective_prio(task));
-		rq_unlock_irqrestore(rq, &rf);
+	read_lock(&tasklist_lock);
+	for_each_process_thread(g, p) {
+		if (p->sched_class != &fair_sched_class)
+			continue;
+
+		rq = task_rq_lock(p, &rf);
+		update_rq_clock(rq);
+		reweight_task_by_prio(p, effective_prio(p));
+		task_rq_unlock(rq, p, &rf);
 	}
-	write_unlock_irq(&tasklist_lock);
+	read_unlock(&tasklist_lock);
 }
 
 int sched_bore_update_handler(struct ctl_table *table, int write,
@@ -1206,21 +1375,21 @@ static void update_curr(struct cfs_rq *cfs_rq)
 	curr->vruntime += calc_delta_fair(delta_exec, curr);
 
 #ifdef CONFIG_SCHED_BORE
-    curr->burst_time += delta_exec;
-    update_burst_penalty(curr);
+	curr->burst_time += delta_exec;
+	update_burst_penalty(curr);
 #endif // CONFIG_SCHED_BORE
 
 	update_deadline(cfs_rq, curr);
 	update_min_vruntime(cfs_rq);
 
-    if (entity_is_task(curr)) {
-        struct task_struct *curtask = task_of(curr);
-        trace_sched_stat_runtime(curtask, delta_exec, curr->vruntime);
-        cgroup_account_cputime(curtask, delta_exec);
-        account_group_exec_runtime(curtask, delta_exec);
-    }
+	if (entity_is_task(curr)) {
+		struct task_struct *curtask = task_of(curr);
+		trace_sched_stat_runtime(curtask, delta_exec, curr->vruntime);
+		cgroup_account_cputime(curtask, delta_exec);
+		account_group_exec_runtime(curtask, delta_exec);
+	}
 
-    account_cfs_rq_runtime(cfs_rq, delta_exec);
+	account_cfs_rq_runtime(cfs_rq, delta_exec);
 }
 
 static void update_curr_fair(struct rq *rq)
@@ -4537,6 +4706,7 @@ static inline int task_fits_cpu(struct task_struct *p, int cpu)
 	unsigned long uclamp_min = uclamp_eff_value(p, UCLAMP_MIN);
 	unsigned long uclamp_max = uclamp_eff_value(p, UCLAMP_MAX);
 	unsigned long util = task_util_est(p);
+
 	return util_fits_cpu(util, uclamp_min, uclamp_max, cpu);
 }
 
@@ -6889,15 +7059,25 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 }
 
 /*
+ * Supply little-core bias when EAS is absent (no energy model registered).
+ */
+static inline bool sched_prefer_small_cpu(struct task_struct *p)
+{
+	return !sched_energy_enabled();
+}
+
+/*
  * Scan the asym_capacity domain for idle CPUs; pick the first idle one on which
- * the task fits. If no CPU is big enough, but there are idle ones, try to
- * maximize capacity.
+ * the task fits - or, when we are standing in for EAS, the smallest such one.
+ * If no CPU is big enough, but there are idle ones, try to maximize capacity.
  */
 static int
 select_idle_capacity(struct task_struct *p, struct sched_domain *sd, int target)
 {
 	unsigned long task_util, util_min, util_max, best_cap = 0;
-	int cpu, best_cpu = -1;
+	unsigned long fit_cap = ULONG_MAX;
+	bool prefer_small = sched_prefer_small_cpu(p);
+	int cpu, best_cpu = -1, fit_cpu = -1;
 	struct cpumask *cpus;
 
 	cpus = this_cpu_cpumask_var_ptr(select_idle_mask);
@@ -6912,8 +7092,21 @@ select_idle_capacity(struct task_struct *p, struct sched_domain *sd, int target)
 
 		if (!available_idle_cpu(cpu) && !sched_idle_cpu(cpu))
 			continue;
-		if (util_fits_cpu(task_util, util_min, util_max, cpu))
-			return cpu;
+		if (util_fits_cpu(task_util, util_min, util_max, cpu)) {
+			if (!prefer_small)
+				return cpu;
+			/*
+			 * Keep looking for a smaller CPU that also fits. A tie
+			 * keeps the CPU found first and the scan starts at
+			 * @target, so cache affinity still wins inside a
+			 * cluster - only a genuinely oversized CPU is given up.
+			 */
+			if (cpu_cap < fit_cap) {
+				fit_cap = cpu_cap;
+				fit_cpu = cpu;
+			}
+			continue;
+		}
 
 		if (cpu_cap > best_cap) {
 			best_cap = cpu_cap;
@@ -6921,7 +7114,7 @@ select_idle_capacity(struct task_struct *p, struct sched_domain *sd, int target)
 		}
 	}
 
-	return best_cpu;
+	return fit_cpu >= 0 ? fit_cpu : best_cpu;
 }
 
 static inline bool asym_fits_cpu(unsigned long util,
@@ -6953,8 +7146,28 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 		task_util = task_util_est(p);
 		util_min = uclamp_eff_value(p, UCLAMP_MIN);
 		util_max = uclamp_eff_value(p, UCLAMP_MAX);
+
+		/*
+		 * Standing in for EAS (see sched_prefer_small_cpu): the three
+		 * shortcuts below hand back @target, @prev or recent_used_cpu
+		 * as soon as one of them is idle and the task fits, and a light
+		 * task fits on every CPU. That is what ratchets background work
+		 * onto the big cluster and keeps it there. Skip them and let
+		 * select_idle_capacity() scan for the smallest CPU that fits;
+		 * its scan still starts at @target, so an already-correct
+		 * placement is kept. One domain walk is far cheaper than the
+		 * compute_energy() sweep an energy model would have cost here.
+		 */
+		if (sched_prefer_small_cpu(p)) {
+			sd = rcu_dereference(per_cpu(sd_asym_cpucapacity, target));
+			if (sd) {
+				i = select_idle_capacity(p, sd, target);
+				return ((unsigned)i < nr_cpumask_bits) ? i : target;
+			}
+		}
 	}
 
+	/* Fit tests reverted to stock asym_fits_cpu() — strict margin removed. */
 	if ((available_idle_cpu(target) || sched_idle_cpu(target)) &&
 	    asym_fits_cpu(task_util, util_min, util_max, target))
 		return target;

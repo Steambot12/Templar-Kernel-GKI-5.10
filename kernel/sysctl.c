@@ -145,7 +145,6 @@ extern uint sched_burst_penalty_scale;
 extern uint sched_burst_cache_lifetime;
 extern int sched_bore_update_handler(struct ctl_table *table, int write,
 		void __user *buffer, size_t *lenp, loff_t *ppos);
-static int __maybe_unused three          = 3;
 static int __maybe_unused sixty_four     = 64;
 static int __maybe_unused maxval_12_bits = 4095;
 #endif // CONFIG_SCHED_BORE
@@ -1804,7 +1803,10 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler = proc_dou8vec_minmax,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= &three,
+		/* Pinned off: the topological walk recurses over unbounded
+		 * children lists under read_lock(&tasklist_lock). See the
+		 * BORE knob comment in kernel/sched/fair.c. */
+		.extra2		= SYSCTL_ZERO,
 	},
 	{
 		.procname	= "sched_burst_penalty_offset",
