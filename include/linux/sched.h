@@ -512,6 +512,12 @@ struct sched_entity {
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
 #endif // CONFIG_SCHED_BORE
+
+	/* EEVDF fields — appended at end to preserve KMI */
+	u64				deadline;
+	u64				min_deadline;
+	s64				vlag;
+	u64				slice;
 };
 
 struct sched_rt_entity {

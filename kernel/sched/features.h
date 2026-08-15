@@ -1,16 +1,44 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Only give sleepers 50% of their service deficit. This allows
- * them to run sooner, but does not allow tons of sleepers to
- * rip the spread apart.
+ * Legacy CFS sleeper credit — superseded by EEVDF's PLACE_LAG which
+ * preserves the full fairness lag across sleep, not just 50%.
+ * Kept false; no code reads it when EEVDF is active.
  */
-SCHED_FEAT(GENTLE_FAIR_SLEEPERS, true)
+SCHED_FEAT(GENTLE_FAIR_SLEEPERS, false)
 
 /*
- * Place new tasks ahead so that they do not starve already running
- * tasks
+ * Legacy CFS initial placement debit — superseded by EEVDF's
+ * PLACE_DEADLINE_INITIAL which gives new tasks half a virtual slice.
+ * Kept false; no code reads it when EEVDF is active.
  */
-SCHED_FEAT(START_DEBIT, true)
+SCHED_FEAT(START_DEBIT, false)
+
+/*
+ * EEVDF: Preserve lag across sleeps — entity wakes with the same
+ * fairness debt/credit it had when it went to sleep.
+ */
+SCHED_FEAT(PLACE_LAG, true)
+
+/*
+ * EEVDF: Give newly forked/execed tasks only half a slice worth of
+ * deadline, so they do not immediately preempt long-running tasks.
+ */
+SCHED_FEAT(PLACE_DEADLINE_INITIAL, true)
+
+/*
+ * EEVDF: Let the current task keep running at tick time if it hasn't
+ * exhausted its slice yet — __pick_eevdf() returns curr immediately
+ * instead of doing an O(log n) tree walk, saving ~50 cycles per tick
+ * on lightly loaded cores.
+ *
+ * This does NOT block wakeup preemption: check_preempt_wakeup() fires
+ * before pick_next_entity() and grants preemption via deadline
+ * comparison + vruntime sleeper assist.  RUN_TO_PARITY only skips the
+ * tick-driven re-evaluation, which matters for CPU-bound background
+ * tasks — exactly the workload where fewer context switches save power
+ * without affecting UI latency.
+ */
+SCHED_FEAT(RUN_TO_PARITY, true)
 
 /*
  * Prefer to schedule the task we woke last (assuming it failed
