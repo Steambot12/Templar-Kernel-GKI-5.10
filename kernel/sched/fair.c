@@ -709,8 +709,6 @@ static void update_burst_penalty(struct sched_entity *se) {
 		if (se->burst_penalty == 0 && se->prev_burst_penalty == 0)
 			return;
 		se->curr_burst_penalty = 0;
-		se->burst_penalty = 0;
-		se->prev_burst_penalty = 0;
 		update_burst_score(se);
 		return;
 	}
@@ -739,8 +737,6 @@ static void update_burst_penalty(struct sched_entity *se) {
 			    se->prev_burst_penalty == 0)
 				return;
 			se->curr_burst_penalty = 0;
-			se->burst_penalty = 0;
-			se->prev_burst_penalty = 0;
 			update_burst_score(se);
 			return;
 		}
