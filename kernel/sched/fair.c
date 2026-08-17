@@ -1311,10 +1311,11 @@ static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		return;
 
 	/*
-	 * For EEVDF the virtual time slice is determined by the scheduling
-	 * period — the same sched_slice() CFS already uses.
+	 * Keep EEVDF request size fixed. Using sched_slice() here makes a
+	 * task's deadline grow with a lightly loaded runqueue and defeats the
+	 * latency bound EEVDF is meant to provide.
 	 */
-	se->slice = sched_slice(cfs_rq, se);
+	se->slice = sysctl_sched_min_granularity;
 	se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
 
 	/*
@@ -4816,7 +4817,7 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 	u64 vslice, vruntime = avg_vruntime(cfs_rq);
 	s64 lag = 0;
 
-	se->slice = sched_slice(cfs_rq, se);
+	se->slice = sysctl_sched_min_granularity;
 	vslice = calc_delta_fair(se->slice, se);
 
 	/*
@@ -7927,40 +7928,14 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	BUG_ON(!pse);
 
 	/*
-	 * EEVDF wakeup preemption — two paths:
+	 * EEVDF wakeup preemption:
 	 *
-	 * 1. Deadline wins: the wakee has an earlier virtual deadline than
-	 *    the current entity → preempt unconditionally.  On mobile the
-	 *    latency-sensitive path (UI thread waking after vsync,
-	 *    RenderThread after GPU fence) must preempt immediately —
-	 *    waiting for curr to become ineligible adds up to a full slice
-	 *    of tail latency, which surfaces as UI jank on MediaTek and
-	 *    other SoCs with wide cluster capacity spreads.
-	 *
-	 * 2. Vruntime sleeper assist: the deadline comparison can lose when
-	 *    curr just refreshed its deadline (crosses the old one → gets a
-	 *    new vslice pushed far out), making both deadlines roughly
-	 *    equal.  In that case a sleeping task that has accumulated a
-	 *    vruntime deficit (lower vruntime than curr) should still
-	 *    preempt — it is owed CPU time and is eligible to run.  This
-	 *    restores CFS-like sleeper-preempts-runner behaviour without
-	 *    abandoning EEVDF entirely, and closes the latency gap on ROMs
-	 *    that register no vendor check_preempt_wakeup hook (AOSP,
-	 *    LineageOS, PixelExperience) where the frame pipeline has no
-	 *    vendor module to force-preempt for top-app tasks.
-	 *
-	 *    Guard: only when the wakee is eligible (behind V), and the
-	 *    vruntime gap exceeds wakeup_granularity to avoid ping-pong
-	 *    between two tasks with near-equal vruntimes.
+	 * An eligible wakee with an earlier virtual deadline preempts the
+	 * current entity. Ineligible wakees must wait until their lag permits
+	 * execution, preserving EEVDF fairness and avoiding wakeup ping-pong.
 	 */
-	if ((s64)(pse->deadline - se->deadline) < 0) {
-		if (!next_buddy_marked)
-			set_next_buddy(pse);
-		goto preempt;
-	}
-
 	if (entity_eligible(cfs_rq_of(pse), pse) &&
-	    (s64)(se->vruntime - pse->vruntime) > (s64)sysctl_sched_wakeup_granularity) {
+	    (s64)(pse->deadline - se->deadline) < 0) {
 		if (!next_buddy_marked)
 			set_next_buddy(pse);
 		goto preempt;
@@ -12350,7 +12325,7 @@ __init void init_sched_fair_class(void)
 #endif
 #endif /* SMP */
 
-	pr_info("EEVDF scheduler initialized (backport from Linux 6.6)\n");
+	pr_info("EEVDF scheduler initialized (Linux 6.6 core)\n");
 }
 
 /*
@@ -12361,7 +12336,7 @@ __init void init_sched_fair_class(void)
 static int sched_eevdf_show(struct seq_file *m, void *v)
 {
 	seq_puts(m, "EEVDF (Earliest Eligible Virtual Deadline First)\n");
-	seq_puts(m, "Backport: Linux 6.6 -> GKI 5.10\n");
+	seq_puts(m, "Backport: Linux 6.6 core -> GKI 5.10\n");
 	seq_printf(m, "PLACE_LAG:              %s\n",
 		   sched_feat(PLACE_LAG) ? "enabled" : "disabled");
 	seq_printf(m, "PLACE_DEADLINE_INITIAL: %s\n",
