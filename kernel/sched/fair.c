@@ -3580,18 +3580,63 @@ static inline void
 dequeue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
 #endif
 
+/*
+ * EEVDF: rescale vruntime and deadline into the new weight domain.
+ *
+ * Both are weight-dependent (deadline = vruntime + calc_delta_fair(slice, se)),
+ * so a weight change without this rescale leaves a stale deadline vs the new
+ * weight and corrupts the min_deadline rbtree invariant __pick_eevdf() relies
+ * on.  Anchored at avruntime = avg_vruntime(cfs_rq) (the fair clock), so lag
+ * (V - vruntime) and remaining slice (deadline - V) are preserved across the
+ * weight change:  lag' = lag * old_weight / weight.
+ *
+ * Pure EEVDF — no dependency on CONFIG_SCHED_BORE.  Backport of mainline
+ * commit eab03c23c2a1 ("sched/eevdf: Fix vruntime adjustment on reweight").
+ */
+static void reweight_eevdf(struct cfs_rq *cfs_rq, struct sched_entity *se,
+			   unsigned long weight)
+{
+	unsigned long old_weight = se->load.weight;	/* read BEFORE update_load_set */
+	u64 avruntime = avg_vruntime(cfs_rq);
+	s64 vlag, vslice;
+
+	if (avruntime != se->vruntime) {
+		vlag = (s64)(avruntime - se->vruntime);
+		vlag = div_s64(vlag * old_weight, weight);
+		se->vruntime = avruntime - vlag;
+	}
+
+	vslice = (s64)(se->deadline - avruntime);
+	vslice = div_s64(vslice * old_weight, weight);
+	se->deadline = avruntime + vslice;
+}
+
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight)
 {
+	bool curr = cfs_rq->curr == se;
+	u64 old_deadline = 0;
+
 	if (se->on_rq) {
 		/* commit outstanding execution time */
-		if (cfs_rq->curr == se)
+		if (curr) {
 			update_curr(cfs_rq);
-		else
-			avg_vruntime_sub(cfs_rq, se);
+			/* capture AFTER update_curr, for the RUN_TO_PARITY marker guard below */
+			old_deadline = se->deadline;
+		} else {
+			/* leave the augmented rbtree so pos + min_deadline can be rebuilt */
+			__dequeue_entity(cfs_rq, se);
+		}
 		update_load_sub(&cfs_rq->load, se->load.weight);
 	}
 	dequeue_load_avg(cfs_rq, se);
+
+	if (!se->on_rq)
+		/* off-rq: vlag holds stored lag (V - vruntime); rescale it directly */
+		se->vlag = div_s64(se->vlag * se->load.weight, weight);
+	else
+		/* on-rq: rescale vruntime + deadline into the new weight domain */
+		reweight_eevdf(cfs_rq, se, weight);
 
 	update_load_set(&se->load, weight);
 
@@ -3607,8 +3652,24 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 	enqueue_load_avg(cfs_rq, se);
 	if (se->on_rq) {
 		update_load_add(&cfs_rq->load, se->load.weight);
-		if (se != cfs_rq->curr)
-			avg_vruntime_add(cfs_rq, se);
+		if (curr) {
+			/*
+			 * curr is not in the tree; vlag doubles as the
+			 * RUN_TO_PARITY "picked-last" marker (vlag == deadline).
+			 * Re-stamp it to the rescaled deadline ONLY if it was
+			 * still set — update_curr() above may have refreshed the
+			 * deadline (slice exhausted, resched pending) and thereby
+			 * cleared the marker; re-forging it would suppress that
+			 * preemption.
+			 */
+			if (se->vlag == old_deadline)
+				se->vlag = se->deadline;
+		} else {
+			/* rebuild tree position + min_deadline for the new key */
+			__enqueue_entity(cfs_rq, se);
+		}
+		/* se->vruntime was rescaled — refresh the fair-clock floor */
+		update_min_vruntime(cfs_rq);
 	}
 
 }
