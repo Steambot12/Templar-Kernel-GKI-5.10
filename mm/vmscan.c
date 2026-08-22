@@ -1189,7 +1189,10 @@ static unsigned int shrink_page_list(struct list_head *page_list,
 		if (!sc->may_unmap && page_mapped(page))
 			goto keep_locked;
 
-		if (sc->anon_below_min || sc->clean_below_min)
+		/* Keep a page only when its OWN type is below the hard min;
+		 * mirrors get_scan_count(). Unguarded anon_below_min blocked
+		 * file reclaim in swapless envs (recovery) -> OOM on big copy. */
+		if (page_is_file_lru(page) ? sc->clean_below_min : sc->anon_below_min)
 			goto keep_locked;
 
 		may_enter_fs = (sc->gfp_mask & __GFP_FS) ||
