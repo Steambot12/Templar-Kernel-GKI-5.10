@@ -45,28 +45,13 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  *
  * 16ms, unscaled. These three knobs (latency, min_granularity,
- * wakeup_granularity) used to be keyed on CONFIG_SCHED_BORE, which made a
- * BORE build and a non-BORE build differ in preemption granularity as well as
- * in the burst algorithm - so any A/B between them measured both at once and
- * could not attribute a regression to either. They are device tuning, not
- * BORE tuning, so they are now single values.
- *
- * Direction matters here. The BORE branch used to set 6ms/0.75ms, i.e. finer
- * granularity than plain CFS, which is backwards: stock CFS on an 8-core
- * applies TUNABLESCALING_LOG for an effective 24ms/3ms, so that branch ran 4x
- * more forced tick preemptions than the kernels it was being compared against
- * - and upstream BORE moves the other way still (24ms/3ms constant), because
- * its whole thesis is to stop chopping every task finely and let the burst
- * score decide who deserves the CPU instead. Paying fine-grained preemption
- * on top of BORE buys the context-switch and cache-refill cost of both models
- * and the benefit of neither.
- *
- * 16ms at sched_nr_latency=8 gives 2ms min slices, which keeps 4 preemption
- * windows per 120fps frame (8.3ms) — enough for UI responsiveness — while
- * giving CPU-bound background tasks on Little cores ~33% longer uninterrupted
- * runs than 12ms, saving the cache/TLB refill cost of each avoided context
- * switch.  Frame-thread wakeup latency is governed by wakeup_granularity and
- * EEVDF deadline/vruntime comparison, not by this, so lengthening it costs
+ * wakeup_granularity) are device tuning, not BORE tuning, so they no longer
+ * key on CONFIG_SCHED_BORE (which used to confound A/B tests by changing
+ * preemption granularity and the burst algorithm at once). At
+ * sched_nr_latency=8 this gives 2ms min slices: 4 preemption windows per
+ * 120fps frame for UI, while CPU-bound background tasks on Little run ~33%
+ * longer than at 12ms. Frame wakeup latency is set by EEVDF (the
+ * min_granularity slice + deadline), not by this, so lengthening it costs
  * the frame pipeline nothing.
  */
 unsigned int sysctl_sched_latency			= 16000000ULL;
@@ -97,18 +82,12 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_N
  * (BORE default: 3 msec constant, units: nanoseconds)
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  *
- * 2ms, unscaled, paired with the 16ms latency above so that
- * sched_nr_latency stays 8 - the static initialiser below assumes that ratio,
- * and sched_proc_update_handler() recomputes it as
- * DIV_ROUND_UP(latency, min_granularity) on any sysctl write. Keeping the
- * ratio fixed means the nr_running > 8 stretch path behaves exactly as before;
- * only the slice length changes.
- *
- * This is the knob that actually sets the context-switch rate: below it,
- * check_preempt_tick() will not force a preemption at all. 0.75ms was a
- * quarter of what stock CFS gives an 8-core, and on a little core at low
- * frequency the cache and TLB refill after each switch is a real fraction of
- * the slice itself.
+ * 2ms, unscaled, paired with the 16ms latency so sched_nr_latency stays 8
+ * (the static initialiser and sched_proc_update_handler's
+ * DIV_ROUND_UP(latency, min_granularity) both assume that ratio). This knob
+ * sets the context-switch rate: below it check_preempt_tick() won't force a
+ * preemption, and 0.75ms was a quarter of stock CFS on an 8-core -- costly on
+ * a little core where cache/TLB refill is a real fraction of the slice.
  */
 unsigned int sysctl_sched_min_granularity			= 2000000ULL;
 static unsigned int normalized_sysctl_sched_min_granularity	= 2000000ULL;
@@ -135,13 +114,10 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
  * (BORE default: 4 msec constant, units: nanoseconds)
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  *
- * 2ms, unscaled. Raised from 1ms for the same reason as the two above: at 1ms
- * almost every wakeup preempted the running task, and a game generates many
- * wakeups per frame (audio, input, network, binder, GPU fence completion), so
- * the runqueue churned instead of finishing work. wakeup_gran() still cuts
- * this per tier under gaming_mode, landing at 250us for nice < 0 (unchanged
- * from the old base) and 500us for nice 0, so a woken RenderThread still
- * preempts well inside the frame.
+ * 2ms, unscaled. NOTE: under EEVDF this knob drives no in-tree preemption
+ * decision -- check_preempt_wakeup uses eligibility + deadline. It is only
+ * passed to the android_rvh_check_preempt_wakeup vendor hook and shown in
+ * sched_debug, so tuning it in-tree is inert unless a vendor module reads it.
  */
 unsigned int sysctl_sched_wakeup_granularity			= 2000000ULL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 2000000ULL;
@@ -150,53 +126,30 @@ const_debug unsigned int sysctl_sched_migration_cost	= 250000UL;
 
 #ifdef CONFIG_SCHED_BORE
 /*
- * Core algorithm carries upstream BORE 6.6.3 semantics inside the existing
- * GKI-safe integration (KABI-slot sched_entity fields, sysctl knobs and CFS
- * hook points unchanged; the 6.6.3 task_struct/bore.c/futex machinery is
- * deliberately NOT ported - it would break KMI).
+ * Upstream BORE 6.6.3 semantics inside the GKI-safe integration (KABI-slot
+ * sched_entity fields, sysctl knobs and CFS hooks unchanged; the 6.6.3
+ * task_struct/bore.c/futex machinery is NOT ported -- it would break KMI).
  *
- * penalty_scale 1024 makes the curve exact and easy to reason about: with
- * scale 65536/64, burst_score reduces to
+ * penalty_scale 1024 makes the curve exact: burst_score = fls64(burst_time) -
+ * penalty_offset, i.e. one nice step per doubling of an uninterrupted burst,
+ * first step at 2^offset ns.
  *
- *	burst_score = fls64(burst_time) - penalty_offset
+ * penalty_offset 27: first demotion at 2^27 ns = 134ms (16 frames at 120fps).
+ * Frame threads dequeue every frame (restart_burst() zeroes accounting), so
+ * they can never lose weight; only batch work (GC, media scan, compile) crosses
+ * 134ms, gaining +1 nice per doubling. 27 not 26 (67ms): a legitimate nice-0
+ * stretch (shader compile, level load) must not be demoted mid-load, and 67ms
+ * would; 134ms won't. Upstream's 24 (16ms) suits a desktop where a demotion
+ * costs a scroll, not a frame.
  *
- * i.e. one nice step per doubling of an uninterrupted burst, first step at
- * 2^offset nanoseconds. Every threshold below follows from that identity.
- *
- * penalty_offset 27: the first demotion lands at 2^27 ns = 134ms, sixteen full
- * frame budgets at 120fps. Nothing in a frame pipeline runs 134ms without
- * sleeping - a render, logic or UI thread is dequeued every frame and
- * restart_burst() zeroes its accounting there - so frame work can never lose
- * weight, under any cpufreq governor, on any SoC (the threshold is absolute
- * time, not a capacity fraction, so it does not shift between devices).
- * What does cross 134ms is batch work: GC, media scan, package sync, index
- * rebuild, compile. Those get +1 nice per doubling, reaching +4 only after
- * 2.1 seconds of unbroken CPU.
- *
- * This is one step back up from 26, and the reason is that the gaming
- * exemption in update_burst_penalty() used to cover nice <= 0 and now covers
- * only nice < 0. At 26, nice-0 threads were exempt during gaming and so the
- * 67ms threshold only ever applied to background; now that they are in scope,
- * the threshold has to hold for a nice-0 thread doing a legitimate long
- * stretch - a shader compile or level load on the game's own worker pool -
- * and 67ms is close enough to a stall-free burst of real work to demote it
- * mid-load. 134ms is not: nothing that still intends to produce a frame runs
- * that long without a single dequeue. Upstream's default is 24 (16ms), which
- * suits a desktop where the frame pipeline is not the only thing that matters
- * and a demotion costs a scroll, not a dropped frame.
- *
- * smoothness 1/0: penalties grow by halves (rounded up) and collapse
- * instantly at sleep - one heavy burst (map load, app start) costs weight
- * for exactly one cycle instead of lingering across several.
- * fork_atavistic MUST stay 0 on this tree: upstream 6.6.3 runs its
- * topological inheritance over RCU sibling lists with strict sample/scan
- * limits, but the 5.10 in-tree walk recurses over unbounded children lists
- * under read_lock(&tasklist_lock) in the fork path. On a long gaming
- * session the task tree grows, the 75ms cache keeps expiring, and the walk
- * lengthens until fork/exit contention on tasklist_lock stalls the system -
- * observed as a progressive freeze needing a forced reboot. Direct
- * inheritance is bounded (one children-list pass) and was the configuration
- * stable across all long-session testing.
+ * smoothness 1/0: penalties grow by halves (rounded up) and collapse instantly
+ * at sleep, so one heavy burst costs weight for one cycle, not several.
+ * fork_atavistic MUST stay 0 on this tree: upstream 6.6.3 bounds its topological
+ * inheritance with RCU sample/scan limits, but the 5.10 in-tree walk recurses
+ * over unbounded children lists under read_lock(&tasklist_lock) in the fork
+ * path -- on a long session the walk lengthens until tasklist_lock contention
+ * freezes the system (forced reboot). Direct inheritance is bounded (one
+ * children-list pass) and was stable across all long-session testing.
  */
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
@@ -714,15 +667,12 @@ static void update_burst_penalty(struct sched_entity *se) {
 	}
 
 	/*
-	 * Latency-sensitive top-app protection: raise the demotion threshold
-	 * by 4 doublings (offset+4, ~2.1s at offset 27) for tasks in the
-	 * display-critical cgroup. Engine worker pools (physics, shaders,
-	 * skinning) legitimately burst 150ms-1s+ without dequeue — past the
-	 * base 134ms threshold. Once demoted, freshly-woken nice-0 threads
-	 * preempt them mid-frame (burst_time == 0 → full weight).
-	 *
-	 * Placed after the fast path so the cgroup walk only runs for tasks
-	 * that have already burst past 134ms. nice > 0 excluded.
+	 * Latency-sensitive top-app protection: raise the demotion threshold by
+	 * 4 doublings (offset+4, ~2.1s at offset 27) for display-critical cgroup
+	 * tasks. Engine worker pools (physics, shaders) legitimately burst
+	 * 150ms-1s+ without dequeue; once demoted, freshly-woken nice-0 threads
+	 * preempt them mid-frame. After the fast path, so the cgroup walk only
+	 * runs for tasks past 134ms. nice > 0 excluded.
 	 */
 	if (entity_is_task(se)) {
 		struct task_struct *p = task_of(se);
@@ -753,10 +703,9 @@ static void update_burst_penalty(struct sched_entity *se) {
 	se->burst_penalty = max(se->prev_burst_penalty, se->curr_burst_penalty);
 
 	/*
-	 * Skip update_burst_score if burst_score won't change. For CPU-bound
-	 * tasks, burst_score changes logarithmically (every ~6.5x burst_time
-	 * growth due to >> 2), so this fast path eliminates most redundant
-	 * update_burst_score calls, reducing scheduler overhead.
+	 * Skip update_burst_score when burst_score won't change. For CPU-bound
+	 * tasks it changes only logarithmically (~6.5x burst_time per step, via
+	 * >> 2), so this drops most redundant calls.
 	 */
 	new_score = se->burst_penalty >> 2;
 	if (new_score != se->burst_score)
@@ -1027,14 +976,11 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	/*
 	 * GKI 5.10 CFS can produce entities whose vruntime is far from
 	 * min_vruntime (cgroup migration, throttle/unthrottle, vendor hooks).
-	 * Old CFS tolerates this because it only compares vruntimes.  EEVDF
-	 * multiplies entity_key by weight in avg_vruntime tracking; a key
-	 * beyond ~44 bits overflows s64 and corrupts the weighted average,
-	 * making every entity ineligible.
-	 *
-	 * Snap outlier vruntimes to min_vruntime so they enter the tree
-	 * without poisoning avg_vruntime.  The ±(1LL << 40) window is
-	 * ~1.1 trillion ns of virtual time — decades of normal operation.
+	 * Old CFS tolerates this (it only compares vruntimes), but EEVDF
+	 * multiplies entity_key by weight in avg_vruntime; a key beyond ~44 bits
+	 * overflows s64 and makes every entity ineligible. Snap outliers to
+	 * min_vruntime so they enter the tree without poisoning avg_vruntime.
+	 * The +/-(1LL << 40) window is ~1.1 trillion ns -- decades of operation.
 	 */
 	key = entity_key(cfs_rq, se);
 	if (unlikely(key > (1LL << 40) || key < -(1LL << 40))) {
@@ -3581,17 +3527,15 @@ dequeue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
 #endif
 
 /*
- * EEVDF: rescale vruntime and deadline into the new weight domain.
+ * EEVDF: rescale vruntime and deadline into the new weight domain. Both are
+ * weight-dependent (deadline = vruntime + calc_delta_fair(slice, se)), so a
+ * weight change without this leaves a stale deadline and corrupts the
+ * min_deadline rbtree invariant __pick_eevdf() relies on. Anchored at
+ * avg_vruntime() so lag and remaining slice are preserved: lag' = lag *
+ * old_weight / weight.
  *
- * Both are weight-dependent (deadline = vruntime + calc_delta_fair(slice, se)),
- * so a weight change without this rescale leaves a stale deadline vs the new
- * weight and corrupts the min_deadline rbtree invariant __pick_eevdf() relies
- * on.  Anchored at avruntime = avg_vruntime(cfs_rq) (the fair clock), so lag
- * (V - vruntime) and remaining slice (deadline - V) are preserved across the
- * weight change:  lag' = lag * old_weight / weight.
- *
- * Pure EEVDF — no dependency on CONFIG_SCHED_BORE.  Backport of mainline
- * commit eab03c23c2a1 ("sched/eevdf: Fix vruntime adjustment on reweight").
+ * Pure EEVDF, no CONFIG_SCHED_BORE dependency. Backport of mainline commit
+ * eab03c23c2a1 ("sched/eevdf: Fix vruntime adjustment on reweight").
  */
 static void reweight_eevdf(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			   unsigned long weight)
@@ -3656,11 +3600,10 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			/*
 			 * curr is not in the tree; vlag doubles as the
 			 * RUN_TO_PARITY "picked-last" marker (vlag == deadline).
-			 * Re-stamp it to the rescaled deadline ONLY if it was
-			 * still set — update_curr() above may have refreshed the
-			 * deadline (slice exhausted, resched pending) and thereby
-			 * cleared the marker; re-forging it would suppress that
-			 * preemption.
+			 * Re-stamp to the rescaled deadline ONLY if still set:
+			 * update_curr() above may have refreshed the deadline
+			 * (slice exhausted) and cleared the marker, and
+			 * re-forging it would suppress that preemption.
 			 */
 			if (se->vlag == old_deadline)
 				se->vlag = se->deadline;
@@ -7190,14 +7133,12 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 
 		/*
 		 * Standing in for EAS (see sched_prefer_small_cpu): the three
-		 * shortcuts below hand back @target, @prev or recent_used_cpu
-		 * as soon as one of them is idle and the task fits, and a light
-		 * task fits on every CPU. That is what ratchets background work
-		 * onto the big cluster and keeps it there. Skip them and let
-		 * select_idle_capacity() scan for the smallest CPU that fits;
-		 * its scan still starts at @target, so an already-correct
-		 * placement is kept. One domain walk is far cheaper than the
-		 * compute_energy() sweep an energy model would have cost here.
+		 * shortcuts below return @target/@prev/recent_used_cpu as soon as
+		 * one is idle and the task fits -- and a light task fits every CPU,
+		 * which ratchets background work onto the big cluster. Skip them and
+		 * let select_idle_capacity() find the smallest CPU that fits (its
+		 * scan still starts at @target, so a correct placement is kept).
+		 * One domain walk is far cheaper than a compute_energy() sweep.
 		 */
 		if (sched_prefer_small_cpu(p)) {
 			sd = rcu_dereference(per_cpu(sd_asym_cpucapacity, target));
