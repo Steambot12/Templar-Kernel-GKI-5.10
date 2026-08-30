@@ -80,9 +80,14 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 #define RFX_PRIME_UP_US			0
 #define RFX_PRIME_DOWN_US		2500
 
-/* Eval rate while gaming or the touch window is open: frame pacing and
- * gesture tracking are the only sub-ms DVFS needs, both bounded events. */
-#define RFX_FAST_RATE_US		250
+/* Eval rate while gaming (daily interaction uses RFX_UI_RATE_US below).
+ * 500us = 16 evals per 120fps frame. At 250us it was 33 per frame, and each one
+ * re-aggregates util across every CPU in the policy -- governor work billed to
+ * the same cores that render, i.e. avg-CPU and watts with no frame in it. The
+ * EMA time constant is anchored to RFX_EMA_DECAY_PERIOD_NS, not to this, so the
+ * filter shape is unchanged; up-rate is 0, so a frame still gets fmax on the
+ * next eval, <=0.5ms into an 8.3ms frame. */
+#define RFX_FAST_RATE_US		500
 
 /* Eval rate during a DAILY interaction window. 900us: a daily scroll only
  * needs the util rise seen promptly (PELT moves ~0.5%/250us), so a finer rate
@@ -108,9 +113,10 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
  * These two are the gaming resting-power dial (avg CPU / watts): a heavy frame
  * still reaches fmax via the saturation shortcut regardless of the floor, so
  * cutting them only lowers the light/normal-frame resting OPP, not the FPS
- * ceiling. Lowered 72->64 / 66->58 to land avg CPU in the 50s and power <6W;
- * drop further (toward 58/52) only if power is still high AND 120fps holds. */
-#define RFX_G_PRIME_FLOOR_PCT		64
+ * ceiling. Prime 64->58: on a 3-tier SoC Prime is the EAS-spill cluster, so it
+ * churns the top OPPs while carrying only a fraction of the frame -- the highest
+ * voltage on the die bought with no frame in it. */
+#define RFX_G_PRIME_FLOOR_PCT		58
 #define RFX_G_PRIME_FRAME_PCT		92
 #define RFX_G_BIG_FLOOR_PCT		58
 #define RFX_G_BIG_FRAME_PCT		90
@@ -145,16 +151,15 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
  * touch/UI window lifts to *_BOOST_CAP_PCT; the sustained latch (>=LIFT_PCT,
  * released below DROP_PCT) lifts to *_SUSTAINED_CAP_PCT for long foreground
  * work. Prime's boost cap is deliberately flat at its base, so bursty daily
- * work never touches the top OPPs -- the X2's top OPPs are the power cliff.
+ * work never touches the top OPPs -- on the fastest tier those are the power
+ * cliff.
  *
- * The SUSTAINED caps are the benchmark/heavy-compute ceiling (Geekbench runs in
- * daily mode: gaming_mode is never auto-written). The latch only engages at
- * sustained real demand >=~52%, i.e. benchmark/compile/export -- never the idle
- * or light-active daily paths that own the battery targets -- so these can sit
- * high without a daily-power cost. Prime 75->85 (single-core: 75% pinned SC to
- * ~1677; 85% clears 1700++), Big 88->94 (multi-core: clears 4500++). Higher
- * clock here is also race-to-idle. Trim if a sustained-load thermal ceiling
- * appears before the benchmark completes.
+ * The SUSTAINED caps are the heavy-compute ceiling, which lands in daily mode
+ * (gaming_mode is never auto-written). The latch only engages at sustained real
+ * demand >=~52%, i.e. compile/export/sustained-compute -- never the idle or
+ * light-active daily paths that own the battery targets -- so these can sit high
+ * without a daily-power cost. Higher clock here is also race-to-idle. Trim if a
+ * sustained-load thermal ceiling appears before the workload completes.
  */
 #define RFX_D_BIG_CAP_PCT		70
 #define RFX_D_BIG_BOOST_CAP_PCT		80
@@ -217,15 +222,14 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 #define RFX_HEADROOM_DAILY_HIGH		4
 #define RFX_HEADROOM_DAILY_MID		2
 /* Gaming headroom on top of the 25% margin. Applied every eval, so it sets the
- * resting OPP -- the steady-state power lever. On-device trace (Garena, SD7+G2)
- * showed 5% still pinned Big flat at fmax the whole session at 70-80% real load
- * (6.66W / 60.9% avg CPU) while FPS stayed engine-bound at ~117 -- i.e. the top
- * OPP bought heat, not frames. 2% (~27% total) lets the sustained 70-80% scene
- * interpolate one-two OPPs below fmax; a real >=78% frame still inflates past
- * the saturation trigger and reaches fmax, and the independent frame-risk
- * detector (RFX_RISK_SATURATION_PCT) still boosts genuine misses, so FPS holds
- * while resting watts drop. Do not raise back toward 5+ without a fresh trace
- * showing FPS (not just CPU%) actually falling. */
+ * resting OPP -- the steady-state power lever. At 5% a sustained 70-80% render
+ * load still pinned Big flat at fmax for a whole session while FPS stayed
+ * engine-bound -- i.e. the top OPP bought heat, not frames. 2% (~27% total) lets
+ * that band interpolate one-two OPPs below fmax; a real >=78% frame still
+ * inflates past the saturation trigger and reaches fmax, and the independent
+ * frame-risk detector (RFX_RISK_SATURATION_PCT) still boosts genuine misses, so
+ * FPS holds while resting watts drop. Do not raise back toward 5+ without a
+ * measurement showing FPS (not just CPU%) actually falling. */
 #define RFX_HEADROOM_GAMING		2
 
 /* Util percent at which we stop interpolating and request fmax outright.
@@ -271,12 +275,19 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 #define RFX_RISK_SATURATION_PCT		90
 #define RFX_RISK_CLEAR_PCT		75
 
-/* Min spacing between arms: expiry clears risk_high, so demand parked just above
- * SATURATION re-arms forever. 3x window caps the boost duty cycle at 33%. */
-#define RFX_FRAME_BOOST_MIN_GAP_NS	(RFX_FRAME_BOOST_NS * 3)
-
-/* Frame boost ramp: instant rise, gentle decay back to baseline floors. */
+/* Frame boost ramp: instant rise, gentle decay back to baseline floors. Also
+ * carries the warmup release, so it must outlast a few frames. */
 #define RFX_FRAME_BOOST_RAMP_DOWN_MS	60
+
+/* Floors stay lifted for window + ramp tail, not just the window -- that full
+ * span is what a duty cycle has to be measured against. Min spacing between
+ * arms: expiry clears risk_high, so demand parked just above SATURATION re-arms
+ * forever. 2x span caps the lifted duty cycle at 50%; measuring 3x the window
+ * alone left it at 94%, i.e. permanently lifted. */
+#define RFX_FRAME_BOOST_SPAN_NS		(RFX_FRAME_BOOST_NS + \
+					 (u64)RFX_FRAME_BOOST_RAMP_DOWN_MS * \
+					 NSEC_PER_MSEC)
+#define RFX_FRAME_BOOST_MIN_GAP_NS	(RFX_FRAME_BOOST_SPAN_NS * 2)
 
 /* Gaming warmup: lifts floors to frame-boost level (not the cap) to cover spawn
  * + shader/asset load. Longer windows pinned all three clusters through the
@@ -308,8 +319,14 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
  * frame" from "ticking over"; below it the baseline band floor still applies. Set
  * low on purpose: Little (compositor/input/audio) is latency-critical but light
  * (~30-40%) and rarely hits 45%, so a higher gate would exclude the one cluster
- * always in the frame. */
+ * always in the frame.
+ *
+ * PRIME is the exception: on a 3-tier SoC it only receives EAS spill, so it sits
+ * across the 35 boundary all session (measured 15-50% load, churning the top
+ * OPPs) and followed every boost at top-of-die voltage with no frame in it.
+ * 60 (~48% real) means it must actually be carrying work. */
 #define RFX_G_BOOST_FOLLOW_PCT		35
+#define RFX_G_PRIME_BOOST_FOLLOW_PCT	60
 
 /* Floor for a gated (idle) cluster. Not zero: from fmin a cluster must climb the
  * whole range when work lands, and the OPP transition + rate gate turn that into
@@ -320,9 +337,9 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 
 /* Gaming Little ramp detect: compositor/input on Little sit at 30-40%; a
  * scene change can spike 15+ points but EMA + rate gate lag 4-5 cycles. Catching
- * a 15-point rise and lifting to boost_fl for 500us closes that gap. */
+ * a 15-point rise and lifting to boost_fl for two evals closes that gap. */
 #define RFX_G_LITTLE_RAMP_DELTA_PCT	15
-#define RFX_G_LITTLE_RAMP_HOLD_NS	(500 * NSEC_PER_USEC)
+#define RFX_G_LITTLE_RAMP_HOLD_NS	(1 * NSEC_PER_MSEC)	/* 2 evals */
 
 /* Cluster cool-down band, hysteretic. Below ENTER the platform limiter is
  * taking capacity, so floors drop for relief; they return at EXIT. The 5-point
@@ -883,7 +900,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 	if (gaming) {
 		bool fboost_active, warmup_active;
 		unsigned int fboost_ramp_pct;
-		unsigned int fl, boost_fl, demand_pct;
+		unsigned int fl, boost_fl, demand_pct, follow_pct;
 		u64 down_step, slew_ns;
 
 		/*
@@ -904,10 +921,10 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		warmup_active = p->gaming_warmup_end_ns && time < p->gaming_warmup_end_ns;
 
 		/*
-		 * Adaptive warmup. Extend while Big/Prime demand
-		 * stays above the extend threshold; end early if demand
-		 * drops below the release threshold for 100ms. Cap at 1500ms
-		 * absolute from the original warmup start.
+		 * Adaptive warmup. Extend while Big/Prime demand stays above the
+		 * extend threshold, capped at RFX_GAMING_WARMUP_MAX_NS from the
+		 * original start; end early if demand drops below the release
+		 * threshold for RELEASE_NS.
 		 */
 		if (warmup_active && !little) {
 			if (demand_pct >= RFX_GAMING_WARMUP_EXTEND_PCT) {
@@ -942,12 +959,15 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (prime) {
 			fl = rfx_pct(fceil, RFX_G_PRIME_FLOOR_PCT);
 			boost_fl = rfx_pct(fceil, RFX_G_PRIME_FRAME_PCT);
+			follow_pct = RFX_G_PRIME_BOOST_FOLLOW_PCT;
 		} else if (!little) {		/* Big: demand-tracked, uncapped */
 			fl = rfx_pct(fceil, RFX_G_BIG_FLOOR_PCT);
 			boost_fl = rfx_pct(fceil, RFX_G_BIG_FRAME_PCT);
+			follow_pct = RFX_G_BOOST_FOLLOW_PCT;
 		} else {			/* Little: compositor / audio / input */
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
 			boost_fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_BOOST_PCT);
+			follow_pct = RFX_G_BOOST_FOLLOW_PCT;
 		}
 
 		/*
@@ -999,7 +1019,15 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			freq = p->next_freq - (unsigned int)down_step;
 
 		fboost_active = rfx_frame_boost_active(time);
-		fboost_ramp_pct = rfx_update_frame_boost_ramp(p, fboost_active, time);
+		/*
+		 * Warmup feeds the same ramp instead of holding a hard floor: at
+		 * expiry the old branch stepped the floor from boost_fl straight
+		 * to fl in one eval, and that cliff landed exactly as the first
+		 * real frames arrived (the start-of-session FPS notch). Through
+		 * the ramp it decays over RAMP_DOWN_MS instead.
+		 */
+		fboost_ramp_pct = rfx_update_frame_boost_ramp(p,
+					fboost_active || warmup_active, time);
 
 		/*
 		 * Idle clusters release to the idle floor. Two deadbands: value
@@ -1024,10 +1052,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		if (p->floor_gated)
 			fl = rfx_pct(fceil, RFX_G_IDLE_FLOOR_PCT);
-		else if (warmup_active && demand_pct >= RFX_G_BOOST_FOLLOW_PCT)
-			fl = boost_fl;
-		else if (fboost_ramp_pct > 0 &&
-			 demand_pct >= RFX_G_BOOST_FOLLOW_PCT)
+		else if (fboost_ramp_pct > 0 && demand_pct >= follow_pct)
 			fl = fl + (boost_fl - fl) * fboost_ramp_pct / 100;
 
 		if (freq < fl)
@@ -1037,9 +1062,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * Little compositor ramp detection. A scene change can
 		 * spike compositor demand by 15+ points; the EMA + rate gate
 		 * delays the response by 4-5 eval cycles. Detect the rise and
-		 * immediately boost to boost_fl for 500µs (2 eval cycles at
-		 * gaming rate). Only fires on Little where the compositor and
-		 * input pipeline live.
+		 * immediately boost to boost_fl for two eval cycles. Only fires
+		 * on Little where the compositor and input pipeline live.
 		 */
 		if (little && demand_pct > p->prev_gaming_demand_pct + RFX_G_LITTLE_RAMP_DELTA_PCT)
 			p->little_ramp_end_ns = time + RFX_G_LITTLE_RAMP_HOLD_NS;
