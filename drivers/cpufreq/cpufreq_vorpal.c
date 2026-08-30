@@ -271,6 +271,10 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 #define RFX_RISK_SATURATION_PCT		90
 #define RFX_RISK_CLEAR_PCT		75
 
+/* Min spacing between arms: expiry clears risk_high, so demand parked just above
+ * SATURATION re-arms forever. 3x window caps the boost duty cycle at 33%. */
+#define RFX_FRAME_BOOST_MIN_GAP_NS	(RFX_FRAME_BOOST_NS * 3)
+
 /* Frame boost ramp: instant rise, gentle decay back to baseline floors. */
 #define RFX_FRAME_BOOST_RAMP_DOWN_MS	60
 
@@ -292,6 +296,11 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
  * boundary, and a single threshold toggled its floor every few evals. */
 #define RFX_G_FLOOR_GATE_PCT		25
 #define RFX_G_FLOOR_GATE_EXIT_PCT	35
+/* Time deadband on the same gate. The value deadband can't tell an idle cluster
+ * from a render cluster whose inter-frame trough dips under GATE. 20ms outlasts
+ * a 60fps frame gap. Excludes a 3-tier Prime: holding that floor is the
+ * forbidden direction. */
+#define RFX_G_FLOOR_GATE_DWELL_NS	(20 * NSEC_PER_MSEC)
 
 /* Demand a cluster must show to follow the GLOBAL (shared) frame boost up to its
  * frame floor. Without this, one cluster's risk crossing would hold all three at
@@ -360,6 +369,8 @@ static atomic_t rfx_temp_mc = ATOMIC_INIT(0);
  * Prime/Big/Little lift their floor together until this deadline.
  */
 static atomic64_t rfx_frame_boost_end_ns = ATOMIC64_INIT(0);
+/* Arm time of that window: enforces RFX_FRAME_BOOST_MIN_GAP_NS. */
+static atomic64_t rfx_frame_boost_arm_ns = ATOMIC64_INIT(0);
 
 /* All live policies, so gaming-off can reset every cluster (not just Prime). */
 static LIST_HEAD(rfx_policy_list);
@@ -394,6 +405,7 @@ struct rfx_policy {
 	unsigned int next_freq;
 	unsigned int cached_raw_freq;	/* raw request behind the last commit */
 	unsigned int pending_raw_freq;	/* raw request awaiting the rate gate */
+	unsigned int max_seen;		/* high-water policy->max = unthrottled baseline */
 
 	struct irq_work irq_work;
 	struct kthread_work work;
@@ -405,7 +417,8 @@ struct rfx_policy {
 	bool limits_changed;
 	bool need_freq_update;
 
-	bool is_prime;			/* this policy is the Prime cluster */
+	bool is_prime;			/* PRIME band applies (3+ tiers only) */
+	bool is_top;			/* fastest tier: hosts the gaming_mode node */
 	bool is_little;
 
 	unsigned int prev_upct;		/* daily ramp reference demand% */
@@ -431,6 +444,7 @@ struct rfx_policy {
 
 	bool risk_high;			/* frame-risk edge state */
 	bool floor_gated;		/* gaming: floor released to idle, hysteretic */
+	u64 floor_low_since_ns;		/* gaming: demand below GATE since (dwell) */
 	bool little_cap_lifted;		/* daily: sustained-load cap lift latch */
 	bool big_cap_lifted;		/* daily: sustained-load cap lift for Big/Prime */
 	bool thermal_cooling;		/* gaming: floors dropped to idle, hysteretic */
@@ -470,22 +484,51 @@ static inline struct gov_attr_set *rfx_to_gov_attr_set(struct kobject *kobj)
 }
 
 /*
- * Cluster identification, compared against arch_scale_cpu_capacity() (biggest
- * CPU = 1024). On a two-cluster SoC the big cluster is 1024 and classifies as
- * "prime" -- the fastest tier present, which is what these bands mean. Do NOT
- * require a third distinct tier: rfx_prime_ktype is the only attr set carrying
- * gaming_mode, so a policy with no prime member has no gaming_mode node and the
- * mode becomes unreachable on two-cluster devices. Prime/big rate limits are
- * identical; only 2 points of floor differ.
+ * Cluster identification against arch_scale_cpu_capacity() (biggest CPU = 1024).
+ * Two separate questions, previously one flag:
+ *   is_top   - fastest tier; hosts rfx_prime_ktype, the only attr set carrying
+ *              gaming_mode, so exactly one policy must be true.
+ *   is_prime - PRIME band applies. That band models an intermittent EAS-spill
+ *              cluster; on a two-tier SoC the fastest tier IS the render cluster,
+ *              so it takes the BIG band instead.
  */
 static inline bool rfx_cap_is_little(unsigned long cap)
 {
 	return cap <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD;
 }
 
-static inline bool rfx_cap_is_prime(unsigned long cap)
+static inline bool rfx_cap_is_top(unsigned long cap)
 {
 	return cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD;
+}
+
+/* Distinct capacity tiers. Fixed before any governor attaches, so cache it. */
+static int rfx_ntiers(void)
+{
+	static int ntiers;
+	unsigned long caps[4];
+	int n = 0, cpu, i;
+
+	if (ntiers)
+		return ntiers;
+
+	for_each_possible_cpu(cpu) {
+		unsigned long c = arch_scale_cpu_capacity(cpu);
+
+		for (i = 0; i < n; i++)
+			if (caps[i] == c)
+				break;
+		if (i == n && n < (int)ARRAY_SIZE(caps))
+			caps[n++] = c;
+	}
+
+	ntiers = n ? n : 3;
+	return ntiers;
+}
+
+static inline bool rfx_cap_is_prime(unsigned long cap)
+{
+	return rfx_cap_is_top(cap) && rfx_ntiers() >= 3;
 }
 
 /* fmax * pct / 100 */
@@ -495,16 +538,27 @@ static inline unsigned int rfx_pct(unsigned int fmax, unsigned int pct)
 }
 
 /*
- * Thermal headroom 0..100, from thermal_pressure only (LMH-style throttle the
- * core can't see). policy->max is NOT folded in -- the core enforces it on
- * commit, and a non-thermal baseline below fmax (MTK) would compound with the
- * % caps and halve the usable range.
+ * Effective ceiling: percent remaining, plus the unthrottled baseline it applies
+ * to. Two throttle channels; reading only the first was the portability gap:
+ *   thermal_pressure - cpufreq_cooling / LMH. Present on QCOM.
+ *   policy->max      - vendor thermal HAL. The only channel on MTK, where
+ *                      cpufreq_cooling never registers.
+ * Measured against the high-water policy->max, not the live value: a statically
+ * low baseline (MTK per-core OPP split) must read as no throttle, and folding
+ * the live value in directly is the earlier double-clamped-daily-caps regression.
  */
-static unsigned int rfx_thermal_headroom_pct(struct cpufreq_policy *pol,
-					     unsigned long max_cap)
+static unsigned int rfx_thermal_headroom_pct(struct rfx_policy *p,
+					     unsigned long max_cap,
+					     unsigned int *baseline)
 {
-	unsigned int press_pct = 100;
+	struct cpufreq_policy *pol = p->policy;
+	unsigned int press_pct = 100, clamp_pct = 100;
+	unsigned int pmax = READ_ONCE(pol->max);
 	unsigned long press;
+
+	if (pmax > p->max_seen)
+		p->max_seen = pmax;
+	*baseline = p->max_seen ? p->max_seen : pol->cpuinfo.max_freq;
 
 	press = arch_scale_thermal_pressure(cpumask_first(pol->related_cpus));
 	if (max_cap) {
@@ -515,7 +569,10 @@ static unsigned int rfx_thermal_headroom_pct(struct cpufreq_policy *pol,
 						   100 / max_cap);
 	}
 
-	return press_pct;
+	if (pmax && pmax < *baseline)
+		clamp_pct = (unsigned int)((u64)pmax * 100 / *baseline);
+
+	return min(press_pct, clamp_pct);
 }
 
 /*
@@ -758,7 +815,16 @@ static void rfx_frame_risk_check(struct rfx_policy *p, unsigned int demand_pct,
 	if (p->next_freq >= boost_fl)
 		return;
 
+	/* Duty-cycle backstop: one window per MIN_GAP, whatever demand does. */
+	{
+		u64 armed = (u64)atomic64_read(&rfx_frame_boost_arm_ns);
+
+		if (armed && time - armed < RFX_FRAME_BOOST_MIN_GAP_NS)
+			return;
+	}
+
 	p->risk_high = true;
+	atomic64_set(&rfx_frame_boost_arm_ns, time);
 	atomic64_set(&rfx_frame_boost_end_ns, time + RFX_FRAME_BOOST_NS);
 }
 
@@ -777,10 +843,9 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				    unsigned long max_cap, u64 time, bool gaming)
 {
 	struct cpufreq_policy *pol = p->policy;
-	unsigned int fmax = pol->cpuinfo.max_freq;
 	unsigned int fmin = pol->cpuinfo.min_freq;
-	bool little = rfx_cap_is_little(max_cap);
-	bool prime = rfx_cap_is_prime(max_cap);
+	bool little = p->is_little;
+	bool prime = p->is_prime;
 	unsigned int freq;
 	unsigned long raw_util = util;	/* demand before headroom inflation */
 	/*
@@ -791,20 +856,28 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 	 * would sit above the clamp, pin the cluster flat, and make the platform
 	 * clamp harder -- the "heats even with a cooler" ratchet, seen only on
 	 * ROMs/SoCs whose throttle channel this governor wasn't reading.
+	 *
+	 * fmax = unthrottled baseline (high-water policy->max), not
+	 * cpuinfo.max_freq: on MTK the baseline sits below cpuinfo max.
 	 */
+	unsigned int fmax;
 	unsigned int fceil;
 	unsigned int fceil_pct;
 
-	if (unlikely(!fmax || !max_cap))
+	if (unlikely(!pol->cpuinfo.max_freq || !max_cap))
 		return pol->cur;
 
-	fceil_pct = rfx_thermal_headroom_pct(pol, max_cap);
+	fceil_pct = rfx_thermal_headroom_pct(p, max_cap, &fmax);
+	if (unlikely(!fmax))
+		return pol->cur;
 	fceil = rfx_pct(fmax, fceil_pct);
 	fceil = clamp(fceil, fmin, fmax);
 
 	util = rfx_apply_headroom(util, max_cap, gaming, little);
 
-	freq = (unsigned int)((u64)fmax * util / max_cap);
+	/* arch capacity 1024 is defined against cpuinfo max, so demand->freq uses
+	 * that; only the percentage shape below uses fmax. */
+	freq = (unsigned int)((u64)pol->cpuinfo.max_freq * util / max_cap);
 	freq = clamp(freq, fmin, fceil);
 
 	if (gaming) {
@@ -929,14 +1002,25 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		fboost_ramp_pct = rfx_update_frame_boost_ramp(p, fboost_active, time);
 
 		/*
-		 * Idle clusters release to the idle floor, hysteretically: enter
-		 * below GATE, leave only above GATE_EXIT. During warmup only a
-		 * cluster already carrying frame work gets the frame floor.
+		 * Idle clusters release to the idle floor. Two deadbands: value
+		 * (GATE/GATE_EXIT) and, on render-bearing clusters, time (DWELL)
+		 * so an inter-frame trough can't collapse the render floor.
 		 */
-		if (demand_pct < RFX_G_FLOOR_GATE_PCT)
-			p->floor_gated = true;
-		else if (demand_pct >= RFX_G_FLOOR_GATE_EXIT_PCT)
+		if (demand_pct >= RFX_G_FLOOR_GATE_EXIT_PCT) {
 			p->floor_gated = false;
+			p->floor_low_since_ns = 0;
+		} else if (demand_pct < RFX_G_FLOOR_GATE_PCT) {
+			if (prime) {
+				p->floor_gated = true;
+			} else if (!p->floor_low_since_ns) {
+				p->floor_low_since_ns = time;
+			} else if (time - p->floor_low_since_ns >=
+				   RFX_G_FLOOR_GATE_DWELL_NS) {
+				p->floor_gated = true;
+			}
+		} else {
+			p->floor_low_since_ns = 0;
+		}
 
 		if (p->floor_gated)
 			fl = rfx_pct(fceil, RFX_G_IDLE_FLOOR_PCT);
@@ -1683,6 +1767,7 @@ static void rfx_reset_all_policies(void)
 	spin_lock_irqsave(&rfx_policy_list_lock, flags);
 
 	atomic64_set(&rfx_frame_boost_end_ns, 0);
+	atomic64_set(&rfx_frame_boost_arm_ns, 0);
 
 	list_for_each_entry(p, &rfx_policy_list, gov_node) {
 		raw_spin_lock_irqsave(&p->update_lock, pflags);
@@ -1693,6 +1778,7 @@ static void rfx_reset_all_policies(void)
 		p->risk_high = false;
 		p->thermal_cooling = false;
 		p->floor_gated = false;
+		p->floor_low_since_ns = 0;
 		p->little_cap_lifted = false;
 		p->big_cap_lifted = false;
 		p->little_ramp_end_ns = 0;
@@ -1756,6 +1842,7 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 			p->risk_high = false;
 			p->thermal_cooling = false;
 			p->floor_gated = false;
+			p->floor_low_since_ns = 0;
 			p->little_ramp_end_ns = 0;
 			p->prev_gaming_demand_pct = 0;
 			p->warmup_low_demand_since_ns = 0;
@@ -1982,6 +2069,7 @@ static int rfx_init(struct cpufreq_policy *policy)
 		goto free_p;
 
 	max_cap = arch_scale_cpu_capacity(cpumask_first(policy->cpus));
+	p->is_top = rfx_cap_is_top(max_cap);
 	p->is_prime = rfx_cap_is_prime(max_cap);
 	p->is_little = rfx_cap_is_little(max_cap);
 
@@ -2009,7 +2097,9 @@ static int rfx_init(struct cpufreq_policy *policy)
 		t->up_rate_limit_us = RFX_LITTLE_UP_US;
 		t->down_rate_limit_us = RFX_LITTLE_DOWN_US;
 		ktype = &rfx_little_ktype;
-	} else if (p->is_prime) {
+	} else if (p->is_top) {
+		/* is_top, not is_prime: on a two-tier SoC the band is BIG but
+		 * gaming_mode must still exist somewhere. */
 		t->rate_limit_us = RFX_PRIME_RATE_US;
 		t->up_rate_limit_us = RFX_PRIME_UP_US;
 		t->down_rate_limit_us = RFX_PRIME_DOWN_US;
@@ -2090,6 +2180,8 @@ static int rfx_start(struct cpufreq_policy *policy)
 	p->next_freq = policy->cur > 0 ? policy->cur : policy->cpuinfo.min_freq;
 	p->cached_raw_freq = 0;
 	p->pending_raw_freq = 0;
+	/* Unthrottled baseline; only ratchets up. */
+	p->max_seen = policy->max;
 	p->work_in_progress = false;
 	p->limits_changed = false;
 	p->need_freq_update = false;
@@ -2109,6 +2201,7 @@ static int rfx_start(struct cpufreq_policy *policy)
 	p->big_cap_lifted = false;
 	p->thermal_cooling = false;
 	p->floor_gated = false;
+	p->floor_low_since_ns = 0;
 	p->little_ramp_end_ns = 0;
 	p->prev_gaming_demand_pct = 0;
 	p->warmup_low_demand_since_ns = 0;
