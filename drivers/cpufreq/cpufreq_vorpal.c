@@ -103,7 +103,7 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 
 /* Gaming down-rate gate. Gates every downward commit, so it sets descent
  * granularity: step = RFX_GAMING_DOWN_PCT_PER_MS * this. Must be chosen with
- * the slew bound; 4ms (half a 120fps frame) * 1%/ms = 4% max step. */
+ * the slew bound; 4ms (half a 120fps frame) * 2%/ms = 8% max step. */
 #define RFX_GAMING_DOWN_US		4000
 
 /* Gaming floors, percent of the effective ceiling. NO cluster is capped: every
@@ -138,9 +138,18 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 #define RFX_G_LITTLE_FLOOR_BOOST_PCT	80
 
 /* Max downward slew, percent of ceiling per ms elapsed (time-proportional,
- * not per-update, since update spacing varies with load). 1%/ms sheds a full
- * range in ~100ms; with the 4ms gate that caps a single commit at 4%. */
-#define RFX_GAMING_DOWN_PCT_PER_MS	1
+ * not per-update, since update spacing varies with load). Its only job is to
+ * stop one eval stepping off a cliff; the EMA owns descent SHAPE.
+ *
+ * 2, not 1: the EMA sheds ~3 points of error per ms early in a drop, so at 1%/ms
+ * the slew -- not the filter -- bound every descent, and the clock ratcheted.
+ * With a burst arriving each frame at high refresh nothing ever came back down:
+ * that is what pinned the render clusters flat at fmax and left the spill tier
+ * sawtoothing across the top of its range at low duty. At 2 the slew binds only
+ * the first third of a large drop and the EMA governs the rest, as designed. A
+ * single commit is still bounded to 2 * the 4ms gate = 8% of ceiling, ~one OPP
+ * step, so this is not a cliff. Rises are untouched. */
+#define RFX_GAMING_DOWN_PCT_PER_MS	2
 
 /* ---- Daily frequency shaping, percent of the effective ceiling ---- */
 /* Little daily cap 65%: sits just above the V/f knee so light scrolling
@@ -216,13 +225,24 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
  * 1/RFX_EMA_GAMING_DIVISOR of the remaining error; longer gaps repeat the step,
  * bounded iterations. */
 #define RFX_EMA_DECAY_PERIOD_NS		250000	/* decay reference period */
-/* Gaming decay: 1/100 of the error per period is a ~25ms time constant, two to
- * three frame periods at 90-120fps, so filt_util rides the scene envelope. At
- * 1/8 (~1.9ms) it decayed 99% inside a single 8.3ms frame gap and tracked the
- * render thread's intra-frame duty cycle instead: the inter-frame trough fell
- * under the floor gate and collapsed the render floor every frame. Holding the
- * clock between frames is this filter's job, not a static floor's. */
-#define RFX_EMA_GAMING_DIVISOR		100
+/* Gaming decay: 1/50 of the error per period is a ~12.5ms time constant, still
+ * longer than the 8.33ms frame gap at 120fps, so filt_util rides the scene
+ * envelope and does NOT track the render thread's intra-frame duty (at 1/8, tau
+ * ~1.9ms, it decayed 99% inside one frame gap and the inter-frame trough
+ * collapsed the render floor every frame -- never go back toward that).
+ *
+ * 100 -> 50: at tau 25ms the filter spanned three frame periods, so with a
+ * render burst arriving every 8.3ms it only shed ~28% of the error between
+ * peaks and became a peak-HOLD -- the trace shows both render clusters flat at
+ * fmax for a 7-minute session at 55-80% load, which is the monotonic temperature
+ * ramp, and the spill tier sawtoothing because its brief bursts were held three
+ * frames wide. One frame and a half of hold is what the envelope needs; three is
+ * a latch. The trough-collapse this used to guard against is now covered
+ * structurally by RFX_G_FLOOR_GATE_DWELL_NS (20ms), not by the filter shape, so
+ * the tau no longer has to carry that job. Rise stays instant and up-rate stays
+ * 0, so no frame is served any later -- only the resting point between frames
+ * comes down. */
+#define RFX_EMA_GAMING_DIVISOR		50
 /* Step cap: 32 periods = 8ms, one frame gap. Bounds util-hook work without
  * truncating the decay over the gaps that matter. */
 #define RFX_EMA_MAX_STEPS		32
@@ -306,7 +326,9 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
  * span is what a duty cycle has to be measured against. Min spacing between
  * arms: expiry clears risk_high, so demand parked just above SATURATION re-arms
  * forever. 2x span caps the lifted duty cycle at 50%; measuring 3x the window
- * alone left it at 94%, i.e. permanently lifted. */
+ * alone left it at 94%, i.e. permanently lifted. Kept at 2x: the arm edge in
+ * rfx_frame_risk_check is what limits how often a window is legitimately armed,
+ * and this backstop only has to bound the pathological case. */
 #define RFX_FRAME_BOOST_SPAN_NS		(RFX_FRAME_BOOST_NS + \
 					 (u64)RFX_FRAME_BOOST_RAMP_DOWN_MS * \
 					 NSEC_PER_MSEC)
@@ -377,6 +399,17 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
  * arm it (that lift is the forbidden direction). Re-armable, unlike warmup. */
 #define RFX_G_RAMP_DELTA_PCT		15
 #define RFX_G_RAMP_HOLD_NS		(1 * NSEC_PER_MSEC)	/* 2 evals */
+/* Reference cadence for that delta -- the same correction the daily detector
+ * needed (RFX_D_RAMP_SAMPLE_NS), for the same reason. Measured against the
+ * PREVIOUS EVAL the test was "15 points inside 500us", which only an
+ * instantaneous jump can satisfy: a real scene ramp spread over 20ms moves ~0.4
+ * points per eval and was never detected, so the detector could not do the job
+ * it was added for. 8ms is one frame at 120fps, so the test reads "demand
+ * stepped 15 points within a frame" -- a scene change, not eval noise -- and the
+ * lift stays bounded because the reference refreshes on that cadence and on
+ * nothing else (snapping it down on a fall is what turned the daily detector
+ * into an unbounded peak-to-trough comparator). */
+#define RFX_G_RAMP_SAMPLE_NS		(8 * NSEC_PER_MSEC)
 
 /* Cluster cool-down band, hysteretic. Below ENTER the platform limiter is
  * taking capacity, so floors drop for relief; they return at EXIT. The 5-point
@@ -507,6 +540,7 @@ struct rfx_policy {
 	/* Demand rise detection (gaming, all clusters) */
 	u64 ramp_end_ns;
 	unsigned int prev_gaming_demand_pct;
+	u64 prev_gaming_demand_ns;	/* when that reference was sampled */
 
 	/* adaptive warmup — early-release tracking */
 	u64 warmup_low_demand_since_ns;	/* when demand first fell below release threshold */
@@ -867,15 +901,26 @@ static void rfx_frame_risk_check(struct rfx_policy *p, unsigned int demand_pct,
 	 * held the policy down (thermal HAL, perf daemon) -- i.e. while throttled,
 	 * which is when frames miss. "Is there clock left to win?" regardless of
 	 * how the clamp got there.
-	 */
-	if (p->next_freq >= boost_fl)
-		return;
-
-	/*
-	 * Time deadband on the arm edge (see RFX_RISK_ARM_DWELL_NS): saturation
-	 * must persist, so a sub-ms burst cannot arm a global floor lift.
+	 *
+	 * Tested at the ARM EDGE only, then latched by risk_since_ns. It reads
+	 * next_freq, the PREVIOUS commit, while up_rate_delay_ns is 0 in gaming --
+	 * so the first eval of a saturation already commits this cluster near
+	 * fceil, and every later eval of the same crossing sees next_freq above
+	 * boost_fl. Re-tested each eval it therefore cancelled every arm the dwell
+	 * below was still counting out: the two were mutually exclusive and the
+	 * detector could not fire at all. Edge-tested it asks the question that
+	 * was intended -- "did a cluster that was running LOW just saturate?" --
+	 * which is the cold-landing spill that actually misses frames, while a
+	 * cluster already pinned at fceil still never arms.
 	 */
 	if (!p->risk_since_ns) {
+		if (p->next_freq >= boost_fl)
+			return;
+		/*
+		 * Time deadband on the arm edge (see RFX_RISK_ARM_DWELL_NS):
+		 * saturation must persist, so a sub-ms burst cannot arm a global
+		 * floor lift.
+		 */
 		p->risk_since_ns = time;
 		return;
 	}
@@ -1116,11 +1161,31 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * than the EMA and rate gates track, and the opening seconds are
 		 * one long rise past warmup expiry. Same demand gate as every
 		 * other lift, so an idle-ish spill cluster cannot arm it.
+		 *
+		 * Reference refreshes on a fixed cadence and on nothing else --
+		 * against the previous eval (~500us apart under load) a 15-point
+		 * step needs an instantaneous jump, so a real ramp spread over
+		 * frames was never seen; snapping it down on a fall instead would
+		 * make it an unbounded peak-to-trough comparator (the daily
+		 * detector's old bug). See RFX_G_RAMP_SAMPLE_NS.
 		 */
 		if (demand_pct > p->prev_gaming_demand_pct + RFX_G_RAMP_DELTA_PCT &&
-		    demand_pct >= follow_pct)
+		    demand_pct >= follow_pct) {
 			p->ramp_end_ns = time + RFX_G_RAMP_HOLD_NS;
-		p->prev_gaming_demand_pct = demand_pct;
+			/*
+			 * Consume the step: snap the reference UP to what just
+			 * armed. Without this every eval inside the sample window
+			 * still sees the same step and re-pushes ramp_end_ns, so a
+			 * "2 eval" lift became a whole sample period. Snapping up
+			 * only -- never down onto a trough -- keeps it bounded.
+			 */
+			p->prev_gaming_demand_pct = demand_pct;
+			p->prev_gaming_demand_ns = time;
+		} else if (!p->prev_gaming_demand_ns ||
+			   time - p->prev_gaming_demand_ns >= RFX_G_RAMP_SAMPLE_NS) {
+			p->prev_gaming_demand_pct = demand_pct;
+			p->prev_gaming_demand_ns = time;
+		}
 
 		if (p->ramp_end_ns && time < p->ramp_end_ns && freq < boost_fl)
 			freq = boost_fl;
@@ -1876,6 +1941,7 @@ static void rfx_reset_all_policies(void)
 		p->big_cap_lifted = false;
 		p->ramp_end_ns = 0;
 		p->prev_gaming_demand_pct = 0;
+		p->prev_gaming_demand_ns = 0;
 		p->warmup_low_demand_since_ns = 0;
 		/* Daily latches: exit == fresh daily, no stale boost window. */
 		p->prev_upct = 0;
@@ -1939,6 +2005,7 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 			p->floor_low_since_ns = 0;
 			p->ramp_end_ns = 0;
 			p->prev_gaming_demand_pct = 0;
+			p->prev_gaming_demand_ns = 0;
 			p->warmup_low_demand_since_ns = 0;
 			raw_spin_unlock_irqrestore(&p->update_lock, pflags);
 		}
@@ -2291,6 +2358,7 @@ static int rfx_start(struct cpufreq_policy *policy)
 	p->gaming_warmup_end_ns = 0;
 	p->gaming_warmup_start_ns = 0;
 	p->risk_high = false;
+	p->risk_since_ns = 0;
 	p->little_cap_lifted = false;
 	p->big_cap_lifted = false;
 	p->thermal_cooling = false;
@@ -2298,6 +2366,7 @@ static int rfx_start(struct cpufreq_policy *policy)
 	p->floor_low_since_ns = 0;
 	p->ramp_end_ns = 0;
 	p->prev_gaming_demand_pct = 0;
+	p->prev_gaming_demand_ns = 0;
 	p->warmup_low_demand_since_ns = 0;
 
 	spin_lock_irqsave(&rfx_policy_list_lock, flags);
