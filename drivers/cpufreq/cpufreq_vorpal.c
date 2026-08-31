@@ -68,14 +68,18 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 #define RFX_LITTLE_UP_US		200
 #define RFX_LITTLE_DOWN_US		3000
 
-/* Big/Prime follow PELT at 1.5ms; down-rate 2.5ms reaches idle OPP faster
- * (daily EMA already smooths the descent). Gaming overrides down via
- * RFX_GAMING_DOWN_US. */
-#define RFX_BIG_RATE_US			1500
+/* Big/Prime at rest track PELT's ~32ms half-life, so 3ms sampling is as fine as
+ * the signal: every eval re-aggregates util across the policy from the scheduler
+ * hot path, and at 1.5ms that was ~670 aggregations/s/policy of pure governor
+ * overhead at rest. Interaction (RFX_UI_RATE_US), gaming (RFX_FAST_RATE_US) and
+ * the DL-bandwidth bypass all override it, so nothing latency-bound is sampled
+ * at this rate. Down-rate 2.5ms reaches the idle OPP faster than the eval gate
+ * alone; gaming overrides down via RFX_GAMING_DOWN_US. */
+#define RFX_BIG_RATE_US			3000
 #define RFX_BIG_UP_US			0
 #define RFX_BIG_DOWN_US			2500
 
-#define RFX_PRIME_RATE_US		1500
+#define RFX_PRIME_RATE_US		3000
 #define RFX_PRIME_UP_US			0
 #define RFX_PRIME_DOWN_US		2500
 
@@ -199,10 +203,10 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 
 /* ---- Util EMA: rise instant, decay time-normalised. Decay step is scaled by
  * elapsed wall-clock, so the time constant is independent of eval rate
- * (250us gaming .. 1500us daily Little). Period = interval to remove
+ * (500us gaming .. 3ms daily). Period = interval to remove
  * 1/RFX_EMA_GAMING_DIVISOR of the remaining error; longer gaps repeat the step,
  * bounded iterations. */
-#define RFX_EMA_DECAY_PERIOD_NS		250000	/* 250us: one gaming eval */
+#define RFX_EMA_DECAY_PERIOD_NS		250000	/* decay reference period */
 /* Gaming decay: 1/100 of the error per period is a ~25ms time constant, two to
  * three frame periods at 90-120fps, so filt_util rides the scene envelope. At
  * 1/8 (~1.9ms) it decayed 99% inside a single 8.3ms frame gap and tracked the
@@ -210,16 +214,6 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
  * under the floor gate and collapsed the render floor every frame. Holding the
  * clock between frames is this filter's job, not a static floor's. */
 #define RFX_EMA_GAMING_DIVISOR		100
-/* Spill-cluster decay (3-tier Prime only): 1/25 ~= 6ms. No inter-frame trough to
- * bridge there, so at 25ms the next spill burst re-armed the envelope before it
- * decayed and the cluster never left the top OPPs. 6ms still spans one burst. */
-#define RFX_EMA_GAMING_SPILL_DIVISOR	25
-
-/* Spill-cluster rise gate, bypassed while a frame boost is armed. Faster decay
- * alone only deepens the swing; 2ms (quarter frame) stops a 200us burst slamming
- * the top OPP every frame while a burst that keeps going still gets there. */
-#define RFX_G_SPILL_UP_US		2000
-
 /* Step cap: 32 periods = 8ms, one frame gap. Bounds util-hook work without
  * truncating the decay over the gaps that matter. */
 #define RFX_EMA_MAX_STEPS		32
@@ -330,11 +324,12 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
  * (~30-40%) and rarely hits 45%, so a higher gate would exclude the one cluster
  * always in the frame.
  *
- * A 3-tier Prime is excluded outright, at any demand: it only receives EAS spill,
- * its clock is measurably uncorrelated with FPS, and lifting it is what drops
- * fceil for the two clusters that do render. It still tracks its own demand up to
- * fceil, so a spill burst is served without any floor lift. */
+ * PRIME needs a higher gate, not an exclusion: on a 3-tier SoC it mostly receives
+ * EAS spill and sat across the 35 boundary all session, following every boost at
+ * top-of-die voltage with no frame in it. 60 (~48% real) means it must actually be
+ * carrying work -- which is the case a role flag cannot tell apart. */
 #define RFX_G_BOOST_FOLLOW_PCT		35
+#define RFX_G_PRIME_BOOST_FOLLOW_PCT	60
 
 /* Floor for a gated (idle) cluster. Not zero: from fmin a cluster must climb the
  * whole range when work lands, and the OPP transition + rate gate turn that into
@@ -672,11 +667,12 @@ static unsigned int rfx_update_frame_boost_ramp(struct rfx_policy *p, bool boost
 /*
  * Directional EMA: instant rise, time-normalised decay. The slow decay is the
  * anti-yoyo filter (stops the clock chasing micro-dips between frames) but must
- * still reach the bottom, so the step scales with elapsed time. @gaming_div is
- * the per-period error fraction (0 = daily, instant fall).
+ * still reach the bottom, so the step scales with elapsed time. Each 250us
+ * reference period removes 1/RFX_EMA_GAMING_DIVISOR of the error; longer gaps
+ * repeat the step, capped to bound update-hook work.
  */
 static unsigned long rfx_ema(unsigned long old, unsigned long val,
-			     u64 delta_ns, unsigned int gaming_div)
+			     u64 delta_ns, bool gaming)
 {
 	unsigned long diff;
 	unsigned int steps;
@@ -689,14 +685,14 @@ static unsigned long rfx_ema(unsigned long old, unsigned long val,
 	/* Daily: instant fall. Gentle decay rode the peak of bursty light loads
 	 * (scroll/video), pinning a high resting OPP through inter-frame dips;
 	 * the down-rate gate already bounds churn. Gaming keeps the decay below. */
-	if (!gaming_div)
+	if (!gaming)
 		return val;
 
 	/*
-	 * Gaming: 1/gaming_div of the remaining error per period. The decay must
-	 * span frames, not chase within one -- see the divisor. Step cap keeps the
-	 * time constant honest across a whole frame gap while still bounding work
-	 * in the util hook.
+	 * Gaming: 1/RFX_EMA_GAMING_DIVISOR of the remaining error per period.
+	 * The decay must span frames, not chase within one -- see the divisor.
+	 * Step cap keeps the time constant honest across a whole frame gap while
+	 * still bounding work in the util hook.
 	 */
 	steps = (unsigned int)min_t(u64, delta_ns / RFX_EMA_DECAY_PERIOD_NS,
 				    RFX_EMA_MAX_STEPS);
@@ -707,18 +703,10 @@ static unsigned long rfx_ema(unsigned long old, unsigned long val,
 		diff = old - val;
 		if (!diff)
 			break;
-		old -= max_t(unsigned long, diff / gaming_div, 1);
+		old -= max_t(unsigned long, diff / RFX_EMA_GAMING_DIVISOR, 1);
 	}
 
 	return old;
-}
-
-/* Spill clusters get the short envelope; render clusters the frame-spanning one. */
-static inline unsigned int rfx_ema_div(struct rfx_policy *p, bool gaming)
-{
-	if (!gaming)
-		return 0;
-	return p->is_prime ? RFX_EMA_GAMING_SPILL_DIVISOR : RFX_EMA_GAMING_DIVISOR;
 }
 
 /*
@@ -915,7 +903,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 	if (gaming) {
 		bool fboost_active, warmup_active;
 		unsigned int fboost_ramp_pct;
-		unsigned int fl, boost_fl, demand_pct;
+		unsigned int fl, boost_fl, demand_pct, follow_pct;
 		u64 down_step, slew_ns;
 
 		/*
@@ -974,12 +962,15 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (prime) {
 			fl = rfx_pct(fceil, RFX_G_PRIME_FLOOR_PCT);
 			boost_fl = rfx_pct(fceil, RFX_G_PRIME_FRAME_PCT);
+			follow_pct = RFX_G_PRIME_BOOST_FOLLOW_PCT;
 		} else if (!little) {		/* Big: demand-tracked, uncapped */
 			fl = rfx_pct(fceil, RFX_G_BIG_FLOOR_PCT);
 			boost_fl = rfx_pct(fceil, RFX_G_BIG_FRAME_PCT);
+			follow_pct = RFX_G_BOOST_FOLLOW_PCT;
 		} else {			/* Little: compositor / audio / input */
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
 			boost_fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_BOOST_PCT);
+			follow_pct = RFX_G_BOOST_FOLLOW_PCT;
 		}
 
 		/*
@@ -1064,8 +1055,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		if (p->floor_gated)
 			fl = rfx_pct(fceil, RFX_G_IDLE_FLOOR_PCT);
-		else if (fboost_ramp_pct > 0 && !prime &&
-			 demand_pct >= RFX_G_BOOST_FOLLOW_PCT)
+		else if (fboost_ramp_pct > 0 && demand_pct >= follow_pct)
 			fl = fl + (boost_fl - fl) * fboost_ramp_pct / 100;
 
 		if (freq < fl)
@@ -1341,21 +1331,16 @@ static inline void rfx_set_down_delay(struct rfx_policy *p, bool gaming)
 			(s64)p->tunables->down_rate_limit_us * NSEC_PER_USEC;
 }
 
-/* up-rate-limit: instant up while gaming, tunable otherwise. */
-static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming, u64 time)
+/* up-rate-limit: ZERO while gaming, every cluster, no exception -- a nonzero
+ * up-rate inside an 8.3ms frame budget is a frame-time tax, i.e. an FPS cap (a
+ * 2ms gate on the fastest tier measured out at ~100fps). Tunable otherwise. */
+static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming)
 {
-	if (!gaming) {
+	if (gaming)
+		p->up_rate_delay_ns = 0;
+	else
 		p->up_rate_delay_ns =
 			(s64)p->tunables->up_rate_limit_us * NSEC_PER_USEC;
-		return;
-	}
-
-	/* Spill cluster: gate the rise unless a frame boost is armed. Render
-	 * clusters keep instant rise -- they own the frame deadline. */
-	if (p->is_prime && !rfx_frame_boost_active(time))
-		p->up_rate_delay_ns = (s64)RFX_G_SPILL_UP_US * NSEC_PER_USEC;
-	else
-		p->up_rate_delay_ns = 0;
 }
 
 /*
@@ -1364,13 +1349,20 @@ static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming, u64 time)
  * sub-ms cadence (gaming, touch window, UI-burst tail) is known without util.
  * Everything else, including idle Little, uses its tunable, so sysfs
  * rate_limit_us still means what it says.
+ *
+ * The daily interaction rate is scoped to the clusters in the interaction path:
+ * a 3-tier Prime only carries daily spill, and its daily cap is flat at its base,
+ * so ~1.1kHz sampling there bought no scroll responsiveness -- only governor work
+ * in the scheduler hot path for the whole post-touch window. Keyed on the role,
+ * not the tier, so on a 2-tier part the top cluster still gets the fast rate.
  */
 static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming, u64 time)
 {
 	if (gaming)
 		p->freq_update_delay_ns = (s64)RFX_FAST_RATE_US * NSEC_PER_USEC;
-	else if (rfx_input_active(time) ||
-		 (p->ui_boost_end_ns && time < p->ui_boost_end_ns))
+	else if (!p->is_prime &&
+		 (rfx_input_active(time) ||
+		  (p->ui_boost_end_ns && time < p->ui_boost_end_ns)))
 		p->freq_update_delay_ns = (s64)RFX_UI_RATE_US * NSEC_PER_USEC;
 	else
 		p->freq_update_delay_ns =
@@ -1471,10 +1463,10 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	eff = max(rfx_c->util, boost);
 	ema_delta = p->last_ema_ns ? time - p->last_ema_ns : RFX_EMA_DECAY_PERIOD_NS;
 	p->last_ema_ns = time;
-	p->filt_util = rfx_ema(p->filt_util, eff, ema_delta, rfx_ema_div(p, gaming));
+	p->filt_util = rfx_ema(p->filt_util, eff, ema_delta, gaming);
 
 	rfx_set_down_delay(p, gaming);
-	rfx_pol_up_delay(p, gaming, time);
+	rfx_pol_up_delay(p, gaming);
 
 	next_f = rfx_target_freq(p, p->filt_util, max_cap, time, gaming);
 
@@ -1526,11 +1518,10 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 
 	ema_delta = p->last_ema_ns ? time - p->last_ema_ns : RFX_EMA_DECAY_PERIOD_NS;
 	p->last_ema_ns = time;
-	p->filt_util = rfx_ema(p->filt_util, max_util, ema_delta,
-			       rfx_ema_div(p, gaming));
+	p->filt_util = rfx_ema(p->filt_util, max_util, ema_delta, gaming);
 
 	rfx_set_down_delay(p, gaming);
-	rfx_pol_up_delay(p, gaming, time);
+	rfx_pol_up_delay(p, gaming);
 
 	return rfx_target_freq(p, p->filt_util, max_cap, time, gaming);
 }
