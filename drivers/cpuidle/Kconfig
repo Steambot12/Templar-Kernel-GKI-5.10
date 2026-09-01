@@ -44,6 +44,30 @@ config CPU_IDLE_GOV_HALTPOLL
 
 	  Some virtualized workloads benefit from using it.
 
+config CPU_IDLE_GOV_NAP
+	bool "Neural Adaptive Predictor (NAP) governor"
+	help
+	  This governor predicts, for each idle state, the probability that
+	  the upcoming idle will reach that state's target residency, using a
+	  small neural network (8->8 MLP trunk with an ordinal survival head)
+	  refined by online learning.  It then selects the deepest feasible
+	  state whose predicted survival meets a confidence level tunable via
+	  /sys/devices/system/cpu/nap/confidence.
+
+	  All arithmetic is fixed point, so no kernel FPU/SIMD is used and
+	  results are identical across CPUs.
+
+	  It does not out-rank menu or teo: select it explicitly with
+	  cpuidle.governor=nap on the kernel command line.
+
+config CPU_IDLE_GOV_NAP_SELFTEST
+	bool "Self-test the NAP governor's fixed-point math at boot"
+	depends on CPU_IDLE_GOV_NAP
+	help
+	  Verify the fixed-point log2, sigmoid and saturating-multiply
+	  kernels during boot and report to dmesg.  Useful when porting to a
+	  new architecture or toolchain.  Say N for production builds.
+
 config DT_IDLE_STATES
 	bool
 
