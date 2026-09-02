@@ -239,7 +239,7 @@ config CPU_FREQ_GOV_VORPAL
 	select CPU_FREQ_GOV_ATTR_SET
 	select IRQ_WORK
 	help
-	  Vorpal CPUFreq Governor v2.1 (GKI 5.10).
+	  Vorpal CPUFreq Governor v2.2 (GKI 5.10).
 	  Schedutil-derived governor with dual-profile gaming/daily modes,
 	  tri-cluster awareness, frame-risk detection and thermal integration.
 	  If in doubt, say Y.
