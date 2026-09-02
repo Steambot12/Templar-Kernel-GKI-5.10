@@ -281,9 +281,13 @@ extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 #define RFX_EMERGENCY_CAP_PCT		70
 
 /* ---- Frame pacing ---- */
-/* ~4 frames at 120fps: covers the at-risk frame plus settle. Up-rate 0 recovers
- * a cluster in <1 frame, so a longer hold only pins idle clusters as heat. */
-#define RFX_FRAME_BOOST_NS		(33 * NSEC_PER_MSEC)
+/* ~3 frames at 120fps: covers the at-risk frame plus settle. Up-rate 0 recovers
+ * a cluster in <1 frame, so a longer hold only pins idle clusters as heat.
+ * 33 -> 25: window + ramp decay held the lifted floor most of a session on an
+ * intermittently-loaded top tier -- the freq excursions, and the heat that
+ * drags fceil (so the saturated clusters) down with them. Shorten the window
+ * only; the ramp already measured worse at 40ms. */
+#define RFX_FRAME_BOOST_NS		(25 * NSEC_PER_MSEC)
 
 /* In-kernel frame-risk detection vs the effective ceiling: >90% servable = next
  * frame at risk; must fall under 75% before another window can arm. On the
@@ -1031,6 +1035,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * commits, then the first accepted commit dumps the whole step as a
 		 * frequency cliff (a jank frame at high FPS). Capped, one gate period
 		 * = one max step, smooth even when commits are sparse.
+		 * Order-independent: the floors below only ever raise freq, so the
+		 * result is max(demand, slew, floors) either way.
 		 */
 		slew_ns = time - max(p->last_upfreq_time, p->last_downfreq_time);
 		slew_ns = min_t(u64, slew_ns,
