@@ -637,6 +637,23 @@ static unsigned int rfx_thermal_headroom_pct(struct rfx_policy *p,
 }
 
 /*
+ * Elapsed ns between a stored @stamp and the current hook @time. Both are
+ * rq_clock (sched_clock-derived), but each CPU snapshots its own, so a stamp
+ * stored by a sibling in a shared policy can read microseconds AHEAD of ours.
+ * Unsigned subtraction turns that into ~584 years, and every window below tests
+ * `elapsed >= period`: a microsecond of skew fired one-shots early and collapsed
+ * linear ramps to their endpoint in a single step. Clamp the backward case to 0
+ * (hold, don't fire) -- direct `time < end_ns` tests need no such care, skew
+ * only moves the boundary by the skew itself.
+ */
+static inline u64 rfx_elapsed(u64 time, u64 stamp)
+{
+	s64 delta = (s64)(time - stamp);
+
+	return delta > 0 ? (u64)delta : 0;
+}
+
+/*
  * Timestamps compared against the util hook's @time must come from
  * sched_clock(), not ktime_get_ns(): @time is rq_clock (sched_clock-derived),
  * while CLOCK_MONOTONIC has a different epoch and NTP rate correction, so
@@ -649,7 +666,7 @@ static inline bool rfx_input_active(u64 time)
 {
 	u64 ts = (u64)atomic64_read(&rfx_input_ts_ns);
 
-	return ts && (time - ts) < RFX_INPUT_WINDOW_NS;
+	return ts && rfx_elapsed(time, ts) < RFX_INPUT_WINDOW_NS;
 }
 
 /* ===================================================================== */
@@ -677,7 +694,7 @@ static unsigned int rfx_update_frame_boost_ramp(struct rfx_policy *p, bool boost
 
 	if (!p->frame_boost_ramp_last_ns)
 		p->frame_boost_ramp_last_ns = time;
-	delta_ns = time - p->frame_boost_ramp_last_ns;
+	delta_ns = rfx_elapsed(time, p->frame_boost_ramp_last_ns);
 
 	step = (unsigned int)min_t(u64,
 		(delta_ns * 100) / ((u64)RFX_FRAME_BOOST_RAMP_DOWN_MS * NSEC_PER_MSEC), 100);
@@ -712,33 +729,55 @@ static unsigned int rfx_update_frame_boost_ramp(struct rfx_policy *p, bool boost
  * reference period removes 1/RFX_EMA_GAMING_DIVISOR of the error; longer gaps
  * repeat the step, capped to bound update-hook work.
  */
-static unsigned long rfx_ema(unsigned long old, unsigned long val,
-			     u64 delta_ns, bool gaming)
+static unsigned long rfx_ema(unsigned long old, unsigned long val, u64 time,
+			     u64 *last_ns, bool gaming)
 {
+	u64 delta_ns;
 	unsigned long diff;
 	unsigned int steps;
 
-	if (!old)
+	/*
+	 * Seed, instant rise, or daily instant fall -- nothing pending, so the
+	 * reference moves to now. (Daily gentle decay rode the peak of bursty
+	 * light loads, pinning a high resting OPP through inter-frame dips; the
+	 * down-rate gate already bounds churn.)
+	 */
+	if (!old || val >= old || !gaming) {
+		*last_ns = time;
 		return val;
-	if (val >= old)
-		return val;	/* instant rise */
+	}
 
-	/* Daily: instant fall. Gentle decay rode the peak of bursty light loads
-	 * (scroll/video), pinning a high resting OPP through inter-frame dips;
-	 * the down-rate gate already bounds churn. Gaming keeps the decay below. */
-	if (!gaming)
-		return val;
+	/* Unseeded reference: worth exactly one period, as an absolute stamp so
+	 * the advance below stays in the clock's domain. */
+	if (unlikely(!*last_ns))
+		*last_ns = time - RFX_EMA_DECAY_PERIOD_NS;
+	delta_ns = rfx_elapsed(time, *last_ns);
 
 	/*
 	 * Gaming: 1/RFX_EMA_GAMING_DIVISOR of the remaining error per period.
 	 * The decay must span frames, not chase within one -- see the divisor.
-	 * Step cap keeps the time constant honest across a whole frame gap while
-	 * still bounding work in the util hook.
+	 * Step cap bounds work in the util hook.
 	 */
 	steps = (unsigned int)min_t(u64, delta_ns / RFX_EMA_DECAY_PERIOD_NS,
 				    RFX_EMA_MAX_STEPS);
 	if (!steps)
-		return old;	/* sub-period: hold, don't decay */
+		return old;	/* sub-period: hold, keep the remainder */
+
+	/*
+	 * Advance by the periods actually consumed, not to @time. An eval landing
+	 * off-period (forced by limits_changed, the DL bypass, or a sparse hook on
+	 * an idle cluster) dropped its whole remainder here, so the effective time
+	 * constant stretched well past the documented one and every latch reading
+	 * demand -- floor gate, risk clear, warmup release -- released late.
+	 * When the step cap trimmed the work the excess is discarded by design
+	 * (that is what the cap is for), so the reference goes to @time there:
+	 * carrying a multi-second backlog forward would hold the cap engaged for
+	 * hundreds of evals after one idle gap.
+	 */
+	if (steps < RFX_EMA_MAX_STEPS)
+		*last_ns += (u64)steps * RFX_EMA_DECAY_PERIOD_NS;
+	else
+		*last_ns = time;
 
 	while (steps--) {
 		diff = old - val;
@@ -975,7 +1014,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			} else if (demand_pct < RFX_GAMING_WARMUP_RELEASE_PCT) {
 				if (!p->warmup_low_demand_since_ns)
 					p->warmup_low_demand_since_ns = time;
-				else if (time - p->warmup_low_demand_since_ns >=
+				else if (rfx_elapsed(time,
+						p->warmup_low_demand_since_ns) >=
 					 RFX_GAMING_WARMUP_RELEASE_NS)
 					p->gaming_warmup_end_ns = time;
 			} else {
@@ -1043,7 +1083,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * Order-independent: the floors below only ever raise freq, so the
 		 * result is max(demand, slew, floors) either way.
 		 */
-		slew_ns = time - max(p->last_upfreq_time, p->last_downfreq_time);
+		slew_ns = rfx_elapsed(time, max(p->last_upfreq_time,
+						p->last_downfreq_time));
 		slew_ns = min_t(u64, slew_ns,
 				(u64)RFX_GAMING_DOWN_US * NSEC_PER_USEC);
 		down_step = (u64)rfx_pct(fceil, RFX_GAMING_DOWN_PCT_PER_MS) *
@@ -1108,7 +1149,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			p->prev_gaming_demand_pct = demand_pct;
 			p->prev_gaming_demand_ns = time;
 		} else if (!p->prev_gaming_demand_ns ||
-			   time - p->prev_gaming_demand_ns >= RFX_G_RAMP_SAMPLE_NS) {
+			   rfx_elapsed(time, p->prev_gaming_demand_ns) >=
+			   RFX_G_RAMP_SAMPLE_NS) {
 			p->prev_gaming_demand_pct = demand_pct;
 			p->prev_gaming_demand_ns = time;
 		}
@@ -1166,7 +1208,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * is 12 points up from one frame ago -- real scroll, not noise.
 		 */
 		if (!p->prev_upct_ns ||
-		    time - p->prev_upct_ns >= RFX_D_RAMP_SAMPLE_NS) {
+		    rfx_elapsed(time, p->prev_upct_ns) >= RFX_D_RAMP_SAMPLE_NS) {
 			p->prev_upct = demand_pct;
 			p->prev_upct_ns = time;
 		}
@@ -1217,9 +1259,9 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			/*
 			 * Big/Prime daily cap, same model as Little: base cap
 			 * keeps background work off the top OPPs; touch/UI lifts
-			 * it for burst; a sustained-load latch lifts to 88% for
-			 * long foreground work; cold-start floor applied after
-			 * the cap (clamped to it).
+			 * it for burst; a sustained-load latch relaxes to the
+			 * per-role SUSTAINED_CAP for long foreground work;
+			 * cold-start floor applied after the cap (clamped to it).
 			 */
 			unsigned int cap, base_cap_pct, boost_cap_pct;
 
@@ -1492,7 +1534,6 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	unsigned long max_cap, boost, eff, irqflags;
 	unsigned int next_f;
 	bool do_deferred = false;
-	u64 ema_delta;
 
 	max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
 
@@ -1508,9 +1549,7 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	boost = rfx_iowait_apply(rfx_c, time, max_cap);
 	rfx_get_util(rfx_c, boost);
 	eff = max(rfx_c->util, boost);
-	ema_delta = p->last_ema_ns ? time - p->last_ema_ns : RFX_EMA_DECAY_PERIOD_NS;
-	p->last_ema_ns = time;
-	p->filt_util = rfx_ema(p->filt_util, eff, ema_delta, gaming);
+	p->filt_util = rfx_ema(p->filt_util, eff, time, &p->last_ema_ns, gaming);
 
 	rfx_set_down_delay(p, gaming);
 	rfx_pol_up_delay(p, gaming);
@@ -1543,7 +1582,6 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 	unsigned long max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
 	unsigned long max_util = 0;
 	unsigned int j;
-	u64 ema_delta;
 
 	/*
 	 * Aggregate max util across the policy's CPUs, then filter once. The EMA
@@ -1563,9 +1601,8 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 			max_util = je;
 	}
 
-	ema_delta = p->last_ema_ns ? time - p->last_ema_ns : RFX_EMA_DECAY_PERIOD_NS;
-	p->last_ema_ns = time;
-	p->filt_util = rfx_ema(p->filt_util, max_util, ema_delta, gaming);
+	p->filt_util = rfx_ema(p->filt_util, max_util, time, &p->last_ema_ns,
+			       gaming);
 
 	rfx_set_down_delay(p, gaming);
 	rfx_pol_up_delay(p, gaming);
