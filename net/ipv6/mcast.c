@@ -1422,7 +1422,7 @@ int igmp6_event_query(struct sk_buff *skb)
 			spin_unlock_bh(&ma->mca_lock);
 		}
 	} else {
-		for_each_mc_mclock(idev, ma) {
+		for (ma = idev->mc_list; ma; ma = ma->next) {
 			if (!ipv6_addr_equal(&group, &ma->mca_addr))
 				continue;
 			spin_lock_bh(&ma->mca_lock);
