@@ -607,17 +607,29 @@ static inline u32 calc_burst_penalty(u64 burst_time) {
 	return min(MAX_BURST_PENALTY, scaled_penalty);
 }
 
-static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
-			    unsigned long weight);
+/* set_load_weight() with the prio supplied instead of derived from static_prio. */
 static void reweight_task_by_prio(struct task_struct *p, int prio)
 {
-	struct sched_entity *se = &p->se;
-	struct cfs_rq *cfs_rq = cfs_rq_of(se);
-	struct load_weight *load = &se->load;
-	unsigned long weight = scale_load(sched_prio_to_weight[prio]);
+	struct load_weight lw;
 
-	reweight_entity(cfs_rq, se, weight);
-	load->inv_weight = sched_prio_to_wmult[prio];
+	/* SCHED_IDLE keeps WEIGHT_IDLEPRIO. */
+	if (task_has_idle_policy(p)) {
+		lw.weight = scale_load(WEIGHT_IDLEPRIO);
+		lw.inv_weight = WMULT_IDLEPRIO;
+	} else {
+		lw.weight = scale_load(sched_prio_to_weight[prio]);
+		lw.inv_weight = sched_prio_to_wmult[prio];
+	}
+
+	/*
+	 * TASK_NEW is not on a cfs_rq and its load_avg is not attached yet:
+	 * reweight_entity() would strip unattached load from the parent's
+	 * cfs_rq and leave this se at load_avg 0.
+	 */
+	if (unlikely(READ_ONCE(p->state) & TASK_NEW))
+		p->se.load = lw;
+	else
+		reweight_task(p, &lw);
 }
 
 static inline u8 effective_prio(struct task_struct *p) {
@@ -737,19 +749,28 @@ static void restart_burst(struct sched_entity *se) {
 	update_burst_score(se);
 }
 
+/*
+ * Re-derive every fair task's weight from its current effective prio.
+ * Follows normalize_rt_tasks(): per-thread (not just group leaders), and
+ * task_rq_lock() so the rq cannot change under us. update_rq_clock() is
+ * required because reweight_entity() -> update_curr() reads rq_clock_task().
+ */
 static void reset_task_weights_bore(void) {
-	struct task_struct *task;
-	struct rq *rq;
+	struct task_struct *g, *p;
 	struct rq_flags rf;
+	struct rq *rq;
 
-	write_lock_irq(&tasklist_lock);
-	for_each_process(task) {
-		rq = task_rq(task);
-		rq_lock_irqsave(rq, &rf);
-		reweight_task_by_prio(task, effective_prio(task));
-		rq_unlock_irqrestore(rq, &rf);
+	read_lock(&tasklist_lock);
+	for_each_process_thread(g, p) {
+		if (p->sched_class != &fair_sched_class)
+			continue;
+
+		rq = task_rq_lock(p, &rf);
+		update_rq_clock(rq);
+		reweight_task_by_prio(p, effective_prio(p));
+		task_rq_unlock(rq, p, &rf);
 	}
-	write_unlock_irq(&tasklist_lock);
+	read_unlock(&tasklist_lock);
 }
 
 int sched_bore_update_handler(struct ctl_table *table, int write,
