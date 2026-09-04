@@ -8156,9 +8156,11 @@ static void put_prev_task_fair(struct rq *rq, struct task_struct *prev)
 }
 
 /*
- * sched_yield() is very simple
+ * sched_yield()
  *
- * The magic of dealing with the ->skip buddy is in pick_next_entity.
+ * EEVDF: ->skip is dead (pick_eevdf() never reads it), so push the deadline
+ * out by one slice instead. That makes the yielder lose the next pick to
+ * anything runnable, which is what a yield is for.
  */
 static void yield_task_fair(struct rq *rq)
 {
@@ -8188,6 +8190,9 @@ static void yield_task_fair(struct rq *rq)
 
 	clear_buddies(cfs_rq, se);
 #endif // CONFIG_SCHED_BORE
+
+	/* Yield the remainder of this slice: defer our deadline by one. */
+	se->deadline += calc_delta_fair(se->slice, se);
 	/*
 	 * Tell update_rq_clock() that we've just updated,
 	 * so we don't do microscopic update in schedule()
