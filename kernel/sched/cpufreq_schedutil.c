@@ -971,25 +971,48 @@ cpufreq_governor_init(schedutil_gov);
  *   IRQ     - scale_irq_capacity() corrects util for time stolen by
  *             interrupts, which on a phone under touch is not negligible.
  *
- * schedutil_cpu_util(FREQUENCY_UTIL) is the same aggregation every other
- * governor in the tree uses, including its saturation shortcut. The 25%
- * margin stays here because Vorpal maps util->freq itself (fmax * util /
- * cap) rather than through map_util_freq(), which is where that margin
- * normally lives.
+ * This is schedutil_cpu_util(FREQUENCY_UTIL) inlined, with one difference:
+ * the RT-runnable shortcut is dropped. See the comment in the body. Every
+ * other term, and the order they are applied in, matches.
+ *
+ * The 25% margin stays here because Vorpal maps util->freq itself (fmax *
+ * util / cap) rather than through map_util_freq(), which is where that
+ * margin normally lives.
  */
 void rfx_get_util_gki510(int cpu, unsigned long boost,
 			 unsigned long *out_util, unsigned long *out_bw_min)
 {
 	struct rq *rq = cpu_rq(cpu);
-	unsigned long util, max_cap;
+	unsigned long util, dl_util, irq, max_cap;
 
 	max_cap = (unsigned long)arch_scale_cpu_capacity(cpu);
 
 	*out_bw_min = cpu_bw_dl(rq);
 
-	util = schedutil_cpu_util(cpu, cpu_util_cfs(rq), max_cap,
-				  FREQUENCY_UTIL, NULL);
+	/* schedutil_cpu_util(FREQUENCY_UTIL) minus its first early return, which
+	 * hands back max whenever any RT task is runnable and uclamp is unused.
+	 * The render path is SCHED_FIFO, so at 120fps that fires on nearly every
+	 * eval and the caller receives a saturated value it cannot shape - a flat
+	 * trace at fmax. RT time is already summed below, so the shortcut only
+	 * costs us the demand signal. Whether it fires depends on a userspace-set
+	 * static key, which is why one platform swung and the other did not. */
+	irq = cpu_util_irq(rq);
+	if (unlikely(irq >= max_cap)) {
+		util = max_cap;
+		goto boosted;
+	}
+	util = uclamp_rq_util_with(rq, cpu_util_cfs(rq) + cpu_util_rt(rq), NULL);
+	dl_util = cpu_util_dl(rq);
+	/* Real saturation: no idle time left, fmax is correct here. */
+	if (util + dl_util >= max_cap) {
+		util = max_cap;
+		goto boosted;
+	}
+	util = scale_irq_capacity(util, irq, max_cap);
+	util += irq + cpu_bw_dl(rq);
+	util = min(util, max_cap);
 
+boosted:
 	if (boost > util)
 		util = boost;
 
@@ -1008,3 +1031,28 @@ bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bw_min)
 	return cpu_bw_dl(cpu_rq(cpu)) > bw_min;
 }
 EXPORT_SYMBOL_GPL(rfx_dl_bw_exceeded_gki510);
+
+/**
+ * rfx_setattr_sugov_gki510 - put Vorpal's DVFS worker in the SUGOV DL class.
+ *
+ * SCHED_FLAG_SUGOV is private to kernel/sched, so the governor cannot build the
+ * sched_attr itself. Same fake bandwidth as sugov_kthread_create(): admission
+ * control and the DL timers all skip a special entity, so the numbers are only
+ * there to satisfy __checkparam_dl.
+ */
+int rfx_setattr_sugov_gki510(struct task_struct *t)
+{
+	struct sched_attr attr = {
+		.size		= sizeof(struct sched_attr),
+		.sched_policy	= SCHED_DEADLINE,
+		.sched_flags	= SCHED_FLAG_SUGOV,
+		.sched_nice	= 0,
+		.sched_priority	= 0,
+		.sched_runtime	=  1000000,
+		.sched_deadline = 10000000,
+		.sched_period	= 10000000,
+	};
+
+	return sched_setattr_nocheck(t, &attr);
+}
+EXPORT_SYMBOL_GPL(rfx_setattr_sugov_gki510);
