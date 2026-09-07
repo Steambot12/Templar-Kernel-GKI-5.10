@@ -81,9 +81,12 @@ SCHED_FEAT(TTWU_QUEUE, true)
 
 /*
  * When doing wakeups, attempt to limit superfluous scans of the LLC domain.
+ * SIS_UTIL bounds the scan by per-LLC utilization (updated during periodic
+ * load balance) and supersedes the avg_idle heuristic of SIS_PROP.
  */
 SCHED_FEAT(SIS_AVG_CPU, false)
-SCHED_FEAT(SIS_PROP, true)
+SCHED_FEAT(SIS_PROP, false)
+SCHED_FEAT(SIS_UTIL, true)
 
 /*
  * Issue a WARN when we do multiple update_rq_clock() calls
