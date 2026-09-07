@@ -164,9 +164,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Gaming warmup lifts the render floors for spawn + asset load. Extends while
  * demand stays >EXTEND_PCT up to MAX_NS, releases early below RELEASE_PCT.
  * The window is anchored to the sysfs write, so MAX_NS stays short: a longer
- * one pins every cluster through the hottest phase. */
-#define RFX_GAMING_WARMUP_NS		(300 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_MAX_NS	(400 * NSEC_PER_MSEC)
+ * one pins every cluster through the hottest phase. Kept tight: on platforms
+ * whose demand reads inflated (persistent uclamp floor + RT render time) the
+ * EXTEND threshold trips easily and the 80% window rides the whole spawn
+ * fight, adding heat right where the limiter is already active. */
+#define RFX_GAMING_WARMUP_NS		(200 * NSEC_PER_MSEC)
+#define RFX_GAMING_WARMUP_MAX_NS	(300 * NSEC_PER_MSEC)
 #define RFX_GAMING_WARMUP_EXTEND_PCT	90
 #define RFX_GAMING_WARMUP_RELEASE_PCT	40
 #define RFX_GAMING_WARMUP_RELEASE_NS	(100 * NSEC_PER_MSEC)
