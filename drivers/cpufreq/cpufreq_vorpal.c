@@ -102,7 +102,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* ---- Daily shaping, percent of the effective ceiling. Caps only: the util
  * EMA plus PELT already carry any rise a window or burst floor covered. ---- */
 /* Little daily cap: just above the V/f knee. */
-#define RFX_D_LITTLE_CAP_PCT		65
+#define RFX_D_LITTLE_CAP_PCT		60
 /* Sustained caps: long foreground/background work at lower voltage. */
 #define RFX_D_LITTLE_SUSTAINED_CAP_PCT	80
 /* Sustained latches, skewed 1.25x (real demand on at ~58%, off at ~44%). */
