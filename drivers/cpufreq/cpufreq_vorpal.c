@@ -108,7 +108,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Sustained latches, skewed 1.25x (real demand on at ~58%, off at ~44%). */
 #define RFX_D_LITTLE_LIFT_PCT		72
 #define RFX_D_LITTLE_DROP_PCT		55
-/* Big/Prime share one latch; a sustained cap may never exceed 100. */
+/* Big/Prime share one latch; a sustained cap may never exceed 100. The lift
+ * threshold reads the same 1.25x-skewed demand as the gaming gates, so a
+ * platform whose foreground carries a persistent uclamp.min floor must clear
+ * a higher bar before the sustained cap engages. */
 #define RFX_D_BIG_CAP_PCT		70
 #define RFX_D_PRIME_CAP_PCT		68
 #define RFX_D_BIG_LIFT_PCT		80
@@ -181,9 +184,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_IDLE_FLOOR_PCT		38
 
 /* Cluster cool-down band, hysteretic. Below ENTER the platform limiter is
- * taking capacity, so floors drop for relief and return at EXIT. */
+ * taking capacity, so floors drop for relief and return at EXIT. A limiter
+ * that reports continuously (vs step-wise) parks fceil between the two
+ * thresholds; EXIT clears it well above ENTER so the band does not flap. */
 #define RFX_G_COOL_ENTER_PCT		80
-#define RFX_G_COOL_EXIT_PCT		85
+#define RFX_G_COOL_EXIT_PCT		88
 
 /* Relief floor once the platform is taking capacity. */
 #define RFX_G_COOL_STEADY_FLOOR_PCT	52
