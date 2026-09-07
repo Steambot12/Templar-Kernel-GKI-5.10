@@ -114,7 +114,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * a higher bar before the sustained cap engages. */
 #define RFX_D_BIG_CAP_PCT		70
 #define RFX_D_PRIME_CAP_PCT		68
-#define RFX_D_BIG_LIFT_PCT		80
+#define RFX_D_BIG_LIFT_PCT		85
 #define RFX_D_BIG_DROP_PCT		68
 #define RFX_D_BIG_SUSTAINED_CAP_PCT	80
 #define RFX_D_PRIME_SUSTAINED_CAP_PCT	80
