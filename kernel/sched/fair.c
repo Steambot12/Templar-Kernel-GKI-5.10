@@ -7046,6 +7046,19 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 			nr = 4;
 	}
 
+	if (sched_feat(SIS_UTIL)) {
+		struct sched_domain_shared *sd_share;
+
+		sd_share = rcu_dereference(per_cpu(sd_llc_shared, target));
+		if (sd_share) {
+			/* because !--nr is the condition to stop scan */
+			nr = READ_ONCE(sd_share->nr_idle_scan) + 1;
+			/* overloaded LLC is unlikely to have idle cpu */
+			if (nr == 1)
+				return -1;
+		}
+	}
+
 	time = cpu_clock(this);
 
 	cpumask_and(cpus, sched_domain_span(sd), p->cpus_ptr);
@@ -9913,6 +9926,51 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
 	return idlest;
 }
 
+/*
+ * Update the nr_idle_scan hint for the LLC domain: the number of CPUs
+ * select_idle_cpu() may scan decays quadratically with the domain's
+ * accumulated utilization and reaches zero at imbalance_pct (overload).
+ * Only done during periodic load balance (NEWLY_IDLE fires too often
+ * and the shared-cache-line write is not free).
+ */
+static void update_idle_cpu_scan(struct lb_env *env,
+				 unsigned long sum_util)
+{
+	struct sched_domain_shared *sd_share;
+	int llc_weight, pct;
+	u64 x, y, tmp;
+
+	if (!sched_feat(SIS_UTIL) || env->idle == CPU_NEWLY_IDLE)
+		return;
+
+	llc_weight = per_cpu(sd_llc_size, env->dst_cpu);
+	if (env->sd->span_weight != llc_weight)
+		return;
+
+	sd_share = rcu_dereference(per_cpu(sd_llc_shared, env->dst_cpu));
+	if (!sd_share)
+		return;
+
+	/*
+	 * let y = SCHED_CAPACITY_SCALE - p * x^2, where x is sum_util
+	 * scaled by llc_weight and p follows from imbalance_pct so that
+	 * y hits 0 exactly at domain overload.
+	 */
+	x = sum_util;
+	do_div(x, llc_weight);
+
+	pct = env->sd->imbalance_pct;
+	tmp = x * x * pct * pct;
+	do_div(tmp, 10000 * SCHED_CAPACITY_SCALE);
+	tmp = min_t(long, tmp, SCHED_CAPACITY_SCALE);
+	y = SCHED_CAPACITY_SCALE - tmp;
+
+	y *= llc_weight;
+	do_div(y, SCHED_CAPACITY_SCALE);
+	if ((int)y != sd_share->nr_idle_scan)
+		WRITE_ONCE(sd_share->nr_idle_scan, (int)y);
+}
+
 /**
  * update_sd_lb_stats - Update sched_domain's statistics for load balancing.
  * @env: The load balancing environment.
@@ -9925,6 +9983,7 @@ static inline void update_sd_lb_stats(struct lb_env *env, struct sd_lb_stats *sd
 	struct sched_group *sg = env->sd->groups;
 	struct sg_lb_stats *local = &sds->local_stat;
 	struct sg_lb_stats tmp_sgs;
+	unsigned long sum_util = 0;
 	int sg_status = 0;
 
 	do {
@@ -9957,6 +10016,7 @@ next_group:
 		sds->total_load += sgs->group_load;
 		sds->total_capacity += sgs->group_capacity;
 
+		sum_util += sgs->group_util;
 		sg = sg->next;
 	} while (sg != env->sd->groups);
 
@@ -9982,6 +10042,8 @@ next_group:
 		WRITE_ONCE(rd->overutilized, SG_OVERUTILIZED);
 		trace_sched_overutilized_tp(rd, SG_OVERUTILIZED);
 	}
+
+	update_idle_cpu_scan(env, sum_util);
 }
 
 static inline long adjust_numa_imbalance(int imbalance, int nr_running)
