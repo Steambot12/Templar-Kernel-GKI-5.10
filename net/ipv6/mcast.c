@@ -1333,10 +1333,10 @@ static int mld_process_v2(struct inet6_dev *idev, struct mld2_query *mld,
 int igmp6_event_query(struct sk_buff *skb)
 {
 	struct mld2_query *mlh2 = NULL;
+	struct ifmcaddr6 *ma;
 	unsigned long max_delay;
 	struct inet6_dev *idev;
 	struct in6_addr group;
-	struct ifmcaddr6 *ma;
 	struct mld_msg *mld;
 	int group_type;
 	int mark = 0;
@@ -1422,7 +1422,7 @@ int igmp6_event_query(struct sk_buff *skb)
 			spin_unlock_bh(&ma->mca_lock);
 		}
 	} else {
-		for_each_mc_mclock(idev, ma) {
+		for (ma = idev->mc_list; ma; ma = ma->next) {
 			if (!ipv6_addr_equal(&group, &ma->mca_addr))
 				continue;
 			spin_lock_bh(&ma->mca_lock);
