@@ -84,7 +84,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  *
  * Do not lower a *_FLOOR_PCT on a tier that may render, and do not raise one
  * either: the extra heat lowers fceil and the render cluster leaves fmax. */
-#define RFX_G_PRIME_FLOOR_PCT		64
+/* On both target devices the top tier is the SPILL tier (render = middle
+ * tier), so its floor is pure resting power — the heat that pushes the
+ * die over the limiter's step threshold and starts the spike cycle:
+ * burst chase -> power spike -> limiter step -> cpu sag -> gpu sag. */
+#define RFX_G_PRIME_FLOOR_PCT		58
 #define RFX_G_BIG_FLOOR_PCT		58
 /* Warmup floor, both render tiers: spawn/asset load only, never steady state. */
 #define RFX_G_WARMUP_FLOOR_PCT		80
@@ -102,16 +106,19 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* ---- Daily shaping, percent of the effective ceiling. Caps only: the util
  * EMA plus PELT already carry any rise a window or burst floor covered. ---- */
 /* Little daily cap: just above the V/f knee. */
-#define RFX_D_LITTLE_CAP_PCT		65
+#define RFX_D_LITTLE_CAP_PCT		60
 /* Sustained caps: long foreground/background work at lower voltage. */
 #define RFX_D_LITTLE_SUSTAINED_CAP_PCT	80
 /* Sustained latches, skewed 1.25x (real demand on at ~58%, off at ~44%). */
 #define RFX_D_LITTLE_LIFT_PCT		72
 #define RFX_D_LITTLE_DROP_PCT		55
-/* Big/Prime share one latch; a sustained cap may never exceed 100. */
+/* Big/Prime share one latch; a sustained cap may never exceed 100. The lift
+ * threshold reads the same 1.25x-skewed demand as the gaming gates, so a
+ * platform whose foreground carries a persistent uclamp.min floor must clear
+ * a higher bar before the sustained cap engages. */
 #define RFX_D_BIG_CAP_PCT		70
 #define RFX_D_PRIME_CAP_PCT		68
-#define RFX_D_BIG_LIFT_PCT		80
+#define RFX_D_BIG_LIFT_PCT		85
 #define RFX_D_BIG_DROP_PCT		68
 #define RFX_D_BIG_SUSTAINED_CAP_PCT	80
 #define RFX_D_PRIME_SUSTAINED_CAP_PCT	80
@@ -161,9 +168,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Gaming warmup lifts the render floors for spawn + asset load. Extends while
  * demand stays >EXTEND_PCT up to MAX_NS, releases early below RELEASE_PCT.
  * The window is anchored to the sysfs write, so MAX_NS stays short: a longer
- * one pins every cluster through the hottest phase. */
-#define RFX_GAMING_WARMUP_NS		(300 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_MAX_NS	(400 * NSEC_PER_MSEC)
+ * one pins every cluster through the hottest phase. Kept tight: on platforms
+ * whose demand reads inflated (persistent uclamp floor + RT render time) the
+ * EXTEND threshold trips easily and the 80% window rides the whole spawn
+ * fight, adding heat right where the limiter is already active. */
+#define RFX_GAMING_WARMUP_NS		(200 * NSEC_PER_MSEC)
+#define RFX_GAMING_WARMUP_MAX_NS	(300 * NSEC_PER_MSEC)
 #define RFX_GAMING_WARMUP_EXTEND_PCT	90
 #define RFX_GAMING_WARMUP_RELEASE_PCT	40
 #define RFX_GAMING_WARMUP_RELEASE_NS	(100 * NSEC_PER_MSEC)
@@ -181,9 +191,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_IDLE_FLOOR_PCT		38
 
 /* Cluster cool-down band, hysteretic. Below ENTER the platform limiter is
- * taking capacity, so floors drop for relief and return at EXIT. */
+ * taking capacity, so floors drop for relief and return at EXIT. A limiter
+ * that reports continuously (vs step-wise) parks fceil between the two
+ * thresholds; EXIT clears it well above ENTER so the band does not flap. */
 #define RFX_G_COOL_ENTER_PCT		80
-#define RFX_G_COOL_EXIT_PCT		85
+#define RFX_G_COOL_EXIT_PCT		88
 
 /* Relief floor once the platform is taking capacity. */
 #define RFX_G_COOL_STEADY_FLOOR_PCT	52
