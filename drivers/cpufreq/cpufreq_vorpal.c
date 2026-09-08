@@ -136,14 +136,9 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_HEADROOM_DAILY_MID		2
 /* Gaming headroom, phased in linearly from the GATE: below it the resting OPP
  * is untouched, above it a frame is near budget and this closes the gap. Flat
- * at every level was resting-power cost; zero at every level cost the frame.
- * The gate sits low and the ramp is deep: frames are lost in the mid band,
- * in the ramp between a lull's decayed demand and the next spike, where the
- * clock arrives a frame late. Engaging earlier (65) and steeper (12) buys
- * that frame at a measured ~0.3-0.5W; the render cluster at saturation
- * reaches fceil regardless, so the cost is confined to the transition. */
-#define RFX_HEADROOM_GAMING		12
-#define RFX_HEADROOM_GAMING_GATE	65
+ * at every level was resting-power cost; zero at every level cost the frame. */
+#define RFX_HEADROOM_GAMING		8
+#define RFX_HEADROOM_GAMING_GATE	75
 
 /* Util percent at which we stop interpolating and request fmax outright.
  * Gaming 100 disables the shortcut: any lower value makes the render tier
