@@ -33,7 +33,7 @@ struct audit_chunk {
 	struct node {
 		struct list_head list;
 		struct audit_tree *owner;
-		unsigned int index;	/* index; upper bit indicates 'will prune' */
+		unsigned index;		/* index; upper bit indicates 'will prune' */
 	} owners[];
 };
 
