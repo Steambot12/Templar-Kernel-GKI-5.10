@@ -84,7 +84,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  *
  * Do not lower a *_FLOOR_PCT on a tier that may render, and do not raise one
  * either: the extra heat lowers fceil and the render cluster leaves fmax. */
-#define RFX_G_PRIME_FLOOR_PCT		64
+/* On both target devices the top tier is the SPILL tier (render = middle
+ * tier), so its floor is pure resting power — the heat that pushes the
+ * die over the limiter's step threshold and starts the spike cycle:
+ * burst chase -> power spike -> limiter step -> cpu sag -> gpu sag. */
+#define RFX_G_PRIME_FLOOR_PCT		58
 #define RFX_G_BIG_FLOOR_PCT		58
 /* Warmup floor, both render tiers: spawn/asset load only, never steady state. */
 #define RFX_G_WARMUP_FLOOR_PCT		80
