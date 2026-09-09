@@ -1010,7 +1010,6 @@ static void __nomount_inject_child_locked(struct nomount_dir_node *dir_node, str
 
     rule->parent_dir = dir_node;
     new_child->fake_ino = rule->v_hash;
-    new_child->name_hash = target_hash;
     new_child->d_type = (rule->flags & NM_FLAG_IS_DIR) ? DT_DIR : DT_REG;
     new_child->flags = rule->flags;
     new_child->name_len = name_len;
