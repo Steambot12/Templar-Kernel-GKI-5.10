@@ -545,7 +545,11 @@ static void ssg_limit_depth(unsigned int op, struct blk_mq_alloc_data *data)
 	shallow_depth = min_not_zero(shallow_depth,
 			ssg_async_write_shallow_depth(op, data));
 
-	if (atomic_read(&ssg->allocated_rqs) > ssg->congestion_threshold_rqs)
+	/* Reads are the latency path (game/foreground asset IO): the tgid gate
+	 * throttles the single heaviest allocator, which under load is the app
+	 * itself. Keep the cap for writes only. */
+	if (atomic_read(&ssg->allocated_rqs) > ssg->congestion_threshold_rqs &&
+	    (op & REQ_OP_MASK) != REQ_OP_READ)
 		shallow_depth = min_not_zero(shallow_depth,
 				ssg_tgroup_shallow_depth(data));
 
