@@ -41,11 +41,11 @@ extern void blk_sec_stats_account_io_done(
 
 #define MAX_ASYNC_WRITE_RQS	10
 
-static const int read_expire = 600;		/* max time before a read is submitted. */
+static const int read_expire = 200;		/* max time before a read is submitted. */
 static const int write_expire = 20 * HZ;		/* ditto for writes, these limits are SOFT! */
 static const int max_write_starvation = 2;	/* reads may run 2 ahead of a queued write */
 static const int congestion_threshold = 50;	/* percentage of congestion threshold */
-static const int max_tgroup_io_ratio = 15;	/* maximum service ratio for each thread group */
+static const int max_tgroup_io_ratio = 40;	/* one tgid may hold up to this % of the queue */
 static const int max_async_write_ratio = 8;	/* maximum service ratio for async write */
 
 struct ssg_request_info {
@@ -545,11 +545,10 @@ static void ssg_limit_depth(unsigned int op, struct blk_mq_alloc_data *data)
 	shallow_depth = min_not_zero(shallow_depth,
 			ssg_async_write_shallow_depth(op, data));
 
-	/* Reads are the latency path (game/foreground asset IO): the tgid gate
-	 * throttles the single heaviest allocator, which under load is the app
-	 * itself. Keep the cap for writes only. */
-	if (atomic_read(&ssg->allocated_rqs) > ssg->congestion_threshold_rqs &&
-	    (op & REQ_OP_MASK) != REQ_OP_READ)
+	/* Bound the dominant tgid (the game, read-heavy) once the queue is
+	 * congested: leaving the rest of the depth allocatable is what keeps
+	 * f2fs flush/checkpoint writes from stalling behind a read torrent. */
+	if (atomic_read(&ssg->allocated_rqs) > ssg->congestion_threshold_rqs)
 		shallow_depth = min_not_zero(shallow_depth,
 				ssg_tgroup_shallow_depth(data));
 
