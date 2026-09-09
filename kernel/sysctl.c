@@ -139,7 +139,6 @@ extern u8   sched_bore;
 extern u8   sched_burst_exclude_kthreads;
 extern u8   sched_burst_smoothness_long;
 extern u8   sched_burst_smoothness_short;
-extern u8   sched_burst_fork_atavistic;
 extern u8   sched_burst_penalty_offset;
 extern uint sched_burst_penalty_scale;
 extern uint sched_burst_cache_lifetime;
@@ -1795,18 +1794,6 @@ static struct ctl_table kern_table[] = {
 		.proc_handler = proc_dou8vec_minmax,
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= SYSCTL_ONE,
-	},
-	{
-		.procname	= "sched_burst_fork_atavistic",
-		.data		= &sched_burst_fork_atavistic,
-		.maxlen		= sizeof(u8),
-		.mode		= 0644,
-		.proc_handler = proc_dou8vec_minmax,
-		.extra1		= SYSCTL_ZERO,
-		/* Pinned off: the topological walk recurses over unbounded
-		 * children lists under read_lock(&tasklist_lock). See the
-		 * BORE knob comment in kernel/sched/fair.c. */
-		.extra2		= SYSCTL_ZERO,
 	},
 	{
 		.procname	= "sched_burst_penalty_offset",

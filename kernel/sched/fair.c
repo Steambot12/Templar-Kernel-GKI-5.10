@@ -144,18 +144,14 @@ const_debug unsigned int sysctl_sched_migration_cost	= 250000UL;
  *
  * smoothness 1/0: penalties grow by halves (rounded up) and collapse instantly
  * at sleep, so one heavy burst costs weight for one cycle, not several.
- * fork_atavistic MUST stay 0 on this tree: upstream 6.6.3 bounds its topological
- * inheritance with RCU sample/scan limits, but the 5.10 in-tree walk recurses
- * over unbounded children lists under read_lock(&tasklist_lock) in the fork
- * path -- on a long session the walk lengthens until tasklist_lock contention
- * freezes the system (forced reboot). Direct inheritance is bounded (one
- * children-list pass) and was stable across all long-session testing.
+ * Fork inheritance is bounded direct only (one children-list pass under
+ * read_lock): the unbounded upstream 6.6.3 topological walk is not ported
+ * (tasklist_lock freeze hazard).
  */
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
 u8   __read_mostly sched_burst_smoothness_long  = 1;
 u8   __read_mostly sched_burst_smoothness_short = 0;
-u8   __read_mostly sched_burst_fork_atavistic   = 0;
 u8   __read_mostly sched_burst_penalty_offset   = 27;
 uint __read_mostly sched_burst_penalty_scale    = 1024;
 uint __read_mostly sched_burst_cache_lifetime   = 75000000;
