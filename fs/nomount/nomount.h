@@ -46,8 +46,6 @@ DEFINE_STATIC_SRCU(nomount_srcu);
 struct nm_iop {
     struct inode_operations fake_iop; /* MUST be exactly at offset 0 */
     const struct inode_operations *orig_iop;
-    struct dentry_operations fake_dop;
-    const struct dentry_operations *orig_dop;
     struct nomount_dir_node *dir_node;
     struct rcu_head rcu;
 };
@@ -78,9 +76,7 @@ struct nm_inode_info {
 
 struct nomount_child_node {
     struct rcu_head rcu;
-    u32 name_hash;
     u32 fake_ino;
-    int id;
     u8 d_type;
     u8 flags;
     u16 name_len;
