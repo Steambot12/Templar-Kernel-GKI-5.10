@@ -88,7 +88,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * tier), so its floor is pure resting power — the heat that pushes the
  * die over the limiter's step threshold and starts the spike cycle:
  * burst chase -> power spike -> limiter step -> cpu sag -> gpu sag. */
-#define RFX_G_PRIME_FLOOR_PCT		58
+#define RFX_G_PRIME_FLOOR_PCT		52
 #define RFX_G_BIG_FLOOR_PCT		58
 /* Warmup floor, both render tiers: spawn/asset load only, never steady state. */
 #define RFX_G_WARMUP_FLOOR_PCT		80
@@ -113,15 +113,19 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_LITTLE_LIFT_PCT		72
 #define RFX_D_LITTLE_DROP_PCT		55
 /* Big/Prime share one latch; a sustained cap may never exceed 100. The lift
- * threshold reads the same 1.25x-skewed demand as the gaming gates, so a
- * platform whose foreground carries a persistent uclamp.min floor must clear
- * a higher bar before the sustained cap engages. */
+ * threshold reads the same 1.25x-skewed demand as the gaming gates. */
 #define RFX_D_BIG_CAP_PCT		70
 #define RFX_D_PRIME_CAP_PCT		68
-#define RFX_D_BIG_LIFT_PCT		85
-#define RFX_D_BIG_DROP_PCT		68
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	80
-#define RFX_D_PRIME_SUSTAINED_CAP_PCT	80
+/* The 70/68 base cap clips once demand clears ~70% (real util ~55%), but the
+ * lift used to wait for demand 85 (~68% real): transition bursts riding 70-85
+ * stayed pinned below their need and dropped a frame. Trip the sustained
+ * ceiling at the clip edge; release back into idle below it. A saturated
+ * launch burst then rides 90% of fceil instead of 80%; the latch is value-only,
+ * so idle and light load never leave the 70/68 base cap. */
+#define RFX_D_BIG_LIFT_PCT		78
+#define RFX_D_BIG_DROP_PCT		64
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	90
+#define RFX_D_PRIME_SUSTAINED_CAP_PCT	90
 
 /* ---- Util EMA: rise instant, decay time-normalised, so the time constant is
  * independent of eval rate. Period = interval removing 1/DIVISOR of the
@@ -135,9 +139,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_EMA_MAX_STEPS		32	/* cap: 8ms, one frame gap */
 
 /* ---- Headroom above demand, percent. Stacks on the 25% DVFS margin already
- * applied by rfx_get_util_gki510, so this only raises the resting OPP. ---- */
-#define RFX_HEADROOM_DAILY_HIGH		4
-#define RFX_HEADROOM_DAILY_MID		2
+ * applied by rfx_get_util_gki510, so this only raises the resting OPP. Trimmed
+ * to 2/1: the util getter's margin already covers OPP granularity, so the old
+ * 4/2 only added a resting bin for no measured latency gain. Rise is unaffected
+ * (up-rate 0 on Big/Prime), so this is pure daily resting-voltage saving. ---- */
+#define RFX_HEADROOM_DAILY_HIGH		2
+#define RFX_HEADROOM_DAILY_MID		1
 /* Gaming headroom, phased in linearly from the GATE: below it the resting OPP
  * is untouched, above it a frame is near budget and this closes the gap. Flat
  * at every level was resting-power cost; zero at every level cost the frame. */
