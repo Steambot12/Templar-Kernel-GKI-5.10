@@ -115,6 +115,24 @@ static void nm_dir_rcu_free(struct rcu_head *head)
     kmem_cache_free(nm_dir_cachep, dir);
 }
 
+/* Drop the igrab pin a real shadow node holds on its directory inode. Real
+ * nodes carry the pinned inode in the dir_inode/_tag_ptr union (low bit 0);
+ * rule-owned nodes (low bit set) never take an igrab. Idempotent: after the
+ * first call the union is 0 and later calls are no-ops. Process context only
+ * (iput() may evict). */
+static inline void nm_put_dir_inode(struct nomount_dir_node *dir_node)
+{
+    unsigned long tag;
+
+    if (!dir_node)
+        return;
+    tag = READ_ONCE(dir_node->_tag_ptr);
+    if (!tag || (tag & 1UL))
+        return;
+    WRITE_ONCE(dir_node->_tag_ptr, 0UL);
+    iput((struct inode *)tag);
+}
+
 static inline void nm_destroy_virtual_inode(struct inode *inode)
 {
     struct nm_inode_info *info = inode->i_private;
@@ -899,10 +917,45 @@ static void nomount_hijack_dentry_ops(struct dentry *dentry)
 static __always_inline void nomount_cure_sb_inodes(struct super_block *sb)
 {
     struct inode *inode;
+
+    /* Restore hijacked ops and release each dir_node's igrab pin. The iput()
+     * in nm_put_dir_inode() may evict, so it must run outside s_inode_list_lock;
+     * hold a temp ref so the inode cannot be evicted while it still carries fake
+     * ops, then restart the scan (eviction unlinks from sb->s_inodes). */
+restart:
     spin_lock(&sb->s_inode_list_lock);
     list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
-        if (!inode->i_op && !inode->i_fop) continue;
-        nm_destroy_hijacked_inode(inode, true);
+        struct nm_iop *iop;
+        struct nm_fop *fop;
+        struct nomount_dir_node *dn;
+        bool pinned = false;
+
+        if (!inode->i_op && !inode->i_fop)
+            continue;
+        iop = __get_nm(smp_load_acquire(&inode->i_op), struct nm_iop, fake_iop,
+                       lookup, nomount_hijacked_lookup);
+        fop = __get_nm(smp_load_acquire(&inode->i_fop), struct nm_fop, fake_fop,
+                       iterate_shared, nomount_hijacked_iterate_dir);
+        if (!iop && !fop)
+            continue;
+        dn = iop ? iop->dir_node : fop->dir_node;
+
+        spin_lock(&inode->i_lock);
+        if (!(inode->i_state & (I_NEW | I_FREEING | I_WILL_FREE))) {
+            __iget(inode);
+            pinned = true;
+        }
+        spin_unlock(&inode->i_lock);
+        spin_unlock(&sb->s_inode_list_lock);
+
+        if (pinned) {
+            if (dn)
+                nm_put_dir_inode(dn);
+            nm_destroy_hijacked_inode(inode, true);
+            iput(inode);
+            goto restart;
+        }
+        spin_lock(&sb->s_inode_list_lock);
     }
     spin_unlock(&sb->s_inode_list_lock);
 }
