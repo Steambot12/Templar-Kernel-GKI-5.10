@@ -680,23 +680,30 @@ static void update_burst_penalty(struct sched_entity *se) {
 	 * tasks. Engine worker pools (physics, shaders) legitimately burst
 	 * 150ms-1s+ without dequeue; once demoted, freshly-woken nice-0 threads
 	 * preempt them mid-frame. After the fast path, so the cgroup walk only
-	 * runs for tasks past 134ms. nice > 0 excluded.
+	 * runs for tasks past 134ms. nice > 0 excluded. The cheap burst_time
+	 * test gates the cgroup read; task_css() needs its own RCU section.
 	 */
 	if (entity_is_task(se)) {
 		struct task_struct *p = task_of(se);
 		u8 lat_offset = min((u8)(offset + 4), (u8)62);
+		bool lat_sensitive;
 
 		/* Guard: at offset >= 62, lat_offset <= offset → skip. */
 		if (lat_offset > offset &&
 		    p->static_prio <= DEFAULT_PRIO &&
-		    uclamp_latency_sensitive(p) &&
 		    se->burst_time < (1ULL << (lat_offset - 1))) {
-			if (se->burst_penalty == 0 &&
-			    se->prev_burst_penalty == 0)
+			rcu_read_lock();
+			lat_sensitive = uclamp_latency_sensitive(p);
+			rcu_read_unlock();
+
+			if (lat_sensitive) {
+				if (se->burst_penalty == 0 &&
+				    se->prev_burst_penalty == 0)
+					return;
+				se->curr_burst_penalty = 0;
+				update_burst_score(se);
 				return;
-			se->curr_burst_penalty = 0;
-			update_burst_score(se);
-			return;
+			}
 		}
 	}
 
