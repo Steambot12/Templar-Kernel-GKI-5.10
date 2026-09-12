@@ -30,7 +30,8 @@ static inline unsigned long map_util_freq(unsigned long util,
 }
 /* Vorpal CPUFreq governor helpers — GKI 5.10 */
 struct task_struct;
-void rfx_get_util_gki510(int cpu, unsigned long boost,
+/* @bound_rt: cap how much RT time may count as demand. See the body. */
+void rfx_get_util_gki510(int cpu, unsigned long boost, bool bound_rt,
 			 unsigned long *out_util, unsigned long *out_bw_min);
 bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bw_min);
 int rfx_setattr_sugov_gki510(struct task_struct *t);

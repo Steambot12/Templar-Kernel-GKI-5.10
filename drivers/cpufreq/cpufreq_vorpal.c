@@ -47,7 +47,7 @@
 
 /* Sched-core helpers (owned by core sched): util getter, DL-bandwidth check,
  * SUGOV DL class setter for the slow-path worker. */
-extern void rfx_get_util_gki510(int cpu, unsigned long boost,
+extern void rfx_get_util_gki510(int cpu, unsigned long boost, bool bound_rt,
 				unsigned long *util, unsigned long *bwmin);
 extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin);
 extern int rfx_setattr_sugov_gki510(struct task_struct *t);
@@ -62,21 +62,34 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* DAILY eval rate limits (us), at rest only: gaming and the DL bypass
  * override. up=0 = commit on the first eval that sees the rise. */
-#define RFX_LITTLE_RATE_US		3000
-#define RFX_LITTLE_UP_US		200
-#define RFX_LITTLE_DOWN_US		3000
+#define RFX_LITTLE_RATE_US		2000
+#define RFX_LITTLE_UP_US		100
+#define RFX_LITTLE_DOWN_US		2200
 
-#define RFX_BIG_RATE_US			3000
+#define RFX_BIG_RATE_US			2000
 #define RFX_BIG_UP_US			0
-#define RFX_BIG_DOWN_US			2500
+#define RFX_BIG_DOWN_US			2000
 
-/* Gaming eval rate. Measured-stable; do not raise without an FPS measurement. */
-#define RFX_FAST_RATE_US		250
+/* Gaming eval rate.
+ *
+ * Fast-switch drivers commit inside the util hook, so the gate may sit well
+ * inside a frame -- an evaluation that changes nothing costs a comparison.
+ *
+ * A slow-switch driver commits from a SCHED_DEADLINE worker instead: each
+ * accepted commit is a wakeup of the highest-priority class on the render
+ * cluster plus a firmware round trip, and the reserved runtime is a small
+ * fraction of one period. At the fast-switch cadence that budget is spent
+ * inside a frame, after which the worker is throttled to the next period
+ * boundary -- so the commit that matters lands a frame late, having preempted
+ * the render thread on the way. Gate that path near its own transition cost:
+ * up-rate stays 0, so a rise still commits on the first eval that sees it. */
+#define RFX_FAST_RATE_US		400
+#define RFX_SLOW_SWITCH_RATE_US		2000
 
-/* Gaming down-rate gate. NOT rate-neutral -- only ever shorten it: the slew
- * window resets on a commit in either direction, this gate only on a downward
- * one, so widening it ratchets the clock up. */
-#define RFX_GAMING_DOWN_US		4000
+/* Gaming down-rate gate. NOT rate-neutral -- the slew window resets on a
+ * commit in either direction, this gate only on a downward one, so widening
+ * it ratchets the clock up. */
+#define RFX_GAMING_DOWN_US		3000
 
 /* Gaming floors, percent of the effective ceiling. NO cluster is capped: every
  * cluster tracks demand up to fceil. Floors only cover a cold landing, and they
@@ -85,16 +98,18 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * Do not lower a *_FLOOR_PCT on a tier that may render, and do not raise one
  * either: the extra heat lowers fceil and the render cluster leaves fmax. */
 /* On both target devices the top tier is the SPILL tier (render = middle
- * tier), so its floor is pure resting power — the heat that pushes the
+ * tier), so its floor is pure resting power -- the heat that pushes the
  * die over the limiter's step threshold and starts the spike cycle:
  * burst chase -> power spike -> limiter step -> cpu sag -> gpu sag. */
+/* Values tightened per external tuning guidance: floors lowered to cut
+ * resting power while the frame is carried by demand + up-rate-0. */
 #define RFX_G_PRIME_FLOOR_PCT		52
-#define RFX_G_BIG_FLOOR_PCT		58
+#define RFX_G_BIG_FLOOR_PCT		50
 /* Warmup floor, both render tiers: spawn/asset load only, never steady state. */
-#define RFX_G_WARMUP_FLOOR_PCT		80
+#define RFX_G_WARMUP_FLOOR_PCT		72
 /* Little never renders, so this floor is pure resting power: at the V/f knee
  * (== idle floor), never above it. Demand and up-rate-0 still cover a frame. */
-#define RFX_G_LITTLE_FLOOR_PCT		38
+#define RFX_G_LITTLE_FLOOR_PCT		32
 
 /* Max downward slew, percent of ceiling per 2ms elapsed (so a half percent
  * per ms is expressible in integers). Bounds the depth a short lull can dig:
@@ -103,29 +118,90 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * the pair is tuned together, never loosen both. */
 #define RFX_GAMING_DOWN_PCT_PER_2MS	1
 
-/* ---- Daily shaping, percent of the effective ceiling. Caps only: the util
- * EMA plus PELT already carry any rise a window or burst floor covered. ---- */
-/* Little daily cap: just above the V/f knee. */
-#define RFX_D_LITTLE_CAP_PCT		60
-/* Sustained caps: long foreground/background work at lower voltage. */
-#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	80
-/* Sustained latches, skewed 1.25x (real demand on at ~58%, off at ~44%). */
-#define RFX_D_LITTLE_LIFT_PCT		72
-#define RFX_D_LITTLE_DROP_PCT		55
-/* Big/Prime share one latch; a sustained cap may never exceed 100. The lift
- * threshold reads the same 1.25x-skewed demand as the gaming gates. */
-#define RFX_D_BIG_CAP_PCT		70
-#define RFX_D_PRIME_CAP_PCT		68
-/* The 70/68 base cap clips once demand clears ~70% (real util ~55%), but the
- * lift used to wait for demand 85 (~68% real): transition bursts riding 70-85
- * stayed pinned below their need and dropped a frame. Trip the sustained
- * ceiling at the clip edge; release back into idle below it. A saturated
- * launch burst then rides 90% of fceil instead of 80%; the latch is value-only,
- * so idle and light load never leave the 70/68 base cap. */
-#define RFX_D_BIG_LIFT_PCT		78
-#define RFX_D_BIG_DROP_PCT		64
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	90
-#define RFX_D_PRIME_SUSTAINED_CAP_PCT	90
+/* ---- Daily shaping, percent of the effective ceiling. Caps only, slid
+ * between a base and a sustained endpoint by demand: PELT alone carries the
+ * rise, so a stepped ceiling would be followed step-for-step by the clock. ---- */
+/* Little daily cap: just above the V/f knee; bottom of the slide. */
+#define RFX_D_LITTLE_CAP_PCT		56
+/* Top of the slide. Little is not pinned across the whole band, and clocking
+ * a merely-busy cluster down does not buy idle -- the same lesson the
+ * two-tier part taught about derating. */
+#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	72
+/* Slide band, skewed 1.25x: the sustained cap is reached at ~61% real demand,
+ * the base cap at ~36%. Little reads the same band as the Big/Prime pair. */
+#define RFX_D_LITTLE_LIFT_PCT		80
+#define RFX_D_LITTLE_DROP_PCT		45
+/* Big/Prime share one band; a sustained cap may never exceed 100. The band
+ * reads the same 1.25x-skewed demand as the gaming gates. Idle and light
+ * load sit on the base cap. */
+#define RFX_D_BIG_CAP_PCT		64
+#define RFX_D_PRIME_CAP_PCT		64
+#define RFX_D_BIG_LIFT_PCT		85
+#define RFX_D_BIG_DROP_PCT		68
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	76
+#define RFX_D_PRIME_SUSTAINED_CAP_PCT	76
+
+/* ---- Gaming frame-paced boost: one short additive window per demand STEP
+ * (not per level). Sits on top of demand + up-rate-0, which already carry a
+ * frame; this covers only the onset rise of a frame burst. Reference is
+ * resampled every SAMPLE_NS so demand that has settled high cannot keep
+ * re-arming -- a step, not a level, opens the window.
+ *
+ * The window must stay well UNDER one frame period. At a period equal to the
+ * window (8ms window at ~120Hz), every frame's render spike is a fresh step
+ * against the last resample, the boost re-armed every frame, and the "onset"
+ * lift became a de-facto permanent one -- measured as ~5C above the no-boost
+ * baseline, which moves the first limiter event earlier exactly where frames
+ * are at risk. Half a period keeps the per-frame onset response while halving
+ * the duty of the lift. ---- */
+#define RFX_G_FRAME_BOOST_DELTA_PCT	18
+#define RFX_G_FRAME_BOOST_ARM_PCT	55
+#define RFX_G_FRAME_BOOST_CLEAR_PCT	(RFX_G_FRAME_BOOST_ARM_PCT - 15)
+#define RFX_G_FRAME_BOOST_NS		(4 * NSEC_PER_MSEC)
+#define RFX_G_FRAME_BOOST_SAMPLE_NS	(4 * NSEC_PER_MSEC)
+#define RFX_G_FRAME_BOOST_MAX_PCT	8
+
+/* ---- Down-only commit hysteresis: a target within the band of the last
+ * COMMITTED frequency is suppressed so util noise cannot walk the OPP back
+ * and forth. Rises always pass -- a deadband on the way up is a frame latency
+ * tax. Gaming band is wider (frame pacing); daily band only damps the OPP
+ * ping-pong a scroll produces when demand sits between two levels. See
+ * rfx_target_hysteresis() for why the reference is next_freq, not a stored
+ * target. ---- */
+#define RFX_G_TARGET_DOWN_DEADBAND_PCT	3
+#define RFX_D_TARGET_DOWN_DEADBAND_PCT	2
+
+/* ---- Daily UI-interaction boost: replaces the cap-release burst. One window
+ * per demand step into the ARM region, then a cooldown so a duty-cycling load
+ * cannot hold it open -- two release mechanisms at once would double-lift the
+ * same interaction.
+ *
+ * ARM must sit ABOVE the band a screen-on-but-idle phone rests in, not at its
+ * edge. Demand reads ~1.25x real, so a low ARM plus a step small enough for
+ * any background timer to clear makes the window open on housekeeping instead
+ * of on interaction -- at which point the lift is a second cap, paid for
+ * continuously, and the cap shape below it stops being the power dial.
+ *
+ * The band has no floors, so at full burst the tier cap is the whole shortfall:
+ * a saturating interaction runs a quarter under ceiling with nothing to lift it
+ * back. Raising the cap pays for that on every sustained load as well, which is
+ * the trade that already failed twice. So the window carries it instead.
+ *
+ * Shape: a scroll is not one event, it is a train of one-or-two-frame events
+ * spaced by the frame period, and the detector must re-fire across the train
+ * -- a step small enough for the per-frame demand oscillation to clear, a
+ * sample window short enough to catch it, and a cooldown that lets the NEXT
+ * frame's step re-open the window instead of spacing them a third of a second
+ * apart. The lift itself is small and short: one frame's worth, expressed as a
+ * cap lift where the band binds, not an additive kick that fires regardless
+ * of whether demand was even pressing the cap. ---- */
+#define RFX_D_UI_ARM_PCT		40
+#define RFX_D_UI_CLEAR_PCT		14
+#define RFX_D_UI_STEP_PCT		12
+#define RFX_D_UI_BOOST_PCT		8
+#define RFX_D_UI_BOOST_NS		(10 * NSEC_PER_MSEC)
+#define RFX_D_UI_COOLDOWN_NS		(80 * NSEC_PER_MSEC)
+#define RFX_D_UI_SAMPLE_NS		(16 * NSEC_PER_MSEC)
 
 /* ---- Util EMA: rise instant, decay time-normalised, so the time constant is
  * independent of eval rate. Period = interval removing 1/DIVISOR of the
@@ -139,17 +215,17 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_EMA_MAX_STEPS		32	/* cap: 8ms, one frame gap */
 
 /* ---- Headroom above demand, percent. Stacks on the 25% DVFS margin already
- * applied by rfx_get_util_gki510, so this only raises the resting OPP. Trimmed
- * to 2/1: the util getter's margin already covers OPP granularity, so the old
- * 4/2 only added a resting bin for no measured latency gain. Rise is unaffected
- * (up-rate 0 on Big/Prime), so this is pure daily resting-voltage saving. ---- */
-#define RFX_HEADROOM_DAILY_HIGH		2
-#define RFX_HEADROOM_DAILY_MID		1
+ * applied by rfx_get_util_gki510, so it only raises the resting OPP.
+ * Daily has none. The margin already covers OPP granularity, so the tiered
+ * curve this replaces only ever added a resting bin -- and it sat exactly in
+ * the demand band that light browsing and scrolling run in, which is the load
+ * the daily profile is judged on. Nothing here touches a cap, so no clip edge
+ * moves and no latency is traded for it. Only gaming keeps a ramp. ---- */
 /* Gaming headroom, phased in linearly from the GATE: below it the resting OPP
  * is untouched, above it a frame is near budget and this closes the gap. Flat
  * at every level was resting-power cost; zero at every level cost the frame. */
-#define RFX_HEADROOM_GAMING		8
-#define RFX_HEADROOM_GAMING_GATE	75
+#define RFX_HEADROOM_GAMING		5
+#define RFX_HEADROOM_GAMING_GATE	78
 
 /* Util percent at which we stop interpolating and request fmax outright.
  * Gaming 100 disables the shortcut: any lower value makes the render tier
@@ -174,16 +250,31 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* Gaming warmup lifts the render floors for spawn + asset load. Extends while
  * demand stays >EXTEND_PCT up to MAX_NS, releases early below RELEASE_PCT.
- * The window is anchored to the sysfs write, so MAX_NS stays short: a longer
- * one pins every cluster through the hottest phase. Kept tight: on platforms
- * whose demand reads inflated (persistent uclamp floor + RT render time) the
- * EXTEND threshold trips easily and the 80% window rides the whole spawn
- * fight, adding heat right where the limiter is already active. */
-#define RFX_GAMING_WARMUP_NS		(200 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_MAX_NS	(300 * NSEC_PER_MSEC)
+ * The window is NOT anchored to the gaming_mode write: that write happens
+ * from the launcher, an unbounded interval before the game process exists,
+ * so a write-anchored window expired on launcher idle and the spawn burst
+ * arrived on the bare baseline floor -- which is why lengthening the window
+ * measured no change. The write arms a PENDING window; it starts on the
+ * first demand crossing TRIGGER (a spawn-sized burst, not launcher
+ * activity), never while the cooling latch holds, and is one-shot per
+ * gaming_mode entry. Still capped at MAX_NS from the arm instant, so it
+ * cannot pin every cluster through the hottest phase. */
+#define RFX_GAMING_WARMUP_NS		(180 * NSEC_PER_MSEC)
+#define RFX_GAMING_WARMUP_MAX_NS	(220 * NSEC_PER_MSEC)
+#define RFX_GAMING_WARMUP_TRIGGER_PCT	60
 #define RFX_GAMING_WARMUP_EXTEND_PCT	90
 #define RFX_GAMING_WARMUP_RELEASE_PCT	40
 #define RFX_GAMING_WARMUP_RELEASE_NS	(100 * NSEC_PER_MSEC)
+
+/* Frame-risk re-arm of that same window. ARM sits above ordinary busy-scene
+ * demand, CLEAR well below it, so one crossing yields one window; the window is
+ * one sub-frame burst -- long enough to carry a late frame past its deadline,
+ * short enough that the RAMP_DOWN decay, not the window, dominates the thermal
+ * cost. Demand here reads ~1.25x real (see the caveat at demand_pct) and these
+ * were tuned WITH that skew, so skew and numbers are a matched pair. */
+#define RFX_G_RISK_ARM_PCT		92
+#define RFX_G_RISK_CLEAR_PCT		78
+#define RFX_G_RISK_BOOST_NS		(20 * NSEC_PER_MSEC)
 
 /* Gaming demand gate -- the only demand threshold in the gaming band. Below
  * GATE a cluster is idle: floor releases, no lift may arm; it rejoins above
@@ -195,22 +286,29 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* Floor for a gated (idle) cluster: at the V/f knee -- from fmin the OPP
  * transition plus rate gate turn a cold climb into a visible hitch. */
-#define RFX_G_IDLE_FLOOR_PCT		38
+#define RFX_G_IDLE_FLOOR_PCT		32
 
 /* Cluster cool-down band, hysteretic. Below ENTER the platform limiter is
  * taking capacity, so floors drop for relief and return at EXIT. A limiter
  * that reports continuously (vs step-wise) parks fceil between the two
- * thresholds; EXIT clears it well above ENTER so the band does not flap. */
+ * thresholds; EXIT clears it well above ENTER so the band does not flap.
+ *
+ * ENTER is the sensitive one. The latch it sets collapses every floor toward
+ * the relief value, suppresses the frame boost and freezes the warmup window,
+ * so one noisy sample from a continuously-reporting limiter pulls the clock
+ * DOWN while demand is climbing. Raising ENTER made a single early blip -- the
+ * loudest part of a session, before the die has settled -- enough to trip it.
+ * Back to the pair that measured clean. */
 #define RFX_G_COOL_ENTER_PCT		80
 #define RFX_G_COOL_EXIT_PCT		88
 
 /* Relief floor once the platform is taking capacity. */
-#define RFX_G_COOL_STEADY_FLOOR_PCT	52
+#define RFX_G_COOL_STEADY_FLOOR_PCT	46
 
 /* Depth at which relief is fully applied: between ENTER and DEEP floors slide
  * down proportionally, so the clock walks with the ceiling instead of
  * stepping to the relief floor. */
-#define RFX_G_COOL_DEEP_PCT		60
+#define RFX_G_COOL_DEEP_PCT		65
 
 #define IOWAIT_BOOST_MIN		(SCHED_CAPACITY_SCALE / 8)
 
@@ -273,6 +371,7 @@ struct rfx_policy {
 	struct kthread_worker worker;
 	struct task_struct *thread;
 	bool work_in_progress;
+	bool work_requeue;		/* request landed mid-run: requeue, don't drop */
 
 	bool limits_changed;
 	bool need_freq_update;
@@ -287,6 +386,7 @@ struct rfx_policy {
 
 	u64 gaming_warmup_end_ns;	/* floor lift after gaming_mode=1 */
 	u64 gaming_warmup_start_ns;	/* arm time — anchors the absolute cap */
+	bool gaming_warmup_pending;	/* armed at the write, starts on the burst */
 
 	/*
 	 * Cluster-wide smoothed util, owned by the policy: a shared policy
@@ -297,13 +397,25 @@ struct rfx_policy {
 	u64 last_ema_ns;			/* timestamp of last EMA update */
 
 	bool floor_gated;		/* gaming: floor released to idle, hysteretic */
-	bool little_cap_lifted;		/* daily: sustained-load cap lift latch */
-	bool big_cap_lifted;		/* daily: sustained-load cap lift for Big/Prime */
 	bool thermal_cooling;		/* gaming: floors dropped to idle, hysteretic */
 
 	/* adaptive warmup — early-release tracking */
 	u64 warmup_low_demand_since_ns;	/* when demand first fell below release threshold */
+	bool risk_high;			/* gaming: frame-risk edge consumed, hysteretic */
 
+	/* gaming frame-paced boost — step detector over a resampled reference */
+	u64 gaming_boost_end_ns;	/* additive lift live until this time */
+	unsigned int gaming_boost_pct;	/* lift magnitude, percent of fceil */
+	unsigned int boost_prev_demand_pct;
+	u64 boost_sample_ns;
+	bool boost_armed;
+
+	/* daily UI-interaction boost — one window per step, then cooldown */
+	u64 daily_ui_boost_end_ns;
+	u64 daily_ui_cooldown_end_ns;
+	unsigned int daily_ui_prev_demand_pct;
+	u64 daily_ui_sample_ns;
+	bool daily_ui_armed;
 };
 
 struct rfx_cpu {
@@ -442,6 +554,65 @@ static inline u64 rfx_elapsed(u64 time, u64 stamp)
 /* Helpers                                                               */
 /* ===================================================================== */
 
+/*
+ * Deferred warmup arm. One shot per gaming_mode entry: the crossing consumes
+ * the pending flag, so a busy launcher can spend it, but a second write
+ * re-arms. Never arms while the cooling latch holds -- same rule as the
+ * extend path: no floor ride through a limiter event.
+ */
+static void rfx_warmup_arm(struct rfx_policy *p, unsigned int demand_pct,
+			   u64 time)
+{
+	if (!p->gaming_warmup_pending || p->thermal_cooling ||
+	    demand_pct < RFX_GAMING_WARMUP_TRIGGER_PCT)
+		return;
+
+	p->gaming_warmup_pending = false;
+	p->gaming_warmup_start_ns = time;
+	p->gaming_warmup_end_ns = time + RFX_GAMING_WARMUP_NS;
+}
+
+/* Frame-risk re-arm. The warmup window is otherwise armed exactly once, per
+ * gaming_mode entry (on the first burst, see rfx_warmup_arm()), so once it
+ * lapses the render clusters spend the rest of the
+ * session on the bare baseline floor with no transient response left at all --
+ * and the demand band between "busy" and "saturated" is precisely where a frame
+ * is at risk while the saturation shortcut has not yet pinned the clock.
+ *
+ * One crossing arms one window: demand must fall back under CLEAR, or the window
+ * must lapse, before another can arm. Re-arming while still saturated would make
+ * the lifted floor the steady state for the whole session -- and a saturated
+ * cluster is a heavy scene, not a missed frame, already at the ceiling through
+ * the saturation shortcut, so a lift there buys no clock and only adds heat.
+ *
+ * Extends only, never shortens, so an edge inside the initial warmup cannot cut
+ * it short. A re-armed window cannot itself be stretched by the extend path,
+ * whose cap stays anchored to the original arm.
+ */
+static void rfx_risk_rearm(struct rfx_policy *p, unsigned int demand_pct,
+			   unsigned int warmup_fl, u64 time)
+{
+	if (demand_pct < RFX_G_RISK_ARM_PCT) {
+		/* Clear on demand under CLEAR, or on window lapse. Without the
+		 * lapse test, demand parked between CLEAR and ARM -- where a busy
+		 * scene sits between frames -- latches the edge forever after the
+		 * first window and blocks every re-arm. */
+		if (demand_pct <= RFX_G_RISK_CLEAR_PCT ||
+		    time >= p->gaming_warmup_end_ns)
+			p->risk_high = false;
+		return;
+	}
+
+	/* Nothing to gain: already committed at or above the floor this window
+	 * would install, so arming cannot raise this OPP -- only pin it. */
+	if (p->risk_high || p->next_freq >= warmup_fl)
+		return;
+
+	p->risk_high = true;
+	if (time + RFX_G_RISK_BOOST_NS > p->gaming_warmup_end_ns)
+		p->gaming_warmup_end_ns = time + RFX_G_RISK_BOOST_NS;
+}
+
 /* Warmup ramp: 100 while the window holds, then a linear decay over
  * RFX_WARMUP_RAMP_DOWN_MS back to the baseline floor. */
 static unsigned int rfx_update_warmup_ramp(struct rfx_policy *p, bool active, u64 time)
@@ -502,9 +673,11 @@ static unsigned long rfx_ema(unsigned long old, unsigned long val, u64 time,
 		return val;
 	}
 
-	/* Unseeded reference: worth one period, as an absolute stamp. */
+	/* Unseeded reference: worth one period, as an absolute stamp. Clamped:
+	 * sched_clock near zero must not wrap backwards into the far future. */
 	if (unlikely(!*last_ns))
-		*last_ns = time - RFX_EMA_DECAY_PERIOD_NS;
+		*last_ns = time > RFX_EMA_DECAY_PERIOD_NS ?
+			time - RFX_EMA_DECAY_PERIOD_NS : 0;
 	delta_ns = rfx_elapsed(time, *last_ns);
 
 	steps = (unsigned int)min_t(u64, delta_ns / RFX_EMA_DECAY_PERIOD_NS,
@@ -532,11 +705,11 @@ static unsigned long rfx_ema(unsigned long old, unsigned long val, u64 time,
 
 /*
  * Request slightly more capacity than measured, so we land on an OPP with room
- * to spare. Gaming uses a phased linear ramp; daily a tiered curve -- nothing
- * at low util (battery), more as util climbs (responsiveness).
+ * to spare. Gaming uses a phased linear ramp; daily gets none -- see the note
+ * above RFX_HEADROOM_GAMING.
  */
 static unsigned long rfx_apply_headroom(unsigned long util, unsigned long max_cap,
-					bool gaming, bool little)
+					bool gaming)
 {
 	unsigned int upct;
 
@@ -548,33 +721,164 @@ static unsigned long rfx_apply_headroom(unsigned long util, unsigned long max_ca
 			      RFX_SAT_TO_MAX_DAILY_PCT))
 		return max_cap;
 
-	if (gaming) {
-		if (upct <= RFX_HEADROOM_GAMING_GATE)
-			return util;
-		/* One expression: truncating to whole percent first would drop
-		 * the bottom of the ramp. */
-		return min(util + max_cap * RFX_HEADROOM_GAMING *
-				  (upct - RFX_HEADROOM_GAMING_GATE) /
-				  ((100 - RFX_HEADROOM_GAMING_GATE) * 100),
-			   max_cap);
-	}
-
-	if (little) {
-		if (upct >= 65)
-			return min(util + util * RFX_HEADROOM_DAILY_HIGH / 100, max_cap);
-		if (upct >= 40)
-			return min(util + util * RFX_HEADROOM_DAILY_MID / 100, max_cap);
+	if (!gaming || upct <= RFX_HEADROOM_GAMING_GATE)
 		return util;
+
+	/* One expression: truncating to whole percent first would drop the bottom
+	 * of the ramp. */
+	return min(util + max_cap * RFX_HEADROOM_GAMING *
+			  (upct - RFX_HEADROOM_GAMING_GATE) /
+			  ((100 - RFX_HEADROOM_GAMING_GATE) * 100),
+		   max_cap);
+}
+
+/*
+ * Daily ceiling for a tier, slid linearly from its base cap to its sustained
+ * cap between DROP and LIFT percent of demand. Both endpoints are the values
+ * the profile was tuned around; only the path between them is new. A binary
+ * latch made the ceiling STEP between the same two values, and the daily band
+ * has no descent filter, so the clock followed that step in both directions --
+ * a square wave on the interactive workload the profile is judged on.
+ * Monotonic: BUILD_BUG_ONs pin DROP < LIFT and base <= sustained.
+ */
+static unsigned int rfx_daily_cap_pct(unsigned int demand_pct, unsigned int base,
+				      unsigned int lift, unsigned int drop,
+				      unsigned int sustained)
+{
+	if (demand_pct <= drop)
+		return base;
+	if (demand_pct >= lift)
+		return sustained;
+	return base + (sustained - base) * (demand_pct - drop) / (lift - drop);
+}
+
+/* Threshold step test, overflow-safe: prev near 100 must not wrap. */
+static bool rfx_pct_step_reached(unsigned int now, unsigned int prev,
+				 unsigned int delta)
+{
+	if (prev >= 100 || delta > 100 - prev)
+		return false;
+	return now >= prev + delta;
+}
+
+/*
+ * Arm the gaming frame boost on a demand step into the ARM region.
+ *
+ * Same resampled-reference safety as the burst it replaces in spirit: a load
+ * that has settled high re-seeds the reference to its own level every sample,
+ * so its step is zero and it cannot re-arm -- the window is transient by
+ * construction, never a resting floor. Only an actual rise arms, so this
+ * costs the onset of a frame burst and nothing after it.
+ *
+ * boost_armed consumes the step: without it the same rise re-arms on every
+ * evaluation until the next resample. It clears when demand falls back under
+ * CLEAR or the window lapses, so one crossing yields one window.
+ */
+static void rfx_gaming_frame_boost(struct rfx_policy *p,
+				   unsigned int demand_pct, u64 time)
+{
+	if (rfx_elapsed(time, p->boost_sample_ns) >=
+	    RFX_G_FRAME_BOOST_SAMPLE_NS) {
+		p->boost_sample_ns = time;
+		p->boost_prev_demand_pct = demand_pct;
+		return;
 	}
 
-	if (upct >= 70)
-		return min(util + util * RFX_HEADROOM_DAILY_HIGH / 100, max_cap);
-	if (upct >= 45)
-		return min(util + util * RFX_HEADROOM_DAILY_MID / 100, max_cap);
+	if (p->boost_armed ||
+	    demand_pct < RFX_G_FRAME_BOOST_ARM_PCT ||
+	    !rfx_pct_step_reached(demand_pct, p->boost_prev_demand_pct,
+				  RFX_G_FRAME_BOOST_DELTA_PCT))
+		return;
 
-	/* Below 45%: none -- the 25% DVFS margin from the util getter already
-	 * covers OPP granularity. */
-	return util;
+	p->boost_armed = true;
+	p->boost_sample_ns = time;
+	p->boost_prev_demand_pct = demand_pct;
+	p->gaming_boost_end_ns = time + RFX_G_FRAME_BOOST_NS;
+	p->gaming_boost_pct = RFX_G_FRAME_BOOST_MAX_PCT;
+}
+
+/* Disarm once demand has clearly left the interaction region or the window
+ * has run out. */
+static void rfx_gaming_frame_boost_clear(struct rfx_policy *p,
+					 unsigned int demand_pct, u64 time)
+{
+	if (demand_pct < RFX_G_FRAME_BOOST_CLEAR_PCT ||
+	    time >= p->gaming_boost_end_ns) {
+		p->boost_armed = false;
+		p->gaming_boost_pct = 0;
+	}
+}
+
+/*
+ * Daily UI boost: one additive window per demand step, then a cooldown.
+ *
+ * The cooldown is the whole reason this replaced the cap-release burst: a
+ * duty-cycling load steps up once per cycle, and without the cooldown it
+ * would re-open the window every cycle and hold the clock near the ceiling
+ * permanently. ARM sits above the band idle scrolling lives in; CLEAR ends
+ * the armed state once the interaction is over.
+ */
+static void rfx_daily_ui_boost(struct rfx_policy *p,
+			       unsigned int demand_pct, u64 time)
+{
+	if (rfx_elapsed(time, p->daily_ui_sample_ns) >= RFX_D_UI_SAMPLE_NS) {
+		p->daily_ui_sample_ns = time;
+		p->daily_ui_prev_demand_pct = demand_pct;
+		return;
+	}
+
+	if (time < p->daily_ui_cooldown_end_ns ||
+	    p->daily_ui_armed ||
+	    demand_pct < RFX_D_UI_ARM_PCT ||
+	    !rfx_pct_step_reached(demand_pct, p->daily_ui_prev_demand_pct,
+				  RFX_D_UI_STEP_PCT))
+		return;
+
+	p->daily_ui_armed = true;
+	p->daily_ui_sample_ns = time;
+	p->daily_ui_prev_demand_pct = demand_pct;
+	p->daily_ui_boost_end_ns = time + RFX_D_UI_BOOST_NS;
+	p->daily_ui_cooldown_end_ns = time + RFX_D_UI_COOLDOWN_NS;
+}
+
+/* Disarm once the interaction has left the region, or once the spacing the
+ * cooldown defines has elapsed. Against the COOLDOWN deadline, not the window:
+ * the window is the shorter of the two by invariant, so clearing on it left the
+ * flag meaning nothing and the cooldown as the only gate -- and any later
+ * shortening of the cooldown would then have silently turned one window per
+ * interaction into a duty cycle. */
+static void rfx_daily_ui_boost_clear(struct rfx_policy *p,
+				     unsigned int demand_pct, u64 time)
+{
+	if (demand_pct <= RFX_D_UI_CLEAR_PCT ||
+	    time >= p->daily_ui_cooldown_end_ns) {
+		p->daily_ui_armed = false;
+	}
+}
+
+/*
+ * Down-only target hysteresis. The reference is p->next_freq (last COMMITTED
+ * frequency), NOT a stored target: a stored-target reference makes every
+ * suppressed update re-store its own target, so the reference only ever
+ * ratchets to the high-water mark and the clock never comes down through a
+ * sub-band descent -- a floor by construction. Against next_freq, a real
+ * descent crosses the band within one commit and lands; only noise smaller
+ * than the band is held, which is the point. Both profiles use it: gaming
+ * wide (frame pacing), daily narrow (scroll OPP oscillation).
+ */
+static unsigned int rfx_target_hysteresis(struct rfx_policy *p,
+					  unsigned int target,
+					  unsigned int fceil, bool gaming)
+{
+	unsigned int band;
+
+	band = rfx_pct(fceil, gaming ? RFX_G_TARGET_DOWN_DEADBAND_PCT :
+				       RFX_D_TARGET_DOWN_DEADBAND_PCT);
+
+	if (target < p->next_freq &&
+	    p->next_freq - target < band)
+		return p->next_freq;
+	return target;
 }
 
 /* ===================================================================== */
@@ -632,7 +936,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 	fceil = rfx_pct(fmax, fceil_pct);
 	fceil = clamp(fceil, fmin, fmax);
 
-	util = rfx_apply_headroom(util, max_cap, gaming, little);
+	util = rfx_apply_headroom(util, max_cap, gaming);
 
 	/* arch capacity 1024 is defined against cpuinfo max; only the
 	 * percentage shape uses fmax. */
@@ -652,16 +956,49 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 */
 		demand_pct = (unsigned int)(raw_util * 100 / max_cap);
 
+		/* Cooling latch is updated HERE, above the warmup window: that
+		 * window asks the same question this latch answers -- is the
+		 * platform taking capacity -- and must read the latch rather than
+		 * keep a second raw threshold of its own. Floor relief below still
+		 * reads exactly the value it did before. */
+		if (fceil_pct < RFX_G_COOL_ENTER_PCT)
+			p->thermal_cooling = true;
+		else if (fceil_pct >= RFX_G_COOL_EXIT_PCT)
+			p->thermal_cooling = false;
+
+		/* Deferred arm first: a crossing that would also trip the risk
+		 * path must find a live, properly anchored window to extend --
+		 * arming risk first would anchor the cap to a zero start. */
+		if (!little)
+			rfx_warmup_arm(p, demand_pct, time);
+
 		/* Little never renders, so a warmup floor there is heat plus
-		 * capacity EAS then packs work onto. */
+		 * capacity EAS then packs work onto -- it neither arms a window
+		 * nor rides one. Arming runs before the window is read, so an
+		 * edge takes effect on this evaluation rather than the next. */
+		if (!little)
+			rfx_risk_rearm(p, demand_pct,
+				       rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT),
+				       time);
+
 		warmup_active = !little && p->gaming_warmup_end_ns &&
 				time < p->gaming_warmup_end_ns;
 
 		/* Adaptive warmup: extend while Big/Prime demand holds above
 		 * EXTEND_PCT (absolute cap MAX_NS from arm), release early below
-		 * RELEASE_PCT for RELEASE_NS. */
+		 * RELEASE_PCT for RELEASE_NS. No extension once the limiter is
+		 * taking capacity: the floor buys spawn headroom, and riding it
+		 * through a throttle adds heat exactly where fceil is falling.
+		 *
+		 * That condition reads the cooling LATCH, not fceil_pct directly.
+		 * A raw `fceil_pct >= COOL_EXIT` here was unreachable on a platform
+		 * whose limiter reports continuously: any nonzero thermal_pressure
+		 * pulls fceil_pct under the exit threshold, so the window could
+		 * never extend there while it extended freely on a platform that
+		 * throttles in steps. Same constant, opposite behaviour per SoC. */
 		if (warmup_active) {
-			if (demand_pct >= RFX_GAMING_WARMUP_EXTEND_PCT) {
+			if (demand_pct >= RFX_GAMING_WARMUP_EXTEND_PCT &&
+			    !p->thermal_cooling) {
 				u64 cap = p->gaming_warmup_start_ns +
 					  RFX_GAMING_WARMUP_MAX_NS;
 				u64 ext = time + RFX_EMA_DECAY_PERIOD_NS * 4;
@@ -695,12 +1032,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		warmup_fl = little ? fl : rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT);
 
 		/* Once the platform has taken capacity, holding floors defeats
-		 * thermal relief and makes the HW limiter sawtooth the clock. */
-		if (fceil_pct < RFX_G_COOL_ENTER_PCT)
-			p->thermal_cooling = true;
-		else if (fceil_pct >= RFX_G_COOL_EXIT_PCT)
-			p->thermal_cooling = false;
-
+		 * thermal relief and makes the HW limiter sawtooth the clock.
+		 * Latch itself is updated above, before the warmup window reads it. */
 		if (p->thermal_cooling) {
 			unsigned int steady = rfx_pct(fceil,
 						      RFX_G_COOL_STEADY_FLOOR_PCT);
@@ -751,45 +1084,79 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		if (freq < fl)
 			freq = fl;
+
+		/* Frame-paced boost: additive, before the thermal clamp so the
+		 * emergency cap stays the last word, and suppressed while the
+		 * platform is taking capacity -- boosting into a falling ceiling
+		 * is heat for nothing. */
+		rfx_gaming_frame_boost(p, demand_pct, time);
+		rfx_gaming_frame_boost_clear(p, demand_pct, time);
+		if (p->gaming_boost_pct && time < p->gaming_boost_end_ns &&
+		    !p->thermal_cooling) {
+			unsigned int boost_fl;
+
+			boost_fl = freq + rfx_pct(fceil, p->gaming_boost_pct);
+			freq = min(boost_fl, fceil);
+		}
 	} else {
-		unsigned int cap, demand_pct;
+		unsigned int cap, cap_pct, demand_pct;
 
 		/* Raw demand, before headroom: post-headroom util is stepped by
 		 * tier, so a crossing jumps the value with no load change. Same
 		 * 1.25x skew as the gaming band. */
 		demand_pct = (unsigned int)(raw_util * 100 / max_cap);
 
-		/* One cap per tier, one demand latch to lift it. No floors:
-		 * demand plus the EMA already hold the clock where the work is. */
-		if (little) {
-			cap = rfx_pct(fceil, RFX_D_LITTLE_CAP_PCT);
-
-			if (demand_pct >= RFX_D_LITTLE_LIFT_PCT)
-				p->little_cap_lifted = true;
-			else if (demand_pct <= RFX_D_LITTLE_DROP_PCT)
-				p->little_cap_lifted = false;
-			if (p->little_cap_lifted)
-				cap = rfx_pct(fceil,
-					      RFX_D_LITTLE_SUSTAINED_CAP_PCT);
-		} else {
-			cap = rfx_pct(fceil, prime ? RFX_D_PRIME_CAP_PCT :
-						     RFX_D_BIG_CAP_PCT);
-
-			/* Big/Prime share one latch. */
-			if (demand_pct >= RFX_D_BIG_LIFT_PCT)
-				p->big_cap_lifted = true;
-			else if (demand_pct <= RFX_D_BIG_DROP_PCT)
-				p->big_cap_lifted = false;
-			if (p->big_cap_lifted)
-				cap = rfx_pct(fceil, prime ?
-					RFX_D_PRIME_SUSTAINED_CAP_PCT :
+		/* One cap per tier, slid between its two endpoints rather than
+		 * stepped between them. Big/Prime share one band. No floors:
+		 * demand plus PELT already hold the clock where the work is. */
+		if (little)
+			cap_pct = rfx_daily_cap_pct(demand_pct,
+					RFX_D_LITTLE_CAP_PCT,
+					RFX_D_LITTLE_LIFT_PCT,
+					RFX_D_LITTLE_DROP_PCT,
+					RFX_D_LITTLE_SUSTAINED_CAP_PCT);
+		else if (prime)
+			cap_pct = rfx_daily_cap_pct(demand_pct,
+					RFX_D_PRIME_CAP_PCT,
+					RFX_D_BIG_LIFT_PCT,
+					RFX_D_BIG_DROP_PCT,
+					RFX_D_PRIME_SUSTAINED_CAP_PCT);
+		else
+			cap_pct = rfx_daily_cap_pct(demand_pct,
+					RFX_D_BIG_CAP_PCT,
+					RFX_D_BIG_LIFT_PCT,
+					RFX_D_BIG_DROP_PCT,
 					RFX_D_BIG_SUSTAINED_CAP_PCT);
-		}
+
+		/* One window per demand step into the interaction region,
+		 * cooldown-gated; replaces the cap-release burst -- running both
+		 * would double-lift the same interaction. */
+		rfx_daily_ui_boost(p, demand_pct, time);
+		rfx_daily_ui_boost_clear(p, demand_pct, time);
+
+		/* Boost lifts the CEILING, not the clock: additive-after-clamp
+		 * spent the window even when demand sat well under the cap, where
+		 * the lift bought nothing. As a cap lift it only exists where the
+		 * band actually binds -- the top of a scroll or an inflate -- and
+		 * the clock still has to be demanded to reach it. Suppressed while
+		 * the limiter is taking capacity, same question the gaming cooling
+		 * latch answers -- read live from fceil_pct here, because that
+		 * latch is only ever written in the gaming branch. */
+		if (time < p->daily_ui_boost_end_ns &&
+		    fceil_pct >= RFX_G_COOL_ENTER_PCT)
+			cap_pct = min(cap_pct + RFX_D_UI_BOOST_PCT, 100U);
+
+		cap = rfx_pct(fceil, cap_pct);
 
 		if (freq > cap)
 			freq = cap;
 	}
 
+	/* Down-only hysteresis before the clamps: rises pass untouched, a
+	 * sub-band descent holds one commit so util noise cannot oscillate the
+	 * OPP. Against next_freq, so a real descent still lands. Band is wider
+	 * in gaming (frame pacing) than daily (scroll oscillation). */
+	freq = rfx_target_hysteresis(p, freq, fceil, gaming);
 	freq = rfx_thermal_clamp(freq, fceil);
 	freq = clamp(freq, fmin, fceil);
 
@@ -877,7 +1244,9 @@ static unsigned long rfx_iowait_apply(struct rfx_cpu *rfx_c, u64 time,
 
 static void rfx_get_util(struct rfx_cpu *rfx_c, unsigned long boost)
 {
-	rfx_get_util_gki510(rfx_c->cpu, boost, &rfx_c->util, &rfx_c->bwmin);
+	/* RT is bounded for every profile. See rfx_get_util_gki510(). */
+	rfx_get_util_gki510(rfx_c->cpu, boost, true, &rfx_c->util,
+			    &rfx_c->bwmin);
 }
 
 static inline void rfx_ignore_dl_rate_limit(struct rfx_cpu *rfx_c)
@@ -915,9 +1284,15 @@ static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming)
  * depend on state known without util. */
 static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
 {
-	p->freq_update_delay_ns = gaming ?
-		(s64)RFX_FAST_RATE_US * NSEC_PER_USEC :
-		(s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
+	if (!gaming) {
+		p->freq_update_delay_ns =
+			(s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
+		return;
+	}
+
+	p->freq_update_delay_ns = (s64)(p->policy->fast_switch_enabled ?
+					RFX_FAST_RATE_US :
+					RFX_SLOW_SWITCH_RATE_US) * NSEC_PER_USEC;
 }
 
 /*
@@ -986,18 +1361,38 @@ static bool rfx_commit_freq(struct rfx_policy *p, u64 time, unsigned int next_fr
 /* Update hooks                                                          */
 /* ===================================================================== */
 
+/*
+ * Largest capacity in the policy. Within a cluster every CPU reads the same
+ * value, so this is normally the triggering CPU's own capacity -- but a shared
+ * policy must not let the divisor depend on which member happened to tick.
+ */
+static unsigned long rfx_policy_max_cap(struct cpufreq_policy *policy)
+{
+	unsigned long cap, max_cap = 0;
+	unsigned int cpu;
+
+	for_each_cpu(cpu, policy->cpus) {
+		cap = arch_scale_cpu_capacity(cpu);
+		if (cap > max_cap)
+			max_cap = cap;
+	}
+	return max_cap;
+}
+
 static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 {
 	struct rfx_policy *p = rfx_c->rfx_policy;
 	struct cpufreq_policy *policy = p->policy;
-	unsigned long max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
+	unsigned long max_cap = rfx_policy_max_cap(policy);
 	unsigned long max_util = 0;
 	unsigned int j;
 
 	/*
 	 * Aggregate max util across the policy's CPUs, then filter once. The EMA
 	 * lives on the policy: a per-CPU filter let the committed value flip with
-	 * whichever CPU ticked last -- jitter with no change in load.
+	 * whichever CPU ticked last -- jitter with no change in load. Normalise
+	 * by the policy's own ceiling, not the triggering CPU's capacity: util
+	 * is aggregated across the policy, so the divisor must be too.
 	 */
 	for_each_cpu(j, policy->cpus) {
 		struct rfx_cpu *jc = per_cpu_ptr(&rfx_cpu, j);
@@ -1051,7 +1446,13 @@ static void rfx_update(struct update_util_data *hook, u64 time,
 			if (p->policy->fast_switch_enabled) {
 				cpufreq_driver_fast_switch(p->policy,
 							   p->next_freq);
-			} else if (!p->work_in_progress) {
+			} else if (p->work_in_progress) {
+				/* Latest request already queued behind the
+				 * running worker: flag it so the worker
+				 * re-runs instead of dropping the request
+				 * that landed mid-run. */
+				p->work_requeue = true;
+			} else {
 				p->work_in_progress = true;
 				do_deferred = true;
 			}
@@ -1069,10 +1470,18 @@ static void rfx_work(struct kthread_work *work)
 	struct rfx_policy *p = container_of(work, struct rfx_policy, work);
 	unsigned int freq;
 	unsigned long flags;
+	bool again;
 
 	raw_spin_lock_irqsave(&p->update_lock, flags);
 	freq = p->next_freq;
-	p->work_in_progress = false;
+	/* Keep work_in_progress while requeueing: releasing it here and
+	 * re-taking under a second lock section would race an update that
+	 * grabs the token between the two, double-queueing the work. The
+	 * token returns with the requeue itself. */
+	again = p->work_requeue;
+	p->work_requeue = false;
+	if (!again)
+		p->work_in_progress = false;
 	raw_spin_unlock_irqrestore(&p->update_lock, flags);
 
 	mutex_lock(&p->work_lock);
@@ -1082,6 +1491,15 @@ static void rfx_work(struct kthread_work *work)
 	 * fast_switch (MTK). */
 	__cpufreq_driver_target(p->policy, freq, CPUFREQ_RELATION_L);
 	mutex_unlock(&p->work_lock);
+
+	/* A request landed while this worker ran: requeue for the latest
+	 * next_freq instead of dropping it, then hand the token back. */
+	if (again) {
+		raw_spin_lock_irqsave(&p->update_lock, flags);
+		p->work_in_progress = false;
+		raw_spin_unlock_irqrestore(&p->update_lock, flags);
+		kthread_queue_work(&p->worker, &p->work);
+	}
 }
 
 static void rfx_irq_work(struct irq_work *irq_work)
@@ -1100,6 +1518,28 @@ static struct thermal_zone_device *rfx_tz;
 static char rfx_tz_name[THERMAL_NAME_LENGTH];
 #endif
 static struct delayed_work rfx_thermal_work;
+
+/*
+ * Emergency cap changed: force the next evaluation on every policy, or a
+ * quiet cluster keeps its old frequency until something wakes it. need_freq_
+ * update is consumed by rfx_should_update_freq(); it does not call the driver
+ * from here -- the commit path owns that, in the right locking context.
+ */
+static void rfx_mark_all_policies_dirty(void)
+{
+	struct rfx_policy *p;
+	unsigned long flags, pflags;
+
+	spin_lock_irqsave(&rfx_policy_list_lock, flags);
+
+	list_for_each_entry(p, &rfx_policy_list, gov_node) {
+		raw_spin_lock_irqsave(&p->update_lock, pflags);
+		p->need_freq_update = true;
+		raw_spin_unlock_irqrestore(&p->update_lock, pflags);
+	}
+
+	spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
+}
 
 static void rfx_thermal_fn(struct work_struct *w)
 {
@@ -1124,11 +1564,13 @@ static void rfx_thermal_fn(struct work_struct *w)
 			if (t_mc >= RFX_TEMP_EMERGENCY_MC) {
 				atomic_set(&rfx_emergency_cap_pct,
 					   RFX_EMERGENCY_CAP_PCT);
+				rfx_mark_all_policies_dirty();
 				pr_warn_ratelimited("vorpal: thermal emergency %d mC, cap %d%%\n",
 						    t_mc, RFX_EMERGENCY_CAP_PCT);
 			}
 		} else if (t_mc <= RFX_TEMP_EMERGENCY_CLEAR_MC) {
 			atomic_set(&rfx_emergency_cap_pct, 100);
+			rfx_mark_all_policies_dirty();
 			pr_info("vorpal: thermal emergency cleared %d mC\n", t_mc);
 		}
 	} else {
@@ -1156,6 +1598,15 @@ static void rfx_thermal_fn(struct work_struct *w)
 static struct rfx_tunables *rfx_global_tunables;
 static DEFINE_MUTEX(rfx_global_tunables_lock);
 
+/* sysfs rate-limit bound: a value past 1s is not a rate limit, and an
+ * unbounded (s64)val * NSEC_PER_USEC invite. */
+#define RFX_MAX_RATE_LIMIT_US		1000000U
+
+static int rfx_validate_rate(unsigned int val)
+{
+	return val <= RFX_MAX_RATE_LIMIT_US ? 0 : -ERANGE;
+}
+
 static ssize_t rate_limit_us_show(struct gov_attr_set *attr_set, char *buf)
 {
 	return sprintf(buf, "%u\n", to_rfx_tunables(attr_set)->rate_limit_us);
@@ -1168,6 +1619,8 @@ static ssize_t rate_limit_us_store(struct gov_attr_set *attr_set,
 
 	if (kstrtouint(buf, 10, &val))
 		return -EINVAL;
+	if (rfx_validate_rate(val))
+		return -ERANGE;
 	t->rate_limit_us = val;
 	/* No push into every policy: each update calls rfx_set_eval_delay()
 	 * before the gate reads freq_update_delay_ns. */
@@ -1187,6 +1640,8 @@ static ssize_t up_rate_limit_us_store(struct gov_attr_set *attr_set,
 
 	if (kstrtouint(buf, 10, &val))
 		return -EINVAL;
+	if (rfx_validate_rate(val))
+		return -ERANGE;
 	t->up_rate_limit_us = val;
 	return count;
 }
@@ -1204,6 +1659,8 @@ static ssize_t down_rate_limit_us_store(struct gov_attr_set *attr_set,
 
 	if (kstrtouint(buf, 10, &val))
 		return -EINVAL;
+	if (rfx_validate_rate(val))
+		return -ERANGE;
 	t->down_rate_limit_us = val;
 	return count;
 }
@@ -1220,11 +1677,21 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->warmup_ramp_last_ns = 0;
 	p->gaming_warmup_end_ns = 0;
 	p->gaming_warmup_start_ns = 0;
+	p->gaming_warmup_pending = false;
 	p->thermal_cooling = false;
 	p->floor_gated = false;
 	p->warmup_low_demand_since_ns = 0;
-	p->little_cap_lifted = false;
-	p->big_cap_lifted = false;
+	p->risk_high = false;
+	p->gaming_boost_end_ns = 0;
+	p->gaming_boost_pct = 0;
+	p->boost_prev_demand_pct = 0;
+	p->boost_sample_ns = 0;
+	p->boost_armed = false;
+	p->daily_ui_boost_end_ns = 0;
+	p->daily_ui_cooldown_end_ns = 0;
+	p->daily_ui_prev_demand_pct = 0;
+	p->daily_ui_sample_ns = 0;
+	p->daily_ui_armed = false;
 	p->need_freq_update = true;
 }
 
@@ -1271,15 +1738,14 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 	} else {
 		struct rfx_policy *p;
 		unsigned long flags, pflags;
-		u64 now = sched_clock();
 
 		spin_lock_irqsave(&rfx_policy_list_lock, flags);
 		list_for_each_entry(p, &rfx_policy_list, gov_node) {
 			raw_spin_lock_irqsave(&p->update_lock, pflags);
 			rfx_reset_policy_locked(p);
-			/* Warmup floor lift covers process spawn / asset load. */
-			p->gaming_warmup_end_ns = now + RFX_GAMING_WARMUP_NS;
-			p->gaming_warmup_start_ns = now;
+			/* Warmup is pending, not running: the game does not
+			 * exist yet at the moment of this write. */
+			p->gaming_warmup_pending = true;
 			raw_spin_unlock_irqrestore(&p->update_lock, pflags);
 		}
 		spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
@@ -1742,6 +2208,8 @@ static void __init rfx_selfcheck(void)
 	const u64 t = 1ULL << 40;
 	struct rfx_policy p = { };
 	unsigned long gate, over;
+	unsigned int d, c, prev;
+	u64 end;
 	u64 ns;
 
 	/* Rise is instant and re-seeds the reference. */
@@ -1768,12 +2236,16 @@ static void __init rfx_selfcheck(void)
 	 * rfx_pct and the upct divide have both truncated. */
 	gate = rfx_pct(SCHED_CAPACITY_SCALE, RFX_HEADROOM_GAMING_GATE);
 	over = rfx_pct(SCHED_CAPACITY_SCALE, RFX_HEADROOM_GAMING_GATE + 2);
-	WARN_ON(rfx_apply_headroom(gate, SCHED_CAPACITY_SCALE, true, false) !=
-		gate);
-	WARN_ON(rfx_apply_headroom(over, SCHED_CAPACITY_SCALE, true, false) <=
-		over);
+	WARN_ON(rfx_apply_headroom(gate, SCHED_CAPACITY_SCALE, true) != gate);
+	WARN_ON(rfx_apply_headroom(over, SCHED_CAPACITY_SCALE, true) <= over);
 	WARN_ON(rfx_apply_headroom(SCHED_CAPACITY_SCALE - 1, SCHED_CAPACITY_SCALE,
-				   true, false) > SCHED_CAPACITY_SCALE);
+				   true) > SCHED_CAPACITY_SCALE);
+	/* Daily has no ramp: the value must come back untouched at every level,
+	 * including the band the ramp used to occupy. */
+	WARN_ON(rfx_apply_headroom(over, SCHED_CAPACITY_SCALE, false) != over);
+	WARN_ON(rfx_apply_headroom(rfx_pct(SCHED_CAPACITY_SCALE, 80),
+				   SCHED_CAPACITY_SCALE, false) !=
+		rfx_pct(SCHED_CAPACITY_SCALE, 80));
 
 	/* Ramp: instant to 100, zero at RAMP_DOWN_MS, and a sub-percent step
 	 * keeps its remainder instead of stalling at 100 forever. */
@@ -1785,6 +2257,175 @@ static void __init rfx_selfcheck(void)
 	p.warmup_ramp_last_ns = t;
 	WARN_ON(rfx_update_warmup_ramp(&p, false, t + 250000) != 100 ||
 		p.warmup_ramp_last_ns != t);
+
+	/* Frame-risk latch: one crossing arms one window; a second crossing while
+	 * still saturated must NOT re-arm (that would make the lift the steady
+	 * state); demand parked between CLEAR and ARM stays latched while the
+	 * window lives; and the window extends but never shortens. */
+	memset(&p, 0, sizeof(p));
+	p.next_freq = 1;
+	rfx_risk_rearm(&p, RFX_G_RISK_ARM_PCT, 100, t);
+	WARN_ON(!p.risk_high ||
+		p.gaming_warmup_end_ns != t + RFX_G_RISK_BOOST_NS);
+	ns = p.gaming_warmup_end_ns;
+	rfx_risk_rearm(&p, 100, 100, t + 1);
+	WARN_ON(p.gaming_warmup_end_ns != ns);
+	rfx_risk_rearm(&p, RFX_G_RISK_CLEAR_PCT + 1, 100, t + 1);
+	WARN_ON(!p.risk_high);
+	rfx_risk_rearm(&p, RFX_G_RISK_CLEAR_PCT, 100, t + 1);
+	WARN_ON(p.risk_high);
+
+	/* Nothing to gain: already committed at the floor the window installs. */
+	memset(&p, 0, sizeof(p));
+	p.next_freq = 100;
+	rfx_risk_rearm(&p, 100, 100, t);
+	WARN_ON(p.risk_high || p.gaming_warmup_end_ns);
+
+	/* A live longer window must survive a fresh edge. */
+	memset(&p, 0, sizeof(p));
+	p.next_freq = 1;
+	p.gaming_warmup_end_ns = t + 10 * RFX_G_RISK_BOOST_NS;
+	rfx_risk_rearm(&p, 100, 100, t);
+	WARN_ON(p.gaming_warmup_end_ns != t + 10 * RFX_G_RISK_BOOST_NS);
+
+	/* Daily slide: both endpoints must land exactly on the tuned caps (this
+	 * replaces a step, so an off-by-one at either end is a real regression),
+	 * and the path between them must be monotonic -- a non-monotonic slide
+	 * would put back the very edge it removes. */
+	WARN_ON(rfx_daily_cap_pct(0, RFX_D_BIG_CAP_PCT, RFX_D_BIG_LIFT_PCT,
+				  RFX_D_BIG_DROP_PCT,
+				  RFX_D_BIG_SUSTAINED_CAP_PCT) !=
+		RFX_D_BIG_CAP_PCT);
+	WARN_ON(rfx_daily_cap_pct(100, RFX_D_BIG_CAP_PCT, RFX_D_BIG_LIFT_PCT,
+				  RFX_D_BIG_DROP_PCT,
+				  RFX_D_BIG_SUSTAINED_CAP_PCT) !=
+		RFX_D_BIG_SUSTAINED_CAP_PCT);
+	WARN_ON(rfx_daily_cap_pct(RFX_D_BIG_DROP_PCT, RFX_D_BIG_CAP_PCT,
+				  RFX_D_BIG_LIFT_PCT, RFX_D_BIG_DROP_PCT,
+				  RFX_D_BIG_SUSTAINED_CAP_PCT) !=
+		RFX_D_BIG_CAP_PCT);
+	WARN_ON(rfx_daily_cap_pct(RFX_D_BIG_LIFT_PCT, RFX_D_BIG_CAP_PCT,
+				  RFX_D_BIG_LIFT_PCT, RFX_D_BIG_DROP_PCT,
+				  RFX_D_BIG_SUSTAINED_CAP_PCT) !=
+		RFX_D_BIG_SUSTAINED_CAP_PCT);
+	for (d = 0, prev = 0; d <= 100; d++) {
+		c = rfx_daily_cap_pct(d, RFX_D_BIG_CAP_PCT, RFX_D_BIG_LIFT_PCT,
+				      RFX_D_BIG_DROP_PCT,
+				      RFX_D_BIG_SUSTAINED_CAP_PCT);
+		WARN_ON(d && c < prev);
+		prev = c;
+	}
+
+	/* Daily UI boost. Settled high must not re-arm (resample zeroes the
+	 * step); a step into the ARM region opens exactly one window; the
+	 * cooldown blocks the immediate re-arm that a duty-cycling load would
+	 * otherwise get every cycle. */
+	memset(&p, 0, sizeof(p));
+	rfx_daily_ui_boost(&p, 100, t);
+	WARN_ON(p.daily_ui_boost_end_ns || p.daily_ui_prev_demand_pct != 100);
+
+	/* A step into the ARM region arms exactly one window + cooldown. */
+	memset(&p, 0, sizeof(p));
+	p.daily_ui_sample_ns = t;
+	p.daily_ui_prev_demand_pct = RFX_D_UI_ARM_PCT - RFX_D_UI_STEP_PCT;
+	rfx_daily_ui_boost(&p, RFX_D_UI_ARM_PCT, t + 1);
+	WARN_ON(p.daily_ui_boost_end_ns != t + 1 + RFX_D_UI_BOOST_NS);
+	WARN_ON(p.daily_ui_cooldown_end_ns != t + 1 + RFX_D_UI_COOLDOWN_NS);
+
+	/* Settled high: the resample zeroes the step, so no second window.
+	 * Clear the cooldown and the armed flag first -- both block earlier
+	 * than the step test, so leaving them set passes this on whichever
+	 * guard happens to be widest instead of on the resample. */
+	p.daily_ui_boost_end_ns = 0;
+	p.daily_ui_cooldown_end_ns = 0;
+	p.daily_ui_armed = false;
+	rfx_daily_ui_boost(&p, 100, t + 1 + RFX_D_UI_SAMPLE_NS);
+	rfx_daily_ui_boost(&p, 100, t + 2 + RFX_D_UI_SAMPLE_NS);
+	WARN_ON(p.daily_ui_boost_end_ns);
+
+	/* Step inside the cooldown: still blocked. */
+	memset(&p, 0, sizeof(p));
+	p.daily_ui_sample_ns = t;
+	p.daily_ui_prev_demand_pct = RFX_D_UI_ARM_PCT - RFX_D_UI_STEP_PCT;
+	p.daily_ui_cooldown_end_ns = t + RFX_D_UI_COOLDOWN_NS;
+	rfx_daily_ui_boost(&p, RFX_D_UI_ARM_PCT, t + 1);
+	WARN_ON(p.daily_ui_boost_end_ns);
+
+	/* Below ARM: nothing to lift. */
+	memset(&p, 0, sizeof(p));
+	p.daily_ui_sample_ns = t;
+	rfx_daily_ui_boost(&p, RFX_D_UI_ARM_PCT - 1, t + 1);
+	WARN_ON(p.daily_ui_boost_end_ns);
+
+	/* The armed flag spans the cooldown, not the window: a load that stays
+	 * in the region must still be armed after the window closes, or the
+	 * cooldown is the only thing spacing the windows apart. */
+	memset(&p, 0, sizeof(p));
+	p.daily_ui_sample_ns = t;
+	p.daily_ui_prev_demand_pct = RFX_D_UI_ARM_PCT - RFX_D_UI_STEP_PCT;
+	rfx_daily_ui_boost(&p, RFX_D_UI_ARM_PCT, t + 1);
+	rfx_daily_ui_boost_clear(&p, RFX_D_UI_ARM_PCT,
+				 t + 1 + RFX_D_UI_BOOST_NS);
+	WARN_ON(!p.daily_ui_armed);
+	rfx_daily_ui_boost_clear(&p, RFX_D_UI_ARM_PCT,
+				 t + 1 + RFX_D_UI_COOLDOWN_NS);
+	WARN_ON(p.daily_ui_armed);
+
+	/* Gaming frame boost: one step arms one window, boost_armed consumes
+	 * the step so the same rise cannot re-arm, clear exits the armed
+	 * state below CLEAR. */
+	memset(&p, 0, sizeof(p));
+	p.boost_sample_ns = t;
+	p.boost_prev_demand_pct = RFX_G_FRAME_BOOST_ARM_PCT -
+				  RFX_G_FRAME_BOOST_DELTA_PCT;
+	rfx_gaming_frame_boost(&p, RFX_G_FRAME_BOOST_ARM_PCT, t + 1);
+	WARN_ON(!p.boost_armed ||
+		p.gaming_boost_end_ns != t + 1 + RFX_G_FRAME_BOOST_NS ||
+		p.gaming_boost_pct != RFX_G_FRAME_BOOST_MAX_PCT);
+
+	/* Same rise again before the resample: consumed, no re-arm. */
+	end = p.gaming_boost_end_ns;
+	rfx_gaming_frame_boost(&p, RFX_G_FRAME_BOOST_ARM_PCT + 5, t + 2);
+	WARN_ON(p.gaming_boost_end_ns != end);
+
+	/* Deferred warmup arm: nothing at the write, nothing below TRIGGER,
+	 * nothing while cooling holds, one window on the crossing, and the
+	 * crossing consumes the pending flag. */
+	memset(&p, 0, sizeof(p));
+	p.gaming_warmup_pending = true;
+	rfx_warmup_arm(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1, t + 1);
+	WARN_ON(p.gaming_warmup_end_ns);
+	p.thermal_cooling = true;
+	rfx_warmup_arm(&p, 100, t + 2);
+	WARN_ON(p.gaming_warmup_end_ns);
+	p.thermal_cooling = false;
+	rfx_warmup_arm(&p, RFX_GAMING_WARMUP_TRIGGER_PCT, t + 3);
+	WARN_ON(!p.gaming_warmup_end_ns ||
+		p.gaming_warmup_end_ns != t + 3 + RFX_GAMING_WARMUP_NS ||
+		p.gaming_warmup_start_ns != t + 3 ||
+		p.gaming_warmup_pending);
+	rfx_warmup_arm(&p, 100, t + 4);
+	WARN_ON(p.gaming_warmup_end_ns != t + 3 + RFX_GAMING_WARMUP_NS);
+
+	/* Demand falls under CLEAR: disarmed. */
+	rfx_gaming_frame_boost_clear(&p, RFX_G_FRAME_BOOST_CLEAR_PCT - 1, t + 3);
+	WARN_ON(p.boost_armed || p.gaming_boost_pct);
+
+	/* Overflow safety: prev near 100 must not wrap to a "reached" verdict. */
+	WARN_ON(rfx_pct_step_reached(100, 99, 18));
+
+	/* Target hysteresis: a sub-band descent holds at the last COMMITTED
+	 * frequency, a real descent (>= band) passes, and rises are untouched.
+	 * Daily band is narrower than gaming's, so a gaming-band descent passes
+	 * in daily while a daily-band descent still holds. */
+	memset(&p, 0, sizeof(p));
+	p.next_freq = 500000;
+	WARN_ON(rfx_target_hysteresis(&p, 495000, 1000000, true) != 500000);
+	WARN_ON(rfx_target_hysteresis(&p, 460000, 1000000, true) != 460000);
+	WARN_ON(rfx_target_hysteresis(&p, 550000, 1000000, true) != 550000);
+	WARN_ON(rfx_target_hysteresis(&p, 495000, 1000000, false) != 500000);
+	WARN_ON(rfx_target_hysteresis(&p, 460000, 1000000, false) != 460000);
+	WARN_ON(rfx_target_hysteresis(&p, 550000, 1000000, false) != 550000);
 }
 
 static int __init vorpal_gov_init(void)
@@ -1794,15 +2435,34 @@ static int __init vorpal_gov_init(void)
 	/* Deadbands: every hysteretic pair must have its exit above its entry,
 	 * every floor at or below the boost it decays from, every daily floor at
 	 * or below the cap that clamps it. An inversion here is a latch that can
-	 * never release (or never engage) and is invisible at runtime. */
+	 * never release (or never engage) and is invisible at runtime.
+	 * DROP < LIFT additionally keeps the daily slide's divisor non-zero and
+	 * its direction monotonic; base <= sustained keeps the endpoints sane. */
 	BUILD_BUG_ON(RFX_G_FLOOR_GATE_PCT >= RFX_G_FLOOR_GATE_EXIT_PCT);
 	BUILD_BUG_ON(RFX_G_COOL_ENTER_PCT >= RFX_G_COOL_EXIT_PCT);
+	BUILD_BUG_ON(RFX_G_RISK_CLEAR_PCT >= RFX_G_RISK_ARM_PCT);
+	/* The step detector windows: the release must outlive one sample, or
+	 * it ends before the detector could ever extend it; a zero step would
+	 * arm on flat demand; CLEAR must sit under ARM or the armed state can
+	 * never release; the cooldown must hold the window shut between
+	 * interactions. */
+	BUILD_BUG_ON(RFX_D_UI_BOOST_NS >= RFX_D_UI_COOLDOWN_NS);
+	BUILD_BUG_ON(!RFX_D_UI_STEP_PCT);
+	BUILD_BUG_ON(RFX_D_UI_CLEAR_PCT >= RFX_D_UI_ARM_PCT);
+	BUILD_BUG_ON(RFX_G_FRAME_BOOST_CLEAR_PCT >= RFX_G_FRAME_BOOST_ARM_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_DROP_PCT >= RFX_D_LITTLE_LIFT_PCT);
 	BUILD_BUG_ON(RFX_D_BIG_DROP_PCT >= RFX_D_BIG_LIFT_PCT);
 	BUILD_BUG_ON(RFX_TEMP_EMERGENCY_CLEAR_MC >= RFX_TEMP_EMERGENCY_MC);
 	BUILD_BUG_ON(RFX_G_PRIME_FLOOR_PCT > RFX_G_WARMUP_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_BIG_FLOOR_PCT > RFX_G_WARMUP_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_WARMUP_FLOOR_PCT > 100);
+	/* The deferred arm must trigger on a burst, not on the resting band:
+	 * at or below the floor-gate exit it would fire on background activity
+	 * and spend the one shot before the game exists. Above EXTEND it can
+	 * never distinguish from a scene the extend path already covers. */
+	BUILD_BUG_ON(RFX_GAMING_WARMUP_TRIGGER_PCT <= RFX_G_FLOOR_GATE_EXIT_PCT);
+	BUILD_BUG_ON(RFX_GAMING_WARMUP_TRIGGER_PCT > RFX_GAMING_WARMUP_EXTEND_PCT);
+	BUILD_BUG_ON(RFX_GAMING_WARMUP_NS > RFX_GAMING_WARMUP_MAX_NS);
 	BUILD_BUG_ON(RFX_G_IDLE_FLOOR_PCT > RFX_G_LITTLE_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_COOL_STEADY_FLOOR_PCT > RFX_G_BIG_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_CAP_PCT > RFX_D_LITTLE_SUSTAINED_CAP_PCT);
