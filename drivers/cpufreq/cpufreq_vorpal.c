@@ -187,20 +187,22 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * back. Raising the cap pays for that on every sustained load as well, which is
  * the trade that already failed twice. So the window carries it instead.
  *
- * Shape: a scroll is not one event, it is a train of one-or-two-frame events
- * spaced by the frame period, and the detector must re-fire across the train
- * -- a step small enough for the per-frame demand oscillation to clear, a
- * sample window short enough to catch it, and a cooldown that lets the NEXT
- * frame's step re-open the window instead of spacing them a third of a second
- * apart. The lift itself is small and short: one frame's worth, expressed as a
- * cap lift where the band binds, not an additive kick that fires regardless
- * of whether demand was even pressing the cap. ---- */
+ * Shape: the window is sized to the INTERACTION, not to the frame. A frame-
+ * sized window (10ms) lifted one frame in seven of a fling and the remaining
+ * six ran clipped -- the interaction is hundreds of milliseconds, and it is
+ * the whole thing the smoothness judgement is made on. Window ~4-6 frames at
+ * 120Hz, cooldown still ahead of it so a duty-cycling load cannot hold the
+ * lift: continuous stepping settles at roughly two-thirds coverage, and the
+ * average during an ACTIVE interaction stays near the sustained cap -- the
+ * lift exists while the user interacts and nowhere else. Step small enough
+ * for the per-frame oscillation to clear, sample short enough to catch it.
+ * Expressed as a cap lift where the band binds, not an additive kick. ---- */
 #define RFX_D_UI_ARM_PCT		40
 #define RFX_D_UI_CLEAR_PCT		14
 #define RFX_D_UI_STEP_PCT		12
 #define RFX_D_UI_BOOST_PCT		8
-#define RFX_D_UI_BOOST_NS		(10 * NSEC_PER_MSEC)
-#define RFX_D_UI_COOLDOWN_NS		(80 * NSEC_PER_MSEC)
+#define RFX_D_UI_BOOST_NS		(48 * NSEC_PER_MSEC)
+#define RFX_D_UI_COOLDOWN_NS		(72 * NSEC_PER_MSEC)
 #define RFX_D_UI_SAMPLE_NS		(16 * NSEC_PER_MSEC)
 
 /* ---- Util EMA: rise instant, decay time-normalised, so the time constant is
