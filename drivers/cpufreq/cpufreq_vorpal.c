@@ -1088,11 +1088,18 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		/* Frame-paced boost: additive, before the thermal clamp so the
 		 * emergency cap stays the last word, and suppressed while the
 		 * platform is taking capacity -- boosting into a falling ceiling
-		 * is heat for nothing. */
+		 * is heat for nothing -- and while the warmup window is live:
+		 * the window IS the entry lift (its floor carries the spawn
+		 * phase), so the boost on top of it only stacked an
+		 * already-protected cluster toward the ceiling through the
+		 * die's most limiter-sensitive phase: the entry power spike
+		 * that pushes the first clamp event into exactly the frames
+		 * the window exists to protect. Detector still runs so window
+		 * state stays coherent; only the application is held. */
 		rfx_gaming_frame_boost(p, demand_pct, time);
 		rfx_gaming_frame_boost_clear(p, demand_pct, time);
 		if (p->gaming_boost_pct && time < p->gaming_boost_end_ns &&
-		    !p->thermal_cooling) {
+		    !p->thermal_cooling && !warmup_active) {
 			unsigned int boost_fl;
 
 			boost_fl = freq + rfx_pct(fceil, p->gaming_boost_pct);
