@@ -1191,8 +1191,12 @@ static unsigned int shrink_page_list(struct list_head *page_list,
 
 		/* Keep a page only when its OWN type is below the hard min;
 		 * mirrors get_scan_count(). Unguarded anon_below_min blocked
-		 * file reclaim in swapless envs (recovery) -> OOM on big copy. */
-		if (page_is_file_lru(page) ? sc->clean_below_min : sc->anon_below_min)
+		 * file reclaim in swapless envs (recovery) -> OOM on big copy.
+		 * When clean file is below its min too, file is hard-held, so
+		 * anon has to be the type that gives -- otherwise neither is
+		 * reclaimable and the only way out is the OOM killer. */
+		if (page_is_file_lru(page) ? sc->clean_below_min :
+				(sc->anon_below_min && !sc->clean_below_min))
 			goto keep_locked;
 
 		may_enter_fs = (sc->gfp_mask & __GFP_FS) ||
@@ -2590,8 +2594,15 @@ out:
 		 * Hard protection of the working set.
 		 * Don't reclaim anon/file pages when the amount is
 		 * below the watermark of the same type.
+		 *
+		 * Anon yields when clean file is below its min as well.
+		 * The clean-file check above has already forced SCAN_ANON,
+		 * which zeroes the file side; zeroing anon here too would
+		 * leave the whole lruvec at scan 0, so reclaim isolates
+		 * nothing and the allocation ends at the OOM killer.
 		 */
-		if (file ? sc->clean_below_min : sc->anon_below_min)
+		if (file ? sc->clean_below_min :
+				(sc->anon_below_min && !sc->clean_below_min))
 			scan = 0;
 
 		nr[lru] = scan;
