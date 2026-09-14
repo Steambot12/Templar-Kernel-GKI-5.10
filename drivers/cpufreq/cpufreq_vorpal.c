@@ -225,6 +225,13 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* Warmup ramp: instant rise, linear decay back to the baseline floor. */
 #define RFX_WARMUP_RAMP_DOWN_MS	60
+/* Entry tail: a game load outlasts the warmup window, and the sustained
+ * floors are valley-power values, not load-screen values. A window ending
+ * inside the entry phase decays over the long ramp so the bursty load tail
+ * stays covered; risk windows later in the session keep the sub-frame-short
+ * decay. */
+#define RFX_WARMUP_ENTRY_RAMP_DOWN_MS	1500
+#define RFX_GAMING_ENTRY_PHASE_NS	(2500 * NSEC_PER_MSEC)
 
 /* Gaming warmup lifts the render floors for spawn + asset load. Extends while
  * demand stays >EXTEND_PCT up to MAX_NS, releases early below RELEASE_PCT.
@@ -668,11 +675,12 @@ static void rfx_risk_rearm(struct rfx_policy *p, unsigned int demand_pct,
 		p->gaming_warmup_end_ns = time + RFX_G_RISK_BOOST_NS;
 }
 
-/* Warmup ramp: 100 while the window holds, then a linear decay over
- * RFX_WARMUP_RAMP_DOWN_MS back to the baseline floor. */
+/* Warmup ramp: 100 while the window holds, then a linear decay back to the
+ * baseline floor -- long inside the entry phase, short after it. */
 static unsigned int rfx_update_warmup_ramp(struct rfx_policy *p, bool active, u64 time)
 {
 	u64 delta_ns;
+	u64 ramp_ns;
 	unsigned int step;
 
 	if (active) {
@@ -684,21 +692,24 @@ static unsigned int rfx_update_warmup_ramp(struct rfx_policy *p, bool active, u6
 	if (p->warmup_ramp_pct == 0)
 		return 0;
 
+	ramp_ns = rfx_elapsed(time, p->gaming_warmup_start_ns) <=
+		  RFX_GAMING_ENTRY_PHASE_NS ?
+		  (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC :
+		  (u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC;
+
 	if (!p->warmup_ramp_last_ns)
 		p->warmup_ramp_last_ns = time;
 	delta_ns = rfx_elapsed(time, p->warmup_ramp_last_ns);
 
 	step = (unsigned int)min_t(u64,
-		(delta_ns * 100) / ((u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC), 100);
+		(delta_ns * 100) / ramp_ns, 100);
 
 	/* Advance by the time the step consumed, not to `time`: one ramp
-	 * percent is 0.6ms but gaming updates arrive every ~250us, so the
-	 * division floors to zero on most calls and advancing to `time` drops
-	 * the remainder, stalling the decay. */
+	 * percent is a fraction of a ms but gaming updates arrive more often,
+	 * so the division floors to zero on most calls and advancing to `time`
+	 * drops the remainder, stalling the decay. */
 	if (step > 0) {
-		u64 consumed_ns = (u64)step *
-			((u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC) /
-			100;
+		u64 consumed_ns = (u64)step * ramp_ns / 100;
 		p->warmup_ramp_last_ns += consumed_ns;
 		p->warmup_ramp_pct -= min(p->warmup_ramp_pct, step);
 	}
@@ -2279,6 +2290,20 @@ static void __init rfx_selfcheck(void)
 	p.warmup_ramp_last_ns = t;
 	WARN_ON(rfx_update_warmup_ramp(&p, false, t + 250000) != 100 ||
 		p.warmup_ramp_last_ns != t);
+
+	/* Entry-phase decay: inside the phase the long ramp governs, past it
+	 * the short one does. */
+	memset(&p, 0, sizeof(p));
+	p.gaming_warmup_start_ns = t;
+	WARN_ON(rfx_update_warmup_ramp(&p, true, t) != 100);
+	d = rfx_update_warmup_ramp(&p, false,
+		t + (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC / 2);
+	WARN_ON(d != 50);
+	p.warmup_ramp_pct = 100;
+	p.warmup_ramp_last_ns = t + RFX_GAMING_ENTRY_PHASE_NS;
+	WARN_ON(rfx_update_warmup_ramp(&p, false,
+		t + RFX_GAMING_ENTRY_PHASE_NS +
+		(u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC));
 
 	/* Frame-risk latch: one crossing arms one window; a second crossing while
 	 * still saturated must NOT re-arm (that would make the lift the steady
