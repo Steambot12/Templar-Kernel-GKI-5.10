@@ -250,6 +250,9 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_GAMING_WARMUP_EXTEND_PCT	90
 #define RFX_GAMING_WARMUP_RELEASE_PCT	40
 #define RFX_GAMING_WARMUP_RELEASE_NS	(100 * NSEC_PER_MSEC)
+/* Quiet run that re-arms the deferred warmup: the mode is sticky, so the
+ * one-shot arm is usually consumed long before a game is launched. */
+#define RFX_GAMING_REARM_QUIET_NS	(1000 * NSEC_PER_MSEC)
 
 /* Frame-risk re-arm of that same window. ARM sits above ordinary busy-scene
  * demand, CLEAR well below it, so one crossing yields one window; the window is
@@ -368,6 +371,7 @@ struct rfx_policy {
 	u64 gaming_warmup_end_ns;	/* floor lift after gaming_mode=1 */
 	u64 gaming_warmup_start_ns;	/* arm time — anchors the absolute cap */
 	bool gaming_warmup_pending;	/* armed at the write, starts on the burst */
+	u64 quiet_since_ns;		/* first sample of the current quiet run */
 
 	/*
 	 * Cluster-wide smoothed util, owned by the policy: a shared policy
@@ -621,7 +625,27 @@ static void rfx_cool_latch(struct rfx_policy *p, unsigned int fceil_pct, u64 tim
  * the pending flag, so a busy launcher can spend it, but a second write
  * re-arms. Never arms while the cooling latch holds -- same rule as the
  * extend path: no floor ride through a limiter event.
+ *
+ * The write happens long before the game (the mode is sticky), so the one
+ * shot is usually spent on something that is not the game. A sustained quiet
+ * run re-arms it: quiet then burst is the session-start signature, and the
+ * arm then anchors the entry phase to the real game start.
  */
+static void rfx_warmup_rearm_quiet(struct rfx_policy *p, unsigned int demand_pct,
+				   u64 time)
+{
+	if (demand_pct >= RFX_GAMING_WARMUP_RELEASE_PCT) {
+		p->quiet_since_ns = 0;
+		return;
+	}
+
+	if (!p->quiet_since_ns)
+		p->quiet_since_ns = time;
+	else if (!p->gaming_warmup_pending &&
+		 rfx_elapsed(time, p->quiet_since_ns) >= RFX_GAMING_REARM_QUIET_NS)
+		p->gaming_warmup_pending = true;
+}
+
 static void rfx_warmup_arm(struct rfx_policy *p, unsigned int demand_pct,
 			   u64 time)
 {
@@ -630,6 +654,7 @@ static void rfx_warmup_arm(struct rfx_policy *p, unsigned int demand_pct,
 		return;
 
 	p->gaming_warmup_pending = false;
+	p->quiet_since_ns = 0;
 	p->gaming_warmup_start_ns = time;
 	p->gaming_warmup_end_ns = time + RFX_GAMING_WARMUP_NS;
 }
@@ -1002,8 +1027,10 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		/* Deferred arm first: a crossing that would also trip the risk
 		 * path must find a live, properly anchored window to extend --
 		 * arming risk first would anchor the cap to a zero start. */
-		if (!little)
+		if (!little) {
+			rfx_warmup_rearm_quiet(p, demand_pct, time);
 			rfx_warmup_arm(p, demand_pct, time);
+		}
 
 		/* Little never renders, so a warmup floor there is heat plus
 		 * capacity EAS then packs work onto -- it neither arms a window
@@ -1710,6 +1737,7 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->gaming_warmup_end_ns = 0;
 	p->gaming_warmup_start_ns = 0;
 	p->gaming_warmup_pending = false;
+	p->quiet_since_ns = 0;
 	p->thermal_cooling = false;
 	p->floor_gated = false;
 	p->warmup_low_demand_since_ns = 0;
@@ -2508,6 +2536,24 @@ static void __init rfx_selfcheck(void)
 	rfx_warmup_arm(&p, 100, t + 4);
 	WARN_ON(p.gaming_warmup_end_ns != t + 3 + RFX_GAMING_WARMUP_NS);
 
+	/* Quiet re-arm: a quiet run under the release level returns the
+	 * pending flag, a busy one does not, and the re-armed flag is consumed
+	 * by the next TRIGGER crossing. */
+	memset(&p, 0, sizeof(p));
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_RELEASE_PCT - 1, t);
+	WARN_ON(p.quiet_since_ns != t);
+	rfx_warmup_rearm_quiet(&p, 100, t + 1);
+	WARN_ON(p.quiet_since_ns || p.gaming_warmup_pending);
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_RELEASE_PCT - 1, t + 2);
+	WARN_ON(p.quiet_since_ns != t + 2);
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_RELEASE_PCT - 1,
+			       t + 2 + RFX_GAMING_REARM_QUIET_NS);
+	WARN_ON(!p.gaming_warmup_pending);
+	rfx_warmup_arm(&p, RFX_GAMING_WARMUP_TRIGGER_PCT, t + 3);
+	WARN_ON(!p.gaming_warmup_end_ns ||
+		p.gaming_warmup_start_ns != t + 3 ||
+		p.gaming_warmup_pending || p.quiet_since_ns);
+
 	/* Demand falls under CLEAR: disarmed. */
 	rfx_gaming_frame_boost_clear(&p, RFX_G_FRAME_BOOST_CLEAR_PCT - 1, t + 3);
 	WARN_ON(p.boost_armed || p.gaming_boost_pct);
@@ -2564,6 +2610,7 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_GAMING_WARMUP_TRIGGER_PCT <= RFX_G_FLOOR_GATE_EXIT_PCT);
 	BUILD_BUG_ON(RFX_GAMING_WARMUP_TRIGGER_PCT > RFX_GAMING_WARMUP_EXTEND_PCT);
 	BUILD_BUG_ON(RFX_GAMING_WARMUP_NS > RFX_GAMING_WARMUP_MAX_NS);
+	BUILD_BUG_ON(RFX_GAMING_REARM_QUIET_NS <= RFX_GAMING_WARMUP_RELEASE_NS);
 	BUILD_BUG_ON(RFX_G_IDLE_FLOOR_PCT > RFX_G_LITTLE_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_COOL_STEADY_FLOOR_PCT > RFX_G_BIG_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_CAP_PCT > RFX_D_LITTLE_SUSTAINED_CAP_PCT);
