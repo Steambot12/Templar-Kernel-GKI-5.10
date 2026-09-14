@@ -127,6 +127,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * limiter cuts again, and the average lands below the equilibrium. */
 #define RFX_CEIL_RISE_PCT_PER_2MS	1
 
+/* A shallow fall must persist this long before the clock follows it down;
+ * a fall at least this deep is a real budget event and complies at once. */
+#define RFX_CEIL_FALL_DWELL_NS		(10 * NSEC_PER_MSEC)
+#define RFX_CEIL_FALL_BYPASS_PCT	5
+
 /* ---- Daily shaping, percent of the effective ceiling. Caps only, slid from a
  * base to a sustained endpoint by demand (demand reads ~1.25x real, and this
  * band was tuned with that skew). A sustained cap may never exceed 100; the
@@ -383,9 +388,10 @@ struct rfx_policy {
 	u64 daily_ui_boost_end_ns;
 	bool daily_ui_armed;
 
-	/* effective-ceiling filter — paced rise, instant fall */
+	/* effective-ceiling filter — paced rise, dwell-filtered shallow fall */
 	unsigned int ceil_rise_pct;
 	u64 ceil_rise_ref_ns;
+	u64 ceil_fall_ns;		/* first sample of the current shallow fall */
 	u64 cool_enter_ns;		/* first sample of the current sub-ENTER run */
 };
 
@@ -522,13 +528,16 @@ static inline u64 rfx_elapsed(u64 time, u64 stamp)
 }
 
 /*
- * Ceiling filter: a fall passes instantly, a rise is paced.
+ * Ceiling filter: a deep fall passes instantly, a shallow fall must persist
+ * for a dwell before the clock follows it, and a rise is paced.
  *
- * Falls are relief and must reach the clock on the evaluation that sees them;
- * a paced rise lets the platform settle just under the level it is defending
- * instead of being re-poked at every release. The ref advances only when
- * budget is consumed, so sibling CPUs evaluating between stamps cannot starve
- * the pace, and a gap with no evaluation hands the whole budget back at once.
+ * Falls are relief and must reach the clock on the evaluation that sees them
+ * -- at depth. A shallow dip is usually limiter noise; passing it through
+ * costs a paced recovery ramp for a cut that never held, so the clock holds
+ * the old ceiling until the reading is sustained. A rise ends any pending
+ * fall: the bounce never happened. The ref advances only when budget is
+ * consumed, so sibling CPUs evaluating between stamps cannot starve the
+ * pace, and a gap with no evaluation hands the whole budget back at once.
  *
  * Relief-side readers (cooling latch, relief depth) read the RAW value; only
  * the clock's ceiling goes through here.
@@ -539,10 +548,28 @@ static unsigned int rfx_ceil_rise_filter(struct rfx_policy *p,
 	u64 budget;
 
 	if (pct <= p->ceil_rise_pct) {
+		if (pct == p->ceil_rise_pct) {
+			p->ceil_fall_ns = 0;
+			return pct;
+		}
+		if (p->ceil_rise_pct - pct >= RFX_CEIL_FALL_BYPASS_PCT) {
+			p->ceil_rise_pct = pct;
+			p->ceil_rise_ref_ns = time;
+			p->ceil_fall_ns = 0;
+			return pct;
+		}
+		if (!p->ceil_fall_ns)
+			p->ceil_fall_ns = time;
+		if (rfx_elapsed(time, p->ceil_fall_ns) <
+		    RFX_CEIL_FALL_DWELL_NS)
+			return p->ceil_rise_pct;
 		p->ceil_rise_pct = pct;
 		p->ceil_rise_ref_ns = time;
+		p->ceil_fall_ns = 0;
 		return pct;
 	}
+
+	p->ceil_fall_ns = 0;
 
 	budget = rfx_elapsed(time, p->ceil_rise_ref_ns) / (2 * NSEC_PER_MSEC);
 	if (!budget)
@@ -1685,6 +1712,7 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->daily_ui_armed = false;
 	p->ceil_rise_pct = 100;
 	p->ceil_rise_ref_ns = 0;
+	p->ceil_fall_ns = 0;
 	p->cool_enter_ns = 0;
 	p->need_freq_update = true;
 }
@@ -2354,9 +2382,9 @@ static void __init rfx_selfcheck(void)
 	rfx_daily_ui_boost(&p, 100, RFX_G_COOL_ENTER_PCT - 1, t);
 	WARN_ON(p.daily_ui_armed || p.daily_ui_boost_end_ns);
 
-	/* Ceiling rise filter: falls instant, rises paced from the last
-	 * consumed budget, and a gap with no evaluation returns the whole
-	 * budget at once. */
+	/* Ceiling filter: deep falls instant, shallow falls dwell-filtered,
+	 * rises paced from the last consumed budget, and a gap with no
+	 * evaluation returns the whole budget at once. */
 	memset(&p, 0, sizeof(p));
 	p.ceil_rise_pct = 100;
 	WARN_ON(rfx_ceil_rise_filter(&p, 80, t) != 80);
@@ -2367,8 +2395,23 @@ static void __init rfx_selfcheck(void)
 	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 4 * NSEC_PER_MSEC) != 82);
 	/* A long gap hands back the whole budget: full recovery at once. */
 	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + NSEC_PER_SEC) != 100);
-	/* A fall mid-rise passes instantly, from any level. */
+	/* A deep fall passes instantly, from any level. */
 	WARN_ON(rfx_ceil_rise_filter(&p, 60, t + NSEC_PER_SEC + 1) != 60);
+
+	/* A shallow fall holds the ceiling until sustained; a bounce back
+	 * cancels it, and holding past the dwell lets it land. */
+	memset(&p, 0, sizeof(p));
+	p.ceil_rise_pct = 100;
+	WARN_ON(rfx_ceil_rise_filter(&p, 98, t) != 100);
+	/* Deeper but still shallow, sub-dwell: still held. */
+	WARN_ON(rfx_ceil_rise_filter(&p, 97, t + 5 * NSEC_PER_MSEC) != 100);
+	/* Bounce back to the ceiling: the pending fall is cancelled. */
+	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 6 * NSEC_PER_MSEC) != 100);
+	WARN_ON(rfx_ceil_rise_filter(&p, 98, t + 7 * NSEC_PER_MSEC) != 100);
+	/* Held past the dwell: the shallow fall lands. */
+	WARN_ON(rfx_ceil_rise_filter(&p, 98, t + 18 * NSEC_PER_MSEC) != 98);
+	/* Deep after shallow: still instant. */
+	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 19 * NSEC_PER_MSEC) != 90);
 
 	/* Cool latch: one sub-ENTER sample must not arm it, a sustained run
 	 * must, a sample in the band neither arms nor releases, and EXIT
@@ -2477,6 +2520,7 @@ static int __init vorpal_gov_init(void)
 	/* A zero rise pace would ratchet the ceiling down permanently: every
 	 * fall passes, no rise ever does. */
 	BUILD_BUG_ON(!RFX_CEIL_RISE_PCT_PER_2MS);
+	BUILD_BUG_ON(!RFX_CEIL_FALL_DWELL_NS || !RFX_CEIL_FALL_BYPASS_PCT);
 	/* A zero hold makes the latch arm and deliver nothing; CLEAR must sit
 	 * under ARM or the latch can never release. */
 	BUILD_BUG_ON(!RFX_D_UI_HOLD_NS);
