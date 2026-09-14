@@ -978,12 +978,20 @@ cpufreq_governor_init(schedutil_gov);
  * The 25% margin stays here because Vorpal maps util->freq itself (fmax *
  * util / cap) rather than through map_util_freq(), which is where that
  * margin normally lives.
+ *
+ * @bound_rt caps the RT term at a quarter of the CPU's capacity. Qualcomm's
+ * WALT governor never adds RT time into util at all; it only branches on
+ * cpu_util_rt() < (cap >> 2) when shaping the util->freq map, i.e. it treats
+ * RT below that level as ordinary and bounds it above. The same constant is
+ * used here: a cluster carrying a 120Hz display stream stays visible to the
+ * governor, but the RT contribution can no longer dominate a demand signal
+ * the app itself is nowhere near producing.
  */
-void rfx_get_util_gki510(int cpu, unsigned long boost,
+void rfx_get_util_gki510(int cpu, unsigned long boost, bool bound_rt,
 			 unsigned long *out_util, unsigned long *out_bw_min)
 {
 	struct rq *rq = cpu_rq(cpu);
-	unsigned long util, dl_util, irq, max_cap;
+	unsigned long util, dl_util, irq, max_cap, rt;
 
 	max_cap = (unsigned long)arch_scale_cpu_capacity(cpu);
 
@@ -1001,7 +1009,10 @@ void rfx_get_util_gki510(int cpu, unsigned long boost,
 		util = max_cap;
 		goto boosted;
 	}
-	util = uclamp_rq_util_with(rq, cpu_util_cfs(rq) + cpu_util_rt(rq), NULL);
+	rt = cpu_util_rt(rq);
+	if (bound_rt)
+		rt = min(rt, max_cap >> 2);
+	util = uclamp_rq_util_with(rq, cpu_util_cfs(rq) + rt, NULL);
 	dl_util = cpu_util_dl(rq);
 	/* Real saturation: no idle time left, fmax is correct here. */
 	if (util + dl_util >= max_cap) {
