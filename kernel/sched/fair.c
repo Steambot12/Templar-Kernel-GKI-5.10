@@ -130,14 +130,18 @@ const_debug unsigned int sysctl_sched_migration_cost	= 250000UL;
  * sched_entity fields, sysctl knobs and CFS hooks unchanged; the 6.6.3
  * task_struct/bore.c/futex machinery is NOT ported -- it would break KMI).
  *
- * penalty_scale 1024 makes the curve exact: burst_score = fls64(burst_time) -
- * penalty_offset, i.e. one nice step per doubling of an uninterrupted burst,
- * first step at 2^offset ns.
+ * penalty_scale 1536: one and a half nice steps per doubling of an
+ * uninterrupted burst -- the responsiveness experiment for this branch.
+ * Batch work loses weight faster, so interactive tasks clear the runqueue
+ * sooner; frame threads are structurally immune (they dequeue every frame,
+ * restart_burst() zeroes their accounting), so the stronger curve cannot
+ * touch them. Runtime A/B without reflash:
+ * kernel.sched_burst_penalty_scale.
  *
  * penalty_offset 27: first demotion at 2^27 ns = 134ms (16 frames at 120fps).
  * Frame threads dequeue every frame (restart_burst() zeroes accounting), so
  * they can never lose weight; only batch work (GC, media scan, compile) crosses
- * 134ms, gaining +1 nice per doubling. 27 not 26 (67ms): a legitimate nice-0
+ * 134ms, gaining nice steps per doubling. 27 not 26 (67ms): a legitimate nice-0
  * stretch (shader compile, level load) must not be demoted mid-load, and 67ms
  * would; 134ms won't. Upstream's 24 (16ms) suits a desktop where a demotion
  * costs a scroll, not a frame.
@@ -153,7 +157,7 @@ u8   __read_mostly sched_burst_exclude_kthreads = 1;
 u8   __read_mostly sched_burst_smoothness_long  = 1;
 u8   __read_mostly sched_burst_smoothness_short = 0;
 u8   __read_mostly sched_burst_penalty_offset   = 27;
-uint __read_mostly sched_burst_penalty_scale    = 1024;
+uint __read_mostly sched_burst_penalty_scale    = 1536;
 uint __read_mostly sched_burst_cache_lifetime   = 75000000;
 #endif // CONFIG_SCHED_BORE
 
