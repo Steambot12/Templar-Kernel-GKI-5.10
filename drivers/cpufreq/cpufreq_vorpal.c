@@ -121,13 +121,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * the pair is tuned together, never loosen both. */
 #define RFX_GAMING_DOWN_PCT_PER_2MS	1
 
-/* Ceiling rise pace, percent of fmax per 4ms, both profiles. Under sustained
+/* Ceiling rise pace, percent of fmax per 2ms, both profiles. Under sustained
  * load the clock sits on the ceiling, so an unpaced rise makes every limiter
  * release a bang: the clock snaps to the new ceiling, power overshoots, the
- * limiter cuts again, and the average lands below the equilibrium. 4ms base:
- * at the 2ms base the recovery half of the limiter cycle still outran the
- * die's settling, and the trace stayed jagged. */
-#define RFX_CEIL_RISE_PCT_PER_4MS	1
+ * limiter cuts again, and the average lands below the equilibrium. */
+#define RFX_CEIL_RISE_PCT_PER_2MS	1
 
 /* ---- Daily shaping, percent of the effective ceiling. Caps only, slid from a
  * base to a sustained endpoint by demand (demand reads ~1.25x real, and this
@@ -546,10 +544,10 @@ static unsigned int rfx_ceil_rise_filter(struct rfx_policy *p,
 		return pct;
 	}
 
-	budget = rfx_elapsed(time, p->ceil_rise_ref_ns) / (4 * NSEC_PER_MSEC);
+	budget = rfx_elapsed(time, p->ceil_rise_ref_ns) / (2 * NSEC_PER_MSEC);
 	if (!budget)
 		return p->ceil_rise_pct;
-	budget *= RFX_CEIL_RISE_PCT_PER_4MS;
+	budget *= RFX_CEIL_RISE_PCT_PER_2MS;
 
 	if (budget >= pct - p->ceil_rise_pct)
 		p->ceil_rise_pct = pct;
@@ -2363,10 +2361,10 @@ static void __init rfx_selfcheck(void)
 	p.ceil_rise_pct = 100;
 	WARN_ON(rfx_ceil_rise_filter(&p, 80, t) != 80);
 	/* One unit of budget moves one unit of ceiling. */
-	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 4 * NSEC_PER_MSEC) != 81);
+	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 2 * NSEC_PER_MSEC) != 81);
 	/* Sub-unit elapsed: nothing moves, and nothing is consumed. */
-	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 5 * NSEC_PER_MSEC) != 81);
-	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 8 * NSEC_PER_MSEC) != 82);
+	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 3 * NSEC_PER_MSEC) != 81);
+	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 4 * NSEC_PER_MSEC) != 82);
 	/* A long gap hands back the whole budget: full recovery at once. */
 	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + NSEC_PER_SEC) != 100);
 	/* A fall mid-rise passes instantly, from any level. */
@@ -2478,7 +2476,7 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_G_RISK_CLEAR_PCT >= RFX_G_RISK_ARM_PCT);
 	/* A zero rise pace would ratchet the ceiling down permanently: every
 	 * fall passes, no rise ever does. */
-	BUILD_BUG_ON(!RFX_CEIL_RISE_PCT_PER_4MS);
+	BUILD_BUG_ON(!RFX_CEIL_RISE_PCT_PER_2MS);
 	/* A zero hold makes the latch arm and deliver nothing; CLEAR must sit
 	 * under ARM or the latch can never release. */
 	BUILD_BUG_ON(!RFX_D_UI_HOLD_NS);
