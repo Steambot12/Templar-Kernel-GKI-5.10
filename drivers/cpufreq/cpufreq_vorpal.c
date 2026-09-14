@@ -113,6 +113,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Little never renders, so this floor is pure resting power: at the V/f knee
  * (== idle floor), never above it. Demand and up-rate-0 still cover a frame. */
 #define RFX_G_LITTLE_FLOOR_PCT		32
+/* Little entry lift: spawn/asset work is EAS-packed onto this cluster, and
+ * the resting floor is a valley value -- held against a load screen it
+ * starves the workers the render threads wait on. */
+#define RFX_G_LITTLE_WARMUP_FLOOR_PCT	38
 
 /* Max downward slew, percent of ceiling per 2ms elapsed (so a half percent
  * per ms is expressible in integers). Bounds the depth a short lull can dig:
@@ -1027,21 +1031,20 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		/* Deferred arm first: a crossing that would also trip the risk
 		 * path must find a live, properly anchored window to extend --
 		 * arming risk first would anchor the cap to a zero start. */
-		if (!little) {
-			rfx_warmup_rearm_quiet(p, demand_pct, time);
-			rfx_warmup_arm(p, demand_pct, time);
-		}
+		rfx_warmup_rearm_quiet(p, demand_pct, time);
+		rfx_warmup_arm(p, demand_pct, time);
 
-		/* Little never renders, so a warmup floor there is heat plus
-		 * capacity EAS then packs work onto -- it neither arms a window
-		 * nor rides one. Arming runs before the window is read, so an
-		 * edge takes effect on this evaluation rather than the next. */
+		/* Little rides the entry window with its own smaller floor but
+		 * never arms a risk window: mid-game a Little crossing is
+		 * compositing, not a frame at risk. Arming runs before the
+		 * window is read, so an edge takes effect on this evaluation
+		 * rather than the next. */
 		if (!little)
 			rfx_risk_rearm(p, demand_pct,
 				       rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT),
 				       time);
 
-		warmup_active = !little && p->gaming_warmup_end_ns &&
+		warmup_active = p->gaming_warmup_end_ns &&
 				time < p->gaming_warmup_end_ns;
 
 		/* Adaptive warmup: extend while Big/Prime demand holds above
@@ -1089,7 +1092,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			fl = rfx_pct(fceil, RFX_G_BIG_FLOOR_PCT);
 		else			/* Little: compositor / audio / input */
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
-		warmup_fl = little ? fl : rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT);
+		warmup_fl = little ? rfx_pct(fceil, RFX_G_LITTLE_WARMUP_FLOOR_PCT)
+				  : rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT);
 
 		/* Once the platform has taken capacity, holding floors defeats
 		 * thermal relief and makes the HW limiter sawtooth the clock.
@@ -2611,6 +2615,7 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_GAMING_WARMUP_TRIGGER_PCT > RFX_GAMING_WARMUP_EXTEND_PCT);
 	BUILD_BUG_ON(RFX_GAMING_WARMUP_NS > RFX_GAMING_WARMUP_MAX_NS);
 	BUILD_BUG_ON(RFX_GAMING_REARM_QUIET_NS <= RFX_GAMING_WARMUP_RELEASE_NS);
+	BUILD_BUG_ON(RFX_G_LITTLE_WARMUP_FLOOR_PCT <= RFX_G_LITTLE_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_IDLE_FLOOR_PCT > RFX_G_LITTLE_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_COOL_STEADY_FLOOR_PCT > RFX_G_BIG_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_CAP_PCT > RFX_D_LITTLE_SUSTAINED_CAP_PCT);
