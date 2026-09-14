@@ -630,15 +630,18 @@ static void rfx_cool_latch(struct rfx_policy *p, unsigned int fceil_pct, u64 tim
  * re-arms. Never arms while the cooling latch holds -- same rule as the
  * extend path: no floor ride through a limiter event.
  *
- * The write happens long before the game (the mode is sticky), so the one
- * shot is usually spent on something that is not the game. A sustained quiet
- * run re-arms it: quiet then burst is the session-start signature, and the
- * arm then anchors the entry phase to the real game start.
+ * The write happens long before the game (the mode is sticky) and the
+ * launcher tap is itself a burst, so the one shot is usually spent before
+ * the game process exists. What re-arms it is a run of demand BELOW THE
+ * ARMING LEVEL: an animated load screen parks the render cluster between
+ * the release level and TRIGGER, and that band is not a game burst.
+ * Counting quiet there lets the next crossing -- gameplay start -- arm a
+ * fresh window and anchor the entry phase to it.
  */
 static void rfx_warmup_rearm_quiet(struct rfx_policy *p, unsigned int demand_pct,
 				   u64 time)
 {
-	if (demand_pct >= RFX_GAMING_WARMUP_RELEASE_PCT) {
+	if (demand_pct >= RFX_GAMING_WARMUP_TRIGGER_PCT) {
 		p->quiet_since_ns = 0;
 		return;
 	}
@@ -2540,17 +2543,19 @@ static void __init rfx_selfcheck(void)
 	rfx_warmup_arm(&p, 100, t + 4);
 	WARN_ON(p.gaming_warmup_end_ns != t + 3 + RFX_GAMING_WARMUP_NS);
 
-	/* Quiet re-arm: a quiet run under the release level returns the
-	 * pending flag, a busy one does not, and the re-armed flag is consumed
-	 * by the next TRIGGER crossing. */
+	/* Quiet re-arm: a run under the ARMING level returns the pending
+	 * flag, the band between release and TRIGGER counts as quiet (that
+	 * band is a load screen, not a game burst), a run at or above
+	 * TRIGGER does not, and the re-armed flag is consumed by the next
+	 * TRIGGER crossing. */
 	memset(&p, 0, sizeof(p));
-	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_RELEASE_PCT - 1, t);
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1, t);
 	WARN_ON(p.quiet_since_ns != t);
-	rfx_warmup_rearm_quiet(&p, 100, t + 1);
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT, t + 1);
 	WARN_ON(p.quiet_since_ns || p.gaming_warmup_pending);
-	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_RELEASE_PCT - 1, t + 2);
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_RELEASE_PCT + 5, t + 2);
 	WARN_ON(p.quiet_since_ns != t + 2);
-	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_RELEASE_PCT - 1,
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1,
 			       t + 2 + RFX_GAMING_REARM_QUIET_NS);
 	WARN_ON(!p.gaming_warmup_pending);
 	rfx_warmup_arm(&p, RFX_GAMING_WARMUP_TRIGGER_PCT, t + 3);
