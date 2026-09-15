@@ -184,7 +184,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * cannot pin every cluster through the hottest phase. */
 #define RFX_GAMING_WARMUP_NS		(200 * NSEC_PER_MSEC)
 #define RFX_GAMING_WARMUP_MAX_NS	(300 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_TRIGGER_PCT	60
+/* 75 skewed = 60% real demand. An animated countdown or load scene parks the
+ * render tier around 40-60% real -- above the old 60 (48% real) line it never
+ * counted quiet, so gameplay start arrived with no window. It also stops
+ * moderate spill bursts (48-59% real) from riding the 80% floor on the spill
+ * tier, whose resting power is what tips the limiter into its sawtooth. */
+#define RFX_GAMING_WARMUP_TRIGGER_PCT	75
 #define RFX_GAMING_WARMUP_EXTEND_PCT	90
 #define RFX_GAMING_WARMUP_RELEASE_PCT	40
 #define RFX_GAMING_WARMUP_RELEASE_NS	(100 * NSEC_PER_MSEC)
