@@ -784,11 +784,15 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		/* Deferred arm before the risk path: a crossing that would also
 		 * trip risk must find a live, properly anchored window to
 		 * extend -- arming risk first would anchor the cap to a zero
-		 * start. Little never arms a risk window: mid-game a Little
-		 * crossing is compositing, not a frame at risk. */
+		 * start. The rescue is a render-band event: Little never arms
+		 * one (a crossing there is compositing), and on a 3-tier part
+		 * the top tier is the spill tier -- a crossing there is heavy
+		 * offload, not a missed frame, and the post-burst valley lift
+		 * is resting power on exactly the tier whose heat tips the
+		 * limiter into its sawtooth. */
 		rfx_warmup_rearm_quiet(p, demand_pct, time);
 		rfx_warmup_arm(p, demand_pct, time);
-		if (!little)
+		if (!little && !prime)
 			rfx_risk_rearm(p, demand_pct,
 				       rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT),
 				       time);
