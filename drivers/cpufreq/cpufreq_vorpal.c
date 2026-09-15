@@ -185,9 +185,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * GATE a cluster is idle: floor releases, no lift may arm; it rejoins above
  * GATE_EXIT. Every lift reads the floor_gated latch, never demand directly.
  * One gate for every role and every threshold -- which tier renders is a
- * per-frame EAS decision the governor cannot see. */
-#define RFX_G_FLOOR_GATE_PCT		25
-#define RFX_G_FLOOR_GATE_EXIT_PCT	35
+ * per-frame EAS decision the governor cannot see. The hold band must be wide:
+ * exit is an instant 20-point floor step while entry walks down slew-bounded
+ * (~40ms), so a spill tier oscillating through a narrow band sawtooths the
+ * clock and pays a voltage step per crossing. */
+#define RFX_G_FLOOR_GATE_PCT		22
+#define RFX_G_FLOOR_GATE_EXIT_PCT	42
 
 /* Floor for a gated (idle) cluster: at the V/f knee -- from fmin the OPP
  * transition plus rate gate turn a cold climb into a visible hitch. */
