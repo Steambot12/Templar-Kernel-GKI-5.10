@@ -190,6 +190,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_UI_CLEAR_PCT		14
 #define RFX_D_UI_BOOST_PCT		8
 #define RFX_D_UI_HOLD_NS		(1500 * NSEC_PER_MSEC)
+/* Step that opens a fresh window while the latch is still armed, and the
+ * window the reference is resampled over. Settled load re-seeds to its own
+ * level, so only a real rise counts -- see rfx_daily_ui_boost(). */
+#define RFX_D_UI_STEP_PCT		15
+#define RFX_D_UI_REF_NS			(250 * NSEC_PER_MSEC)
 
 /* ---- Util EMA: rise instant, decay time-normalised, so the time constant is
  * independent of eval rate. Period = interval removing 1/DIVISOR of the
@@ -404,6 +409,8 @@ struct rfx_policy {
 	/* daily UI-interaction boost — latched on ARM, released on CLEAR */
 	u64 daily_ui_boost_end_ns;
 	bool daily_ui_armed;
+	unsigned int daily_ui_ref_pct;	/* resampled demand reference */
+	u64 daily_ui_ref_ns;		/* when that reference was taken */
 
 	/* effective-ceiling filter — paced rise, dwell-filtered shallow fall */
 	unsigned int ceil_rise_pct;
@@ -924,13 +931,36 @@ static void rfx_gaming_frame_boost_clear(struct rfx_policy *p,
 static void rfx_daily_ui_boost(struct rfx_policy *p, unsigned int demand_pct,
 			       unsigned int fceil_pct, u64 time)
 {
+	bool step;
+
 	if (demand_pct <= RFX_D_UI_CLEAR_PCT) {
 		p->daily_ui_armed = false;
+		p->daily_ui_ref_pct = demand_pct;
+		p->daily_ui_ref_ns = time;
 		return;
 	}
 
-	if (p->daily_ui_armed || demand_pct < RFX_D_UI_ARM_PCT ||
-	    fceil_pct < RFX_G_COOL_ENTER_PCT)
+	/* Resampled reference, as in the frame boost: a load that has settled
+	 * high re-seeds to its own level, so its step reads zero. */
+	step = rfx_pct_step_reached(demand_pct, p->daily_ui_ref_pct,
+				    RFX_D_UI_STEP_PCT);
+	if (step || rfx_elapsed(time, p->daily_ui_ref_ns) >= RFX_D_UI_REF_NS) {
+		p->daily_ui_ref_pct = demand_pct;
+		p->daily_ui_ref_ns = time;
+	}
+
+	if (fceil_pct < RFX_G_COOL_ENTER_PCT)
+		return;
+
+	/* The level crossing alone fires once per boot on a device running
+	 * something: the latch only clears under CLEAR, and a live app never
+	 * gets there -- so every later app switch, keyboard popup or tab
+	 * change got no window at all. A demand step is the signature of an
+	 * interaction, so it opens a fresh window while still armed. Level
+	 * behaviour for the first interaction is unchanged. */
+	if (p->daily_ui_armed && !step)
+		return;
+	if (demand_pct < RFX_D_UI_ARM_PCT)
 		return;
 
 	p->daily_ui_armed = true;
@@ -1767,6 +1797,8 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->boost_armed = false;
 	p->daily_ui_boost_end_ns = 0;
 	p->daily_ui_armed = false;
+	p->daily_ui_ref_pct = 0;
+	p->daily_ui_ref_ns = 0;
 	p->ceil_rise_pct = 100;
 	p->ceil_rise_ref_ns = 0;
 	p->ceil_fall_ns = 0;
@@ -2480,6 +2512,27 @@ static void __init rfx_selfcheck(void)
 	rfx_daily_ui_boost(&p, 100, RFX_G_COOL_ENTER_PCT - 1, t);
 	WARN_ON(p.daily_ui_armed || p.daily_ui_boost_end_ns);
 
+	/* Step re-arm: with the latch still armed -- the state a device
+	 * running something stays in, since it never clears under CLEAR --
+	 * a demand step opens a fresh window, while the same demand held
+	 * steady does not. */
+	memset(&p, 0, sizeof(p));
+	rfx_daily_ui_boost(&p, RFX_D_UI_ARM_PCT, 100, t);
+	WARN_ON(!p.daily_ui_armed);
+	end = p.daily_ui_boost_end_ns;
+	rfx_daily_ui_boost(&p, RFX_D_UI_ARM_PCT, 100, t + RFX_D_UI_REF_NS);
+	WARN_ON(p.daily_ui_boost_end_ns != end);
+	rfx_daily_ui_boost(&p, RFX_D_UI_ARM_PCT + RFX_D_UI_STEP_PCT, 100,
+			   t + RFX_D_UI_REF_NS + RFX_D_UI_REF_NS / 2);
+	WARN_ON(p.daily_ui_boost_end_ns == end);
+
+	/* A step that never reaches the arm band opens nothing. */
+	memset(&p, 0, sizeof(p));
+	rfx_daily_ui_boost(&p, RFX_D_UI_CLEAR_PCT + 1, 100, t);
+	rfx_daily_ui_boost(&p, RFX_D_UI_CLEAR_PCT + 1 + RFX_D_UI_STEP_PCT, 100,
+			   t + 1);
+	WARN_ON(p.daily_ui_armed || p.daily_ui_boost_end_ns);
+
 	/* Ceiling filter: deep falls instant, shallow falls dwell-filtered,
 	 * rises paced from the last consumed budget, and a gap with no
 	 * evaluation returns the whole budget at once. */
@@ -2643,6 +2696,8 @@ static int __init vorpal_gov_init(void)
 	 * under ARM or the latch can never release. */
 	BUILD_BUG_ON(!RFX_D_UI_HOLD_NS);
 	BUILD_BUG_ON(RFX_D_UI_CLEAR_PCT >= RFX_D_UI_ARM_PCT);
+	BUILD_BUG_ON(!RFX_D_UI_STEP_PCT || !RFX_D_UI_REF_NS);
+	BUILD_BUG_ON(RFX_D_UI_ARM_PCT + RFX_D_UI_STEP_PCT > 100);
 	BUILD_BUG_ON(RFX_G_FRAME_BOOST_CLEAR_PCT >= RFX_G_FRAME_BOOST_ARM_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_DROP_PCT >= RFX_D_LITTLE_LIFT_PCT);
 	BUILD_BUG_ON(RFX_D_BIG_DROP_PCT >= RFX_D_BIG_LIFT_PCT);
