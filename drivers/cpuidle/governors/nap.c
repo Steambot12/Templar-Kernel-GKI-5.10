@@ -978,7 +978,11 @@ static inline void nap_selftest(void) { }
 
 static struct cpuidle_governor nap_governor = {
 	.name	= "nap",
-	.rating	= 18,
+	/* Out-ranks menu (20) and teo (19) so the default cannot drift back
+	 * to a governor whose fixed heuristics go shallow on a device with a
+	 * dense timer pattern -- see the Kconfig entry. Select another
+	 * governor explicitly with cpuidle.governor= if needed. */
+	.rating	= 21,
 	.enable	= nap_enable_device,
 	.select	= nap_select,
 	.reflect = nap_reflect,

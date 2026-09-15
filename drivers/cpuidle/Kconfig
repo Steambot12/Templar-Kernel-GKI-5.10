@@ -57,8 +57,16 @@ config CPU_IDLE_GOV_NAP
 	  All arithmetic is fixed point, so no kernel FPU/SIMD is used and
 	  results are identical across CPUs.
 
-	  It does not out-rank menu or teo: select it explicitly with
-	  cpuidle.governor=nap on the kernel command line.
+	  It follows the device instead of assuming a timer pattern: the
+	  survival it scores each state with is learned from that CPU's own
+	  idle durations. A governor that predicts from the next timer event
+	  has to fall back to a shallower state whenever its hits are
+	  outnumbered by misses, which a device with dense vendor timers
+	  produces continuously -- and every fallback is power left on the
+	  table.
+
+	  This one out-ranks the other governors on purpose. Select a
+	  different one explicitly with cpuidle.governor= if needed.
 
 config CPU_IDLE_GOV_NAP_SELFTEST
 	bool "Self-test the NAP governor's fixed-point math at boot"
