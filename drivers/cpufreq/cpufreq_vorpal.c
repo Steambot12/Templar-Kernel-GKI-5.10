@@ -101,22 +101,21 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * tier), so its floor is pure resting power -- the heat that pushes the
  * die over the limiter's step threshold and starts the spike cycle:
  * burst chase -> power spike -> limiter step -> cpu sag -> gpu sag. */
-/* Measured-good sustained set. Between sub-test valleys the clusters sit on
- * these floors, so they set the sustained valley power -- and valley heat is
- * what sags fceil, and fceil is what a saturated clock rides. Higher floors
- * measured as a multi-core regression on this stack. */
-#define RFX_G_PRIME_FLOOR_PCT		52
-#define RFX_G_BIG_FLOOR_PCT		50
+/* Smoothness set. Between render bursts a cluster falls to its floor, and an
+ * intermittent cluster spends most of a scene there: too low a floor and the
+ * next burst starts from a cold OPP, which is the jank source this set is
+ * aimed at. The cost is the same valley heat that sags fceil, so this is the
+ * smoothness half of the trade -- measure the multi-core score against it. */
+#define RFX_G_PRIME_FLOOR_PCT		64
+#define RFX_G_BIG_FLOOR_PCT		58
 /* Warmup floor, both render tiers: spawn/asset load only, never steady state.
  * This one is the entry protection and stays high on purpose. */
 #define RFX_G_WARMUP_FLOOR_PCT		80
-/* Little never renders, so this floor is pure resting power: at the V/f knee
- * (== idle floor), never above it. Demand and up-rate-0 still cover a frame. */
-#define RFX_G_LITTLE_FLOOR_PCT		32
-/* Little entry lift: spawn/asset work is EAS-packed onto this cluster, and
- * the resting floor is a valley value -- held against a load screen it
- * starves the workers the render threads wait on. */
-#define RFX_G_LITTLE_WARMUP_FLOOR_PCT	38
+/* Little carries the spawn and asset-decompression workers, so its floor is
+ * a worker floor, not a V/f-knee resting value: held at the knee through a
+ * load screen it starves the threads the render cluster waits on. */
+#define RFX_G_LITTLE_FLOOR_PCT		60
+#define RFX_G_LITTLE_WARMUP_FLOOR_PCT	80
 
 /* Max downward slew, percent of ceiling per 2ms elapsed (so a half percent
  * per ms is expressible in integers). Bounds the depth a short lull can dig:
@@ -248,8 +247,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * activity), never while the cooling latch holds, and is one-shot per
  * gaming_mode entry. Still capped at MAX_NS from the arm instant, so it
  * cannot pin every cluster through the hottest phase. */
-#define RFX_GAMING_WARMUP_NS		(200 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_MAX_NS	(300 * NSEC_PER_MSEC)
+#define RFX_GAMING_WARMUP_NS		(300 * NSEC_PER_MSEC)
+#define RFX_GAMING_WARMUP_MAX_NS	(600 * NSEC_PER_MSEC)
 #define RFX_GAMING_WARMUP_TRIGGER_PCT	60
 #define RFX_GAMING_WARMUP_EXTEND_PCT	90
 #define RFX_GAMING_WARMUP_RELEASE_PCT	40
@@ -278,7 +277,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* Floor for a gated (idle) cluster: at the V/f knee -- from fmin the OPP
  * transition plus rate gate turn a cold climb into a visible hitch. */
-#define RFX_G_IDLE_FLOOR_PCT		32
+#define RFX_G_IDLE_FLOOR_PCT		38
 
 /* Cluster cool-down band, hysteretic: below ENTER the platform limiter is
  * taking capacity, so floors drop for relief and return at EXIT. The latch
@@ -286,12 +285,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * window, so a single sample must not arm it -- an early blip is the loudest
  * part of a session, before the die has settled. */
 #define RFX_G_COOL_ENTER_PCT		80
-#define RFX_G_COOL_EXIT_PCT		88
+#define RFX_G_COOL_EXIT_PCT		85
 #define RFX_G_COOL_ENTER_DWELL_NS	(50 * NSEC_PER_MSEC)
 
-/* Relief floor once the platform is taking capacity. The deeper pair
- * (46 floor, 65 depth) is what the relief was measured with. */
-#define RFX_G_COOL_STEADY_FLOOR_PCT	46
+/* Relief floor once the platform is taking capacity: the floor the cluster
+ * walks down to, well under the resting floors so relief stays relief. */
+#define RFX_G_COOL_STEADY_FLOOR_PCT	52
 
 /* Depth at which relief is fully applied: between ENTER and DEEP floors slide
  * down proportionally, so the clock walks with the ceiling instead of
