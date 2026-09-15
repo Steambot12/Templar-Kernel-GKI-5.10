@@ -234,6 +234,9 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* Warmup ramp: instant rise, linear decay back to the baseline floor. */
 #define RFX_WARMUP_RAMP_DOWN_MS	60
+/* Re-armed window decay: long enough to carry a load-screen burst
+ * transition, short enough that a session of them is not a standing lift. */
+#define RFX_WARMUP_REARM_RAMP_DOWN_MS	300
 /* Entry tail: a game load outlasts the warmup window, and the sustained
  * floors are valley-power values, not load-screen values. A window ending
  * inside the entry phase decays over the long ramp so the bursty load tail
@@ -739,11 +742,16 @@ static unsigned int rfx_update_warmup_ramp(struct rfx_policy *p, bool active, u6
 	if (p->warmup_ramp_pct == 0)
 		return 0;
 
-	ramp_ns = (p->gaming_warmup_entry &&
-		   rfx_elapsed(time, p->gaming_warmup_start_ns) <=
-		   RFX_GAMING_ENTRY_PHASE_NS) ?
-		  (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC :
-		  (u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC;
+	/* Entry window inside its phase decays over the long tail; a
+	 * re-armed window over the medium one; a risk rescue or a lapsed
+	 * entry window over the short one. */
+	if (p->gaming_warmup_entry)
+		ramp_ns = rfx_elapsed(time, p->gaming_warmup_start_ns) <=
+			  RFX_GAMING_ENTRY_PHASE_NS ?
+			  (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC :
+			  (u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC;
+	else
+		ramp_ns = (u64)RFX_WARMUP_REARM_RAMP_DOWN_MS * NSEC_PER_MSEC;
 
 	if (!p->warmup_ramp_last_ns)
 		p->warmup_ramp_last_ns = time;
@@ -2373,7 +2381,8 @@ static void __init rfx_selfcheck(void)
 		p.warmup_ramp_last_ns != t);
 
 	/* Entry-phase decay: only the session-entry window takes the long
-	 * ramp, and only inside its phase; a re-armed window never does. */
+	 * ramp, and only inside its phase; a re-armed window takes the
+	 * medium ramp; a lapsed entry window the short one. */
 	memset(&p, 0, sizeof(p));
 	p.gaming_warmup_start_ns = t;
 	p.gaming_warmup_entry = true;
@@ -2386,14 +2395,16 @@ static void __init rfx_selfcheck(void)
 	WARN_ON(rfx_update_warmup_ramp(&p, false,
 		t + RFX_GAMING_ENTRY_PHASE_NS +
 		(u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC));
-	/* Same phase, but not the entry window: short ramp, so the decay is
-	 * already done one short-ramp later instead of one long-ramp later. */
+	/* Not the entry window: medium ramp -- half decayed at half the
+	 * medium ramp, gone one medium ramp later. */
 	p.gaming_warmup_entry = false;
 	p.warmup_ramp_pct = 100;
 	p.warmup_ramp_last_ns = t;
+	d = rfx_update_warmup_ramp(&p, false,
+		t + (u64)RFX_WARMUP_REARM_RAMP_DOWN_MS * NSEC_PER_MSEC / 2);
+	WARN_ON(d != 50);
 	WARN_ON(rfx_update_warmup_ramp(&p, false,
-		t + (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC / 2)
-		!= 0);
+		t + (u64)RFX_WARMUP_REARM_RAMP_DOWN_MS * NSEC_PER_MSEC) != 0);
 
 	/* Only the session write marks the pending arm as the entry; a quiet
 	 * re-arm clears the mark, and the arm latches it into the window. */
@@ -2692,6 +2703,8 @@ static int __init vorpal_gov_init(void)
 	 * fall passes, no rise ever does. */
 	BUILD_BUG_ON(!RFX_CEIL_RISE_PCT_PER_2MS);
 	BUILD_BUG_ON(!RFX_CEIL_FALL_DWELL_NS || !RFX_CEIL_FALL_BYPASS_PCT);
+	BUILD_BUG_ON(RFX_WARMUP_RAMP_DOWN_MS >= RFX_WARMUP_REARM_RAMP_DOWN_MS ||
+		     RFX_WARMUP_REARM_RAMP_DOWN_MS >= RFX_WARMUP_ENTRY_RAMP_DOWN_MS);
 	/* A zero hold makes the latch arm and deliver nothing; CLEAR must sit
 	 * under ARM or the latch can never release. */
 	BUILD_BUG_ON(!RFX_D_UI_HOLD_NS);
