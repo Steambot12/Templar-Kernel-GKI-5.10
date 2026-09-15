@@ -285,6 +285,9 @@ struct irq_domain_info {
 
 struct irq_domain *irq_domain_instantiate(const struct irq_domain_info *info);
 
+#ifdef __GENKSYMS__	/* Android KABI hack to preserve CRC checker */
+struct irq_domain *__irq_domain_add(struct fwnode_handle *fwnode, int size,
+#else
 struct irq_domain *__irq_domain_add(struct fwnode_handle *fwnode, unsigned int size,
 #endif
 				    irq_hw_number_t hwirq_max, int direct_max,

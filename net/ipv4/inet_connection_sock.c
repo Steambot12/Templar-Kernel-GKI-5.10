@@ -937,7 +937,7 @@ void inet_csk_prepare_for_destroy_sock(struct sock *sk)
 	if (sk->sk_protocol == IPPROTO_TCP)
 		tcp_clear_sock_ops_cb_flags(sk);
 	sock_set_flag(sk, SOCK_DEAD);
-	this_cpu_inc(*sk->sk_prot->orphan_count);
+	percpu_counter_inc(sk->sk_prot->orphan_count);
 }
 
 /* This function allows to force a closure of a socket after the call to
