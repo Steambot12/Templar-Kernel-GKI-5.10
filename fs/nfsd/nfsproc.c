@@ -52,6 +52,7 @@ nfsd_proc_setattr(struct svc_rqst *rqstp)
 	struct nfsd_attrstat *resp = rqstp->rq_resp;
 	struct iattr *iap = &argp->attrs;
 	struct svc_fh *fhp;
+	int hosterr;
 
 	dprintk("nfsd: SETATTR  %s, valid=%x, size=%ld\n",
 		SVCFH_fmt(&argp->fh),
@@ -86,6 +87,12 @@ nfsd_proc_setattr(struct svc_rqst *rqstp)
 		resp->status = fh_verify(rqstp, fhp, 0, NFSD_MAY_NOP);
 		if (resp->status != nfs_ok)
 			goto out;
+
+		hosterr = fh_want_write(fhp);
+		if (hosterr) {
+			resp->status = nfserrno(hosterr);
+			goto out;
+		}
 
 		if (delta < 0)
 			delta = -delta;

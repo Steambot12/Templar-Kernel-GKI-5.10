@@ -960,6 +960,7 @@ config ARCH_HAS_HUGEPD
 config MAPPING_DIRTY_HELPERS
         bool
 
-source "mm/damon/Kconfig"
+config KMAP_LOCAL
+	bool
 
 endmenu
