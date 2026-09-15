@@ -375,6 +375,8 @@ struct rfx_policy {
 	u64 gaming_warmup_end_ns;	/* floor lift after gaming_mode=1 */
 	u64 gaming_warmup_start_ns;	/* arm time — anchors the absolute cap */
 	bool gaming_warmup_pending;	/* armed at the write, starts on the burst */
+	bool warmup_pending_entry;	/* that pending flag is the session entry */
+	bool gaming_warmup_entry;	/* this window is the session entry */
 	u64 quiet_since_ns;		/* first sample of the current quiet run */
 
 	/*
@@ -649,8 +651,10 @@ static void rfx_warmup_rearm_quiet(struct rfx_policy *p, unsigned int demand_pct
 	if (!p->quiet_since_ns)
 		p->quiet_since_ns = time;
 	else if (!p->gaming_warmup_pending &&
-		 rfx_elapsed(time, p->quiet_since_ns) >= RFX_GAMING_REARM_QUIET_NS)
+		 rfx_elapsed(time, p->quiet_since_ns) >= RFX_GAMING_REARM_QUIET_NS) {
 		p->gaming_warmup_pending = true;
+		p->warmup_pending_entry = false;
+	}
 }
 
 static void rfx_warmup_arm(struct rfx_policy *p, unsigned int demand_pct,
@@ -662,6 +666,10 @@ static void rfx_warmup_arm(struct rfx_policy *p, unsigned int demand_pct,
 
 	p->gaming_warmup_pending = false;
 	p->quiet_since_ns = 0;
+	/* Latched for the ramp: only the window opened by the session write
+	 * gets the long entry decay. Re-armed windows carry their own flag
+	 * down, so the entry ramp cannot re-apply every time one fires. */
+	p->gaming_warmup_entry = p->warmup_pending_entry;
 	p->gaming_warmup_start_ns = time;
 	p->gaming_warmup_end_ns = time + RFX_GAMING_WARMUP_NS;
 }
@@ -724,8 +732,9 @@ static unsigned int rfx_update_warmup_ramp(struct rfx_policy *p, bool active, u6
 	if (p->warmup_ramp_pct == 0)
 		return 0;
 
-	ramp_ns = rfx_elapsed(time, p->gaming_warmup_start_ns) <=
-		  RFX_GAMING_ENTRY_PHASE_NS ?
+	ramp_ns = (p->gaming_warmup_entry &&
+		   rfx_elapsed(time, p->gaming_warmup_start_ns) <=
+		   RFX_GAMING_ENTRY_PHASE_NS) ?
 		  (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC :
 		  (u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC;
 
@@ -1744,6 +1753,8 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->gaming_warmup_end_ns = 0;
 	p->gaming_warmup_start_ns = 0;
 	p->gaming_warmup_pending = false;
+	p->warmup_pending_entry = false;
+	p->gaming_warmup_entry = false;
 	p->quiet_since_ns = 0;
 	p->thermal_cooling = false;
 	p->floor_gated = false;
@@ -1812,8 +1823,11 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 			raw_spin_lock_irqsave(&p->update_lock, pflags);
 			rfx_reset_policy_locked(p);
 			/* Warmup is pending, not running: the game does not
-			 * exist yet at the moment of this write. */
+			 * exist yet at the moment of this write. Marked as the
+			 * session entry so this one window keeps the long entry
+			 * decay while re-armed windows do not. */
 			p->gaming_warmup_pending = true;
+			p->warmup_pending_entry = true;
 			raw_spin_unlock_irqrestore(&p->update_lock, pflags);
 		}
 		spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
@@ -2326,10 +2340,11 @@ static void __init rfx_selfcheck(void)
 	WARN_ON(rfx_update_warmup_ramp(&p, false, t + 250000) != 100 ||
 		p.warmup_ramp_last_ns != t);
 
-	/* Entry-phase decay: inside the phase the long ramp governs, past it
-	 * the short one does. */
+	/* Entry-phase decay: only the session-entry window takes the long
+	 * ramp, and only inside its phase; a re-armed window never does. */
 	memset(&p, 0, sizeof(p));
 	p.gaming_warmup_start_ns = t;
+	p.gaming_warmup_entry = true;
 	WARN_ON(rfx_update_warmup_ramp(&p, true, t) != 100);
 	d = rfx_update_warmup_ramp(&p, false,
 		t + (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC / 2);
@@ -2339,6 +2354,29 @@ static void __init rfx_selfcheck(void)
 	WARN_ON(rfx_update_warmup_ramp(&p, false,
 		t + RFX_GAMING_ENTRY_PHASE_NS +
 		(u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC));
+	/* Same phase, but not the entry window: short ramp, so the decay is
+	 * already done one short-ramp later instead of one long-ramp later. */
+	p.gaming_warmup_entry = false;
+	p.warmup_ramp_pct = 100;
+	p.warmup_ramp_last_ns = t;
+	WARN_ON(rfx_update_warmup_ramp(&p, false,
+		t + (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC / 2)
+		!= 0);
+
+	/* Only the session write marks the pending arm as the entry; a quiet
+	 * re-arm clears the mark, and the arm latches it into the window. */
+	memset(&p, 0, sizeof(p));
+	p.warmup_pending_entry = true;
+	p.gaming_warmup_pending = true;
+	rfx_warmup_arm(&p, RFX_GAMING_WARMUP_TRIGGER_PCT, t);
+	WARN_ON(!p.gaming_warmup_entry);
+	p.gaming_warmup_end_ns = 0;
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1, t);
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1,
+			       t + RFX_GAMING_REARM_QUIET_NS);
+	WARN_ON(!p.gaming_warmup_pending || p.warmup_pending_entry);
+	rfx_warmup_arm(&p, RFX_GAMING_WARMUP_TRIGGER_PCT, t + RFX_GAMING_REARM_QUIET_NS);
+	WARN_ON(p.gaming_warmup_entry);
 
 	/* Frame-risk latch: one crossing arms one window; a second crossing while
 	 * still saturated must NOT re-arm (that would make the lift the steady
