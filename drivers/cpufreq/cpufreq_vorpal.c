@@ -237,12 +237,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Re-armed window decay: long enough to carry a load-screen burst
  * transition, short enough that a session of them is not a standing lift. */
 #define RFX_WARMUP_REARM_RAMP_DOWN_MS	300
-/* Entry tail: a game load outlasts the warmup window, and the sustained
- * floors are valley-power values, not load-screen values. A window ending
- * inside the entry phase decays over the long ramp so the bursty load tail
- * stays covered; risk windows later in the session keep the sub-frame-short
- * decay. */
-#define RFX_WARMUP_ENTRY_RAMP_DOWN_MS	1500
+/* Entry tail: back to the measured-good short decay. The long tail held the
+ * warmup floor into the first seconds of gameplay, and that lift is die heat
+ * landing exactly on the spawn phase -- the floor the window exists to
+ * protect became the sag that dropped it. */
+#define RFX_WARMUP_ENTRY_RAMP_DOWN_MS	60
 #define RFX_GAMING_ENTRY_PHASE_NS	(2500 * NSEC_PER_MSEC)
 
 /* Gaming warmup lifts the render floors for spawn + asset load. Extends while
@@ -2703,8 +2702,7 @@ static int __init vorpal_gov_init(void)
 	 * fall passes, no rise ever does. */
 	BUILD_BUG_ON(!RFX_CEIL_RISE_PCT_PER_2MS);
 	BUILD_BUG_ON(!RFX_CEIL_FALL_DWELL_NS || !RFX_CEIL_FALL_BYPASS_PCT);
-	BUILD_BUG_ON(RFX_WARMUP_RAMP_DOWN_MS >= RFX_WARMUP_REARM_RAMP_DOWN_MS ||
-		     RFX_WARMUP_REARM_RAMP_DOWN_MS >= RFX_WARMUP_ENTRY_RAMP_DOWN_MS);
+	BUILD_BUG_ON(RFX_WARMUP_RAMP_DOWN_MS >= RFX_WARMUP_REARM_RAMP_DOWN_MS);
 	/* A zero hold makes the latch arm and deliver nothing; CLEAR must sit
 	 * under ARM or the latch can never release. */
 	BUILD_BUG_ON(!RFX_D_UI_HOLD_NS);
