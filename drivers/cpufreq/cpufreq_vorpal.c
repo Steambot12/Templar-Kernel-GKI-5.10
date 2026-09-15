@@ -237,12 +237,6 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Re-armed window decay: long enough to carry a load-screen burst
  * transition, short enough that a session of them is not a standing lift. */
 #define RFX_WARMUP_REARM_RAMP_DOWN_MS	300
-/* Entry tail: back to the measured-good short decay. The long tail held the
- * warmup floor into the first seconds of gameplay, and that lift is die heat
- * landing exactly on the spawn phase -- the floor the window exists to
- * protect became the sag that dropped it. */
-#define RFX_WARMUP_ENTRY_RAMP_DOWN_MS	60
-#define RFX_GAMING_ENTRY_PHASE_NS	(2500 * NSEC_PER_MSEC)
 
 /* Gaming warmup lifts the render floors for spawn + asset load. Extends while
  * demand stays >EXTEND_PCT up to MAX_NS, releases early below RELEASE_PCT.
@@ -741,14 +735,10 @@ static unsigned int rfx_update_warmup_ramp(struct rfx_policy *p, bool active, u6
 	if (p->warmup_ramp_pct == 0)
 		return 0;
 
-	/* Entry window inside its phase decays over the long tail; a
-	 * re-armed window over the medium one; a risk rescue or a lapsed
-	 * entry window over the short one. */
+	/* A re-armed window (quiet or risk) decays over the medium ramp; the
+	 * session-entry window and a risk rescue over the short one. */
 	if (p->gaming_warmup_entry)
-		ramp_ns = rfx_elapsed(time, p->gaming_warmup_start_ns) <=
-			  RFX_GAMING_ENTRY_PHASE_NS ?
-			  (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC :
-			  (u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC;
+		ramp_ns = (u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC;
 	else
 		ramp_ns = (u64)RFX_WARMUP_REARM_RAMP_DOWN_MS * NSEC_PER_MSEC;
 
@@ -1863,8 +1853,8 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 			rfx_reset_policy_locked(p);
 			/* Warmup is pending, not running: the game does not
 			 * exist yet at the moment of this write. Marked as the
-			 * session entry so this one window keeps the long entry
-			 * decay while re-armed windows do not. */
+			 * session entry so this one window is identifiable as
+			 * the session start. */
 			p->gaming_warmup_pending = true;
 			p->warmup_pending_entry = true;
 			raw_spin_unlock_irqrestore(&p->update_lock, pflags);
@@ -2315,8 +2305,9 @@ struct cpufreq_governor *cpufreq_default_governor(void)
 /* ===================================================================== */
 
 /*
- * gaming_mode is USER-OWNED: nothing in this driver ever writes it, and there
- * is deliberately no PM/suspend auto-clear.
+ * gaming_mode is USER-OWNED: no runtime path in this driver writes it (the
+ * only writer is the teardown path returning it to 0 as the governor goes
+ * away), and there is deliberately no PM/suspend auto-clear.
  */
 
 /*
@@ -2379,23 +2370,14 @@ static void __init rfx_selfcheck(void)
 	WARN_ON(rfx_update_warmup_ramp(&p, false, t + 250000) != 100 ||
 		p.warmup_ramp_last_ns != t);
 
-	/* Entry-phase decay: only the session-entry window takes the long
-	 * ramp, and only inside its phase; a re-armed window takes the
-	 * medium ramp; a lapsed entry window the short one. */
+	/* Ramp decay tiers: the session-entry window takes the short ramp, a
+	 * re-armed window the medium one -- half decayed at half the medium
+	 * ramp, gone one medium ramp later. */
 	memset(&p, 0, sizeof(p));
-	p.gaming_warmup_start_ns = t;
 	p.gaming_warmup_entry = true;
 	WARN_ON(rfx_update_warmup_ramp(&p, true, t) != 100);
-	d = rfx_update_warmup_ramp(&p, false,
-		t + (u64)RFX_WARMUP_ENTRY_RAMP_DOWN_MS * NSEC_PER_MSEC / 2);
-	WARN_ON(d != 50);
-	p.warmup_ramp_pct = 100;
-	p.warmup_ramp_last_ns = t + RFX_GAMING_ENTRY_PHASE_NS;
 	WARN_ON(rfx_update_warmup_ramp(&p, false,
-		t + RFX_GAMING_ENTRY_PHASE_NS +
-		(u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC));
-	/* Not the entry window: medium ramp -- half decayed at half the
-	 * medium ramp, gone one medium ramp later. */
+		t + (u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC) != 0);
 	p.gaming_warmup_entry = false;
 	p.warmup_ramp_pct = 100;
 	p.warmup_ramp_last_ns = t;
