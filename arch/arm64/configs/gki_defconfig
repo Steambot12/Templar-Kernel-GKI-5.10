@@ -77,7 +77,6 @@ CONFIG_SETEND_EMULATION=y
 CONFIG_RANDOMIZE_BASE=y
 # CONFIG_RANDOMIZE_MODULE_REGION_FULL is not set
 # CONFIG_STACKPROTECTOR_PER_TASK is not set
-CONFIG_CMDLINE="noirqdebug loglevel=3 transparent_hugepage=madvise cpuidle.governor=nap"
 CONFIG_CMDLINE_EXTEND=y
 # CONFIG_DMI is not set
 CONFIG_HIBERNATION=y
@@ -90,7 +89,7 @@ CONFIG_ENERGY_MODEL=y
 CONFIG_BOEFFLA_WL_BLOCKER=y
 CONFIG_CPU_IDLE=y
 CONFIG_CPU_IDLE_GOV_MENU=y
-CONFIG_CPU_IDLE_GOV_TEO=y
+# CONFIG_CPU_IDLE_GOV_TEO is not set
 CONFIG_CPU_IDLE_GOV_NAP=y
 CONFIG_ARM_CPUIDLE=y
 CONFIG_ARM_PSCI_CPUIDLE=y
@@ -467,7 +466,7 @@ CONFIG_REGULATOR_FIXED_VOLTAGE=y
 CONFIG_RC_CORE=y
 # CONFIG_RC_MAP is not set
 CONFIG_LIRC=y
-CONFIG_BPF_LIRC_MODE2=y
+CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none noirqdebug loglevel=3 nohz=on mem_sleep_default=shallow transparent_hugepage=always cgroup_enable=memory workqueue.power_efficient=1 cpuidle.governor=nap vm.swappiness=5 watermark_scale_factor=10 vm.dirty_ratio=10 vm.dirty_background_ratio=2 vm.dirty_expire_centisecs=500 kernel.panic_on_oom=0"
 CONFIG_RC_DECODERS=y
 CONFIG_RC_DEVICES=y
 CONFIG_MEDIA_CEC_RC=y

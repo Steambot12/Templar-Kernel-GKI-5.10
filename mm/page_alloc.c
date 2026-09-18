@@ -357,6 +357,28 @@ int watermark_boost_factor __read_mostly = 15000;
 int watermark_scale_factor = 10;
 
 /*
+ * Boot-time override for watermark_scale_factor via the kernel cmdline
+ * (e.g. "watermark_scale_factor=1000"). Applied before the first
+ * setup_per_zone_wmarks() so the watermarks are correct from the start;
+ * no runtime write to the variable is needed after this point.
+ */
+static int __init setup_watermark_scale_factor(char *str)
+{
+	if (!str)
+		return 0;
+	if (kstrtoint(str, 10, &watermark_scale_factor))
+		pr_err("mm: invalid watermark_scale_factor=%s, using default %d\n",
+		       str, 10);
+	if (watermark_scale_factor < 1)
+		watermark_scale_factor = 1;
+	if (watermark_scale_factor > 3000)
+		watermark_scale_factor = 3000;
+	pr_info("mm: watermark_scale_factor=%d\n", watermark_scale_factor);
+	return 1;
+}
+__setup("watermark_scale_factor=", setup_watermark_scale_factor);
+
+/*
  * Extra memory for the system to try freeing. Used to temporarily
  * free memory, to make space for new workloads. Anyone can allocate
  * down to the min watermarks controlled by min_free_kbytes above.
