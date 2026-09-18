@@ -42,7 +42,7 @@
 #endif
 
 #define CPUFREQ_VORPAL_NAME     "vorpal"
-#define CPUFREQ_VORPAL_VERSION  "2.2"
+#define CPUFREQ_VORPAL_VERSION  "2.2-1"
 #define CPUFREQ_VORPAL_AUTHOR   "Templar Dev"
 
 /* Sched-core helpers (owned by core sched): util getter, DL-bandwidth check,
@@ -61,79 +61,95 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_PRIME_CAP_THRESHOLD		1000
 
 /* DAILY eval rate limits (us), at rest only: gaming and the DL bypass
- * override. up=0 = commit on the first eval that sees the rise. */
+ * override. Up-rate gate: a 100us commit cadence, cheap and unnoticeable. */
 #define RFX_LITTLE_RATE_US		3000
 #define RFX_LITTLE_UP_US		200
 #define RFX_LITTLE_DOWN_US		3000
 
-#define RFX_BIG_RATE_US			3000
-#define RFX_BIG_UP_US			0
+#define RFX_BIG_RATE_US			3500
+#define RFX_BIG_UP_US			100
 #define RFX_BIG_DOWN_US			2500
 
 /* Gaming eval rate. Measured-stable; do not raise without an FPS measurement. */
 #define RFX_FAST_RATE_US		250
 
-/* Gaming down-rate gate. NOT rate-neutral -- only ever shorten it: the slew
- * window resets on a commit in either direction, this gate only on a downward
- * one, so widening it ratchets the clock up. */
+/* Gaming down-rate gate. Only ever shorten: the slew window resets on any
+ * commit, this gate only on a downward one, so widening it ratchets up. */
 #define RFX_GAMING_DOWN_US		4000
 
-/* Gaming floors, percent of the effective ceiling. NO cluster is capped: every
- * cluster tracks demand up to fceil. Floors only cover a cold landing, and they
- * are the gaming resting-power dial.
- *
- * Do not lower a *_FLOOR_PCT on a tier that may render, and do not raise one
- * either: the extra heat lowers fceil and the render cluster leaves fmax. */
-#define RFX_G_PRIME_FLOOR_PCT		64
-#define RFX_G_BIG_FLOOR_PCT		58
-/* Warmup floor, both render tiers: spawn/asset load only, never steady state. */
-#define RFX_G_WARMUP_FLOOR_PCT		80
-/* Little never renders, so this floor is pure resting power: at the V/f knee
- * (== idle floor), never above it. Demand and up-rate-0 still cover a frame. */
+/* Gaming floors, percent of the effective ceiling. No caps: every cluster
+ * tracks demand up to fceil. Floors cover a cold landing only; they are
+ * the resting-power dial. Raising one on a render tier lowers fceil via
+ * heat and costs FPS. */
+/* 500 kHz grid: 64 = 1536 (M), 58 = 1401 (M), 38 = 900 (M). */
+#define RFX_G_PRIME_FLOOR_PCT		58	/* spill tier, resting power */
+#define RFX_G_BIG_FLOOR_PCT		58	/* render tier (2-tier: top) */
+#define RFX_G_WARMUP_FLOOR_PCT		80	/* render tier only, timed lift */
+/* Little never renders: V/f knee + a small lift so an idle cluster does
+ * not bake the die before the first burst. */
 #define RFX_G_LITTLE_FLOOR_PCT		38
 
-/* Max downward slew, percent of ceiling per 2ms elapsed (so a half percent
- * per ms is expressible in integers). Bounds the depth a short lull can dig:
- * a recovery frame re-materialises demand over ~1ms of PELT, so every point
- * of dip is a frame-time tax on the next frame. The EMA owns descent shape --
- * the pair is tuned together, never loosen both. */
+/* Max downward slew, pct of ceiling per 2ms. Bounds how deep a short lull
+ * can dig the clock; the EMA owns descent shape. Tuned together, never
+ * loosen both. */
 #define RFX_GAMING_DOWN_PCT_PER_2MS	1
 
 /* ---- Daily shaping, percent of the effective ceiling. Caps only: the util
  * EMA plus PELT already carry any rise a window or burst floor covered. ---- */
 /* Little daily cap: just above the V/f knee. */
-#define RFX_D_LITTLE_CAP_PCT		65
+#define RFX_D_LITTLE_CAP_PCT		60
+/* Little daily floor at the V/f knee. HyperOS keyboard-open runs entirely on
+ * Little (compositor + IME); from fmin the cold OPP climb plus the 3ms rate
+ * gate reads as a transition hitch. The knee is the most efficient OPP, so
+ * this removes the hitch at near-zero power. Only Little, only daily, and only
+ * once the cluster is actually doing work: below the wake gate the cluster is
+ * parked and must fall to fmin, or the floor becomes a standing idle-drain
+ * cost (the whole point of the daily profile is battery). The gate reads the
+ * same 1.25x-skewed demand as every other daily threshold. */
+#define RFX_D_LITTLE_FLOOR_PCT		38
+#define RFX_D_LITTLE_FLOOR_GATE_PCT	8
 /* Sustained caps: long foreground/background work at lower voltage. */
 #define RFX_D_LITTLE_SUSTAINED_CAP_PCT	80
 /* Sustained latches, skewed 1.25x (real demand on at ~58%, off at ~44%). */
 #define RFX_D_LITTLE_LIFT_PCT		72
 #define RFX_D_LITTLE_DROP_PCT		55
-/* Big/Prime share one latch; a sustained cap may never exceed 100. */
+/* Big/Prime share one latch; a sustained cap may never exceed 100. The lift
+ * threshold reads the same 1.25x-skewed demand as the gaming gates, so a
+ * platform whose foreground carries a persistent uclamp.min floor must clear
+ * a higher bar before the sustained cap engages. */
 #define RFX_D_BIG_CAP_PCT		70
 #define RFX_D_PRIME_CAP_PCT		68
-#define RFX_D_BIG_LIFT_PCT		80
+#define RFX_D_BIG_LIFT_PCT		85
 #define RFX_D_BIG_DROP_PCT		68
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	80
-#define RFX_D_PRIME_SUSTAINED_CAP_PCT	80
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	75
+#define RFX_D_PRIME_SUSTAINED_CAP_PCT	75
 
 /* ---- Util EMA: rise instant, decay time-normalised, so the time constant is
  * independent of eval rate. Period = interval removing 1/DIVISOR of the
  * remaining error. ---- */
 #define RFX_EMA_DECAY_PERIOD_NS		250000	/* one gaming eval */
-/* Gaming decay: tau ~25ms. Must span more than one frame gap or the
- * inter-frame trough collapses the render floor every frame; a faster decay
- * tracked intra-frame duty instead of the scene and measured as an FPS drop.
- * The slew bound must stay LOOSER than this filter. */
+/* Gaming decay: tau ~25ms, must span more than one frame gap or the
+ * inter-frame trough collapses the render floor every frame. */
 #define RFX_EMA_GAMING_DIVISOR		100
 #define RFX_EMA_MAX_STEPS		32	/* cap: 8ms, one frame gap */
+
+/* Transition damper. A sharp fall from the render band is a scene
+ * transition, not a load loss: pin the committed level for one frame gap
+ * so the recovery frame does not pay the OPP climb. Fall-edge-only, so it
+ * never degrades into a floor. */
+#define RFX_G_DESCEND_DROP_PCT		15	/* points of skewed demand */
+/* Arms on a fall from above this level; decoupled from TRIGGER so normal
+ * gameplay variation does not fire the hold. */
+#define RFX_G_DESCEND_FROM_PCT		85
+#define RFX_G_DESCEND_HOLD_NS		((u64)RFX_EMA_MAX_STEPS * \
+					 RFX_EMA_DECAY_PERIOD_NS)	/* one frame gap */
 
 /* ---- Headroom above demand, percent. Stacks on the 25% DVFS margin already
  * applied by rfx_get_util_gki510, so this only raises the resting OPP. ---- */
 #define RFX_HEADROOM_DAILY_HIGH		4
 #define RFX_HEADROOM_DAILY_MID		2
 /* Gaming headroom, phased in linearly from the GATE: below it the resting OPP
- * is untouched, above it a frame is near budget and this closes the gap. Flat
- * at every level was resting-power cost; zero at every level cost the frame. */
+ * is untouched, above it a frame is near budget and this closes the gap. */
 #define RFX_HEADROOM_GAMING		8
 #define RFX_HEADROOM_GAMING_GATE	75
 
@@ -155,43 +171,97 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_TEMP_EMERGENCY_CLEAR_MC	88000
 #define RFX_EMERGENCY_CAP_PCT		70
 
-/* Warmup ramp: instant rise, linear decay back to the baseline floor. */
+/* Warmup ramp: instant rise, linear decay back to the baseline floor. The
+ * session-entry window decays over the short ramp; a re-armed window over the
+ * medium one -- long enough to carry a burst transition, short enough that a
+ * session of them is not a standing lift. */
 #define RFX_WARMUP_RAMP_DOWN_MS	60
+#define RFX_WARMUP_REARM_RAMP_DOWN_MS	300
 
-/* Gaming warmup lifts the render floors for spawn + asset load. Extends while
- * demand stays >EXTEND_PCT up to MAX_NS, releases early below RELEASE_PCT.
- * The window is anchored to the sysfs write, so MAX_NS stays short: a longer
- * one pins every cluster through the hottest phase. */
-#define RFX_GAMING_WARMUP_NS		(300 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_MAX_NS	(400 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_EXTEND_PCT	90
+/* Gaming warmup lifts the render floors for spawn + asset load. The write
+ * arms a PENDING window only; it starts on the first demand crossing
+ * TRIGGER, never while the cooling latch holds, and is one-shot per
+ * gaming_mode entry. Extends while demand stays >EXTEND_PCT up to MAX_NS,
+ * releases early below RELEASE_PCT. The 60ms ramp decay pulls the floor
+ * back during lulls so the window never becomes a standing lift. */
+#define RFX_GAMING_WARMUP_NS		(1000 * NSEC_PER_MSEC)
+#define RFX_GAMING_WARMUP_MAX_NS	(3000 * NSEC_PER_MSEC)
+/* 65 skewed = 52% real demand: above the 40-55% launcher-tap band, and
+ * low enough that the in-game running/scope-open bursts reliably cross it
+ * so the deferred window re-arms. Must stay well below RISK_ARM so the
+ * risk latch can actually clear (see RFX_G_RISK_CLEAR_PCT). */
+#define RFX_GAMING_WARMUP_TRIGGER_PCT	65
+/* 80 skewed = 64% real demand: spawn/asset-load oscillates 50-85 skewed and
+ * never sat above 90, so the window lapsed at MAX while the load was still
+ * running -- the mid-load freeze. 80 keeps a genuine idle lull from extending. */
+#define RFX_GAMING_WARMUP_EXTEND_PCT	80
 #define RFX_GAMING_WARMUP_RELEASE_PCT	40
 #define RFX_GAMING_WARMUP_RELEASE_NS	(100 * NSEC_PER_MSEC)
+/* Quiet run that re-arms the deferred warmup: the mode is sticky, so the
+ * one-shot arm is usually consumed long before a match begins. Must hold
+ * across the spawn + asset-load quiet stretches, so it is not measured
+ * from the burst that just consumed the arm. */
+#define RFX_GAMING_REARM_QUIET_NS	(3000 * NSEC_PER_MSEC)
+
+/* Frame-risk re-arm of the warmup window: one crossing arms one 80ms boost;
+ * demand must fall back under CLEAR before another can arm. CLEAR must stay
+ * well below TRIGGER (65) or the latch parks at TRIGGER and never re-arms.
+ * 80ms spans a scope-open / weapon-switch animation; 20ms released after two
+ * frames, mid-burst, which read as an FPS dip on every interaction. */
+#define RFX_G_RISK_ARM_PCT		70
+#define RFX_G_RISK_CLEAR_PCT		55
+#define RFX_G_RISK_BOOST_NS		(80 * NSEC_PER_MSEC)
 
 /* Gaming demand gate -- the only demand threshold in the gaming band. Below
  * GATE a cluster is idle: floor releases, no lift may arm; it rejoins above
  * GATE_EXIT. Every lift reads the floor_gated latch, never demand directly.
  * One gate for every role and every threshold -- which tier renders is a
- * per-frame EAS decision the governor cannot see. */
-#define RFX_G_FLOOR_GATE_PCT		25
-#define RFX_G_FLOOR_GATE_EXIT_PCT	35
+ * per-frame EAS decision the governor cannot see. The hold band must be wide:
+ * exit is an instant 20-point floor step while entry walks down slew-bounded
+ * (~40ms), so a spill tier oscillating through a narrow band sawtooths the
+ * clock and pays a voltage step per crossing. */
+#define RFX_G_FLOOR_GATE_PCT		22
+#define RFX_G_FLOOR_GATE_EXIT_PCT	42
 
 /* Floor for a gated (idle) cluster: at the V/f knee -- from fmin the OPP
  * transition plus rate gate turn a cold climb into a visible hitch. */
 #define RFX_G_IDLE_FLOOR_PCT		38
 
-/* Cluster cool-down band, hysteretic. Below ENTER the platform limiter is
- * taking capacity, so floors drop for relief and return at EXIT. */
-#define RFX_G_COOL_ENTER_PCT		80
+/* Cluster cool-down band, hysteretic: below ENTER the platform limiter is
+ * taking capacity, floors drop for relief, return at EXIT. Wide band keeps
+ * a continuously-reporting limiter from flapping the latch. */
+#define RFX_G_COOL_ENTER_PCT		70
 #define RFX_G_COOL_EXIT_PCT		85
 
+/* Temperature-based early cooldown entry (milli-Celsius). When gaming and the
+ * die temperature crosses WARM early, the cooling latch engages before fceil
+ * drops to COOL_ENTER -- the platform limiter is a lagging signal and by the
+ * time fceil falls the chip is already hot. Warm threshold sits well below the
+ * emergency cap; clear threshold restores the existing fceil-only exit at 85.
+ * WARM sits at 80C, not normal ~65C gaming temp: at 65C the latch engaged
+ * every heavy scene and the render cap (88%) never released -- the 120->60
+ * mid-game wall. The fceil ENTER path still handles a real limiter event; this
+ * is only the early die-hot supplement. 6C clear band is reachable in a lull. */
+#define RFX_G_COOL_TEMP_WARM_MC		80000
+#define RFX_G_COOL_TEMP_CLEAR_MC	(RFX_G_COOL_TEMP_WARM_MC - 6000)
+
 /* Relief floor once the platform is taking capacity. */
-#define RFX_G_COOL_STEADY_FLOOR_PCT	52
+#define RFX_G_COOL_STEADY_FLOOR_PCT	55
 
 /* Depth at which relief is fully applied: between ENTER and DEEP floors slide
  * down proportionally, so the clock walks with the ceiling instead of
- * stepping to the relief floor. */
-#define RFX_G_COOL_DEEP_PCT		60
+ * stepping to the relief floor. At 40% ceiling the render tier is at/below
+ * the baseline Big floor (58%) -- keep DEEP and ENTER wide enough that the
+ * floor walk completes before the render tier hits its own baseline floor. */
+#define RFX_G_COOL_DEEP_PCT		40
+
+/* Render-band thermal cap. Once the limiter takes capacity the render tier
+ * must shed its top OPPs or it keeps burning watts at fmax and the limiter
+ * pins it flat -- the 120-to-60 wall. Slides in linearly from COOL_ENTER
+ * (inactive) to COOL_CAP_PCT at COOL_DEEP, matching the floor walk. Render
+ * band only: little's compositor work is below the knee, and the spill tier
+ * is heat and offload, not frames. */
+#define RFX_G_COOL_CAP_PCT		88
 
 #define IOWAIT_BOOST_MIN		(SCHED_CAPACITY_SCALE / 8)
 
@@ -268,6 +338,10 @@ struct rfx_policy {
 
 	u64 gaming_warmup_end_ns;	/* floor lift after gaming_mode=1 */
 	u64 gaming_warmup_start_ns;	/* arm time — anchors the absolute cap */
+	bool gaming_warmup_pending;	/* armed at the write, starts on the burst */
+	bool warmup_pending_entry;	/* that pending flag is the session entry */
+	bool gaming_warmup_entry;	/* this window is the session entry */
+	u64 quiet_since_ns;		/* first sample of the current quiet run */
 
 	/*
 	 * Cluster-wide smoothed util, owned by the policy: a shared policy
@@ -281,9 +355,14 @@ struct rfx_policy {
 	bool little_cap_lifted;		/* daily: sustained-load cap lift latch */
 	bool big_cap_lifted;		/* daily: sustained-load cap lift for Big/Prime */
 	bool thermal_cooling;		/* gaming: floors dropped to idle, hysteretic */
+	bool risk_high;			/* gaming: frame-risk edge consumed, hysteretic */
 
 	/* adaptive warmup — early-release tracking */
 	u64 warmup_low_demand_since_ns;	/* when demand first fell below release threshold */
+
+	/* transition damper — scene-change anti-dip */
+	u64 descend_hold_end_ns;	/* slew pinned at the committed level until */
+	unsigned int prev_demand_pct;	/* demand at the previous evaluation */
 
 };
 
@@ -367,16 +446,10 @@ static inline unsigned int rfx_pct(unsigned int fmax, unsigned int pct)
 }
 
 /*
- * Effective ceiling: percent remaining, plus the unthrottled baseline it
- * applies to. Two throttle channels -- reading only the first was the
- * portability gap:
- *   thermal_pressure - cpufreq_cooling / LMH. Present on QCOM.
- *   policy->max      - vendor thermal HAL. The only channel on MTK.
- * Measured against the high-water policy->max, not the live value: a statically
- * low baseline (MTK per-core OPP split) must read as no throttle.
- *
- * Both ratios round UP, no deadband: reading a small real loss as zero raises
- * every floor computed against fceil and the platform clamps harder.
+ * Effective ceiling: percent remaining, applied to the unthrottled baseline
+ * (high-water policy->max). Two throttle channels, read in parallel:
+ * thermal_pressure (LMH, QCOM) and policy->max (vendor HAL, MTK only).
+ * Both ratios round UP; no deadband.
  */
 static unsigned int rfx_thermal_headroom_pct(struct rfx_policy *p,
 					     unsigned long max_cap,
@@ -423,11 +496,104 @@ static inline u64 rfx_elapsed(u64 time, u64 stamp)
 /* Helpers                                                               */
 /* ===================================================================== */
 
-/* Warmup ramp: 100 while the window holds, then a linear decay over
- * RFX_WARMUP_RAMP_DOWN_MS back to the baseline floor. */
+/*
+ * Deferred warmup arm. The sticky gaming_mode write arms a PENDING window
+ * long before the game exists; the launcher tap spends it. A quiet run
+ * below TRIGGER re-arms it so the next burst -- gameplay start -- anchors
+ * a fresh window. Never arms while the cooling latch holds.
+ */
+static void rfx_warmup_rearm_quiet(struct rfx_policy *p, unsigned int demand_pct,
+				   u64 time)
+{
+	if (demand_pct >= RFX_GAMING_WARMUP_TRIGGER_PCT) {
+		p->quiet_since_ns = 0;
+		return;
+	}
+
+	if (!p->quiet_since_ns)
+		p->quiet_since_ns = time;
+	else if (!p->gaming_warmup_pending &&
+		 rfx_elapsed(time, p->quiet_since_ns) >= RFX_GAMING_REARM_QUIET_NS) {
+		p->gaming_warmup_pending = true;
+		p->warmup_pending_entry = false;
+	}
+}
+
+static void rfx_warmup_arm(struct rfx_policy *p, unsigned int demand_pct,
+			   u64 time)
+{
+	if (!p->gaming_warmup_pending || p->thermal_cooling ||
+	    demand_pct < RFX_GAMING_WARMUP_TRIGGER_PCT)
+		return;
+
+	p->gaming_warmup_pending = false;
+	p->quiet_since_ns = 0;
+	/* Latched for the ramp: only the window opened by the session write
+	 * takes the short entry decay. Re-armed windows carry their own flag
+	 * down, so the entry ramp cannot re-apply every time one fires. */
+	p->gaming_warmup_entry = p->warmup_pending_entry;
+	p->gaming_warmup_start_ns = time;
+	p->gaming_warmup_end_ns = time + RFX_GAMING_WARMUP_NS;
+}
+
+/*
+ * Frame-risk re-arm. After the warmup window lapses the render clusters run
+ * on the bare baseline floor with no transient response left. One crossing
+ * above ARM arms one 20ms boost; demand must fall under CLEAR (or the
+ * window lapse) before another arms. Already at or above the floor buys
+ * nothing -- a lift there only pins the clock.
+ */
+static void rfx_risk_rearm(struct rfx_policy *p, unsigned int demand_pct,
+			   unsigned int warmup_fl, u64 time)
+{
+	if (demand_pct < RFX_G_RISK_ARM_PCT) {
+		/* Clear on demand under CLEAR, or on window lapse. Without the
+		 * lapse test, demand parked between CLEAR and ARM -- where a busy
+		 * scene sits between frames -- latches the edge forever after the
+		 * first window and blocks every re-arm. */
+		if (demand_pct <= RFX_G_RISK_CLEAR_PCT ||
+		    time >= p->gaming_warmup_end_ns)
+			p->risk_high = false;
+		return;
+	}
+
+	/* Nothing to gain: already committed at or above the floor this window
+	 * would install, so arming cannot raise this OPP -- only pin it. */
+	if (p->risk_high || p->next_freq >= warmup_fl)
+		return;
+
+	p->risk_high = true;
+	if (time + RFX_G_RISK_BOOST_NS > p->gaming_warmup_end_ns)
+		p->gaming_warmup_end_ns = time + RFX_G_RISK_BOOST_NS;
+}
+
+/*
+ * Scene-change damper. Pin the committed level for one frame gap across a
+ * sharp demand fall, so the recovery frame does not pay the OPP climb out
+ * of the dip. Fall-edge only: a sustained dip never re-arms, so this can
+ * never become a floor. Disabled off the render band and through limiter
+ * events.
+ */
+static bool rfx_descend_hold(struct rfx_policy *p, unsigned int demand_pct,
+			     bool render_band, bool cooling, u64 time)
+{
+	int drop = (int)p->prev_demand_pct - (int)demand_pct;
+
+	if (render_band && !cooling &&
+	    p->prev_demand_pct >= RFX_G_DESCEND_FROM_PCT &&
+	    drop >= RFX_G_DESCEND_DROP_PCT)
+		p->descend_hold_end_ns = time + RFX_G_DESCEND_HOLD_NS;
+	p->prev_demand_pct = demand_pct;
+
+	return render_band && !cooling && time < p->descend_hold_end_ns;
+}
+
+/* Warmup ramp: 100 while the window holds, then a linear decay back to the
+ * baseline floor -- short inside the entry phase, medium after it. */
 static unsigned int rfx_update_warmup_ramp(struct rfx_policy *p, bool active, u64 time)
 {
 	u64 delta_ns;
+	u64 ramp_ns;
 	unsigned int step;
 
 	if (active) {
@@ -439,21 +605,23 @@ static unsigned int rfx_update_warmup_ramp(struct rfx_policy *p, bool active, u6
 	if (p->warmup_ramp_pct == 0)
 		return 0;
 
+	ramp_ns = (u64)(p->gaming_warmup_entry ? RFX_WARMUP_RAMP_DOWN_MS :
+						 RFX_WARMUP_REARM_RAMP_DOWN_MS) *
+		  NSEC_PER_MSEC;
+
 	if (!p->warmup_ramp_last_ns)
 		p->warmup_ramp_last_ns = time;
 	delta_ns = rfx_elapsed(time, p->warmup_ramp_last_ns);
 
 	step = (unsigned int)min_t(u64,
-		(delta_ns * 100) / ((u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC), 100);
+		(delta_ns * 100) / ramp_ns, 100);
 
 	/* Advance by the time the step consumed, not to `time`: one ramp
 	 * percent is 0.6ms but gaming updates arrive every ~250us, so the
 	 * division floors to zero on most calls and advancing to `time` drops
 	 * the remainder, stalling the decay. */
 	if (step > 0) {
-		u64 consumed_ns = (u64)step *
-			((u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC) /
-			100;
+		u64 consumed_ns = (u64)step * ramp_ns / 100;
 		p->warmup_ramp_last_ns += consumed_ns;
 		p->warmup_ramp_pct -= min(p->warmup_ramp_pct, step);
 	}
@@ -566,14 +734,14 @@ static unsigned long rfx_apply_headroom(unsigned long util, unsigned long max_ca
  * Last clamp before OPP resolution. Flat and latched. Normal throttling is the
  * platform's job; this only fires at RFX_TEMP_EMERGENCY_MC.
  */
-static unsigned int rfx_thermal_clamp(unsigned int freq, unsigned int fmax)
+static unsigned int rfx_thermal_clamp(unsigned int freq, unsigned int fceil)
 {
 	int pct = atomic_read(&rfx_emergency_cap_pct);
 
 	if (likely(pct >= 100))
 		return freq;
 
-	return min(freq, rfx_pct(fmax, pct));
+	return min(freq, rfx_pct(fceil, pct));
 }
 
 /* ===================================================================== */
@@ -625,6 +793,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		unsigned int warmup_ramp_pct;
 		unsigned int fl, warmup_fl, demand_pct;
 		u64 down_step, slew_ns;
+		bool hold;
 
 		/*
 		 * Demand before headroom inflation. CAVEAT: raw_util already
@@ -633,6 +802,43 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 */
 		demand_pct = (unsigned int)(raw_util * 100 / max_cap);
 
+		/* Latch first: the arm paths and the extend path below must
+		 * read the current state, not last evaluation's.
+		 * Cooling enters when fceil falls below COOL_ENTER, or
+		 * early on temperature rise during gaming (the platform
+		 * limiter is a lagging signal -- by the time fceil drops
+		 * the die is already hot). Release requires fceil back
+		 * above EXIT and temp below the clear threshold. */
+		if (fceil_pct < RFX_G_COOL_ENTER_PCT ||
+		    atomic_read(&rfx_temp_mc) >= RFX_G_COOL_TEMP_WARM_MC)
+			p->thermal_cooling = true;
+		else if (fceil_pct >= RFX_G_COOL_EXIT_PCT &&
+			 atomic_read(&rfx_temp_mc) <= RFX_G_COOL_TEMP_CLEAR_MC) {
+			p->thermal_cooling = false;
+			/* One release, a one-frame floor step up: the re-climb
+			 * after sustained relief must not pay an OPP step during
+			 * a scene change. */
+			p->descend_hold_end_ns = time + RFX_G_DESCEND_HOLD_NS;
+		}
+
+		/* Deferred arm before the risk path: a crossing that would also
+		 * trip risk must find a live, properly anchored window to
+		 * extend -- arming risk first would anchor the cap to a zero
+		 * start. The rescue is a render-band event: Little never arms
+		 * one (a crossing there is compositing), and on a 3-tier part
+		 * the top tier is the spill tier -- a crossing there is heavy
+		 * offload, not a missed frame, and the post-burst valley lift
+		 * is resting power on exactly the tier whose heat tips the
+		 * limiter into its sawtooth. */
+		rfx_warmup_rearm_quiet(p, demand_pct, time);
+		rfx_warmup_arm(p, demand_pct, time);
+		if (!little && !prime)
+			rfx_risk_rearm(p, demand_pct,
+				       rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT),
+				       time);
+		hold = rfx_descend_hold(p, demand_pct, !little && !prime,
+					p->thermal_cooling, time);
+
 		/* Little never renders, so a warmup floor there is heat plus
 		 * capacity EAS then packs work onto. */
 		warmup_active = !little && p->gaming_warmup_end_ns &&
@@ -640,9 +846,12 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		/* Adaptive warmup: extend while Big/Prime demand holds above
 		 * EXTEND_PCT (absolute cap MAX_NS from arm), release early below
-		 * RELEASE_PCT for RELEASE_NS. */
+		 * RELEASE_PCT for RELEASE_NS. No extension once the limiter is
+		 * taking capacity: riding the floor through a throttle adds heat
+		 * exactly where fceil is falling. */
 		if (warmup_active) {
-			if (demand_pct >= RFX_GAMING_WARMUP_EXTEND_PCT) {
+			if (demand_pct >= RFX_GAMING_WARMUP_EXTEND_PCT &&
+			    !p->thermal_cooling) {
 				u64 cap = p->gaming_warmup_start_ns +
 					  RFX_GAMING_WARMUP_MAX_NS;
 				u64 ext = time + RFX_EMA_DECAY_PERIOD_NS * 4;
@@ -673,14 +882,18 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			fl = rfx_pct(fceil, RFX_G_BIG_FLOOR_PCT);
 		else			/* Little: compositor / audio / input */
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
-		warmup_fl = little ? fl : rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT);
-
-		/* Once the platform has taken capacity, holding floors defeats
-		 * thermal relief and makes the HW limiter sawtooth the clock. */
-		if (fceil_pct < RFX_G_COOL_ENTER_PCT)
-			p->thermal_cooling = true;
-		else if (fceil_pct >= RFX_G_COOL_EXIT_PCT)
-			p->thermal_cooling = false;
+		/*
+		 * Warmup floor lives where the render tier lives. is_prime already
+		 * encodes topology (rfx_cap_is_prime: top tier AND >= 3 tiers), so
+		 * on a 3-tier part the top tier is spill and takes no lift: a burst
+		 * there is heavy offload, not a frame at risk, and holding 80% on it
+		 * is resting power that walks the limiter into its sawtooth. On
+		 * 2-tier parts the top tier is render (is_prime false) and keeps the
+		 * lift. Little never renders. Same render-band restriction as the
+		 * risk re-arm above.
+		 */
+		warmup_fl = (!little && !prime) ?
+				rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT) : fl;
 
 		if (p->thermal_cooling) {
 			unsigned int steady = rfx_pct(fceil,
@@ -688,16 +901,51 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			unsigned int depth;
 
 			/* Relief scales with throttle depth: 0 at ENTER, full at
-			 * DEEP, so the clock walks down with the ceiling. */
+			 * DEEP, so the clock walks down with the ceiling.
+			 * Temperature-based early entry also contributes depth
+			 * so the floor walk starts before fceil falls. */
+			int t_mc = atomic_read(&rfx_temp_mc);
+
 			depth = fceil_pct >= RFX_G_COOL_ENTER_PCT ? 0 :
 				fceil_pct <= RFX_G_COOL_DEEP_PCT ? 100 :
 				(RFX_G_COOL_ENTER_PCT - fceil_pct) * 100 /
 				(RFX_G_COOL_ENTER_PCT - RFX_G_COOL_DEEP_PCT);
+			if (t_mc >= RFX_G_COOL_TEMP_WARM_MC) {
+				unsigned int t_depth =
+				  (unsigned int)(t_mc - RFX_G_COOL_TEMP_WARM_MC) *
+				  100 / (RFX_TEMP_EMERGENCY_MC -
+					RFX_G_COOL_TEMP_WARM_MC);
+				if (t_depth > depth)
+					depth = t_depth;
+			}
 
 			if (fl > steady)
 				fl -= (fl - steady) * depth / 100;
 			if (warmup_fl > steady)
 				warmup_fl -= (warmup_fl - steady) * depth / 100;
+
+			/* Render band only: shed the top OPPs at the same depth so
+			 * the clock walks down with the ceiling instead of holding
+			 * fmax under the limiter. Little and the spill tier are
+			 * untouched -- offload, not frames. */
+			if (!little && !prime && depth) {
+				/* Walk DOWN from fceil (no cap at entry) toward
+				 * COOL_CAP as depth grows. Starting the cap at
+				 * COOL_ENTER instead of fceil slammed the render
+				 * tier to 70% of ceiling the instant the latch
+				 * engaged -- and temperature-triggered entry
+				 * latches while fceil is still 100% (depth ~0),
+				 * so a sustained-fire heat spike cut ~30% of the
+				 * clock in one step: the held-fire freeze. Gentle
+				 * at entry, tightening only as the die actually
+				 * heats. */
+				unsigned int walk = fceil -
+					(fceil - rfx_pct(fceil,
+						RFX_G_COOL_CAP_PCT)) * depth / 100;
+
+				if (freq > walk)
+					freq = walk;
+			}
 		}
 
 		/*
@@ -715,6 +963,12 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (down_step < fceil && p->next_freq > (unsigned int)down_step &&
 		    freq < p->next_freq - (unsigned int)down_step)
 			freq = p->next_freq - (unsigned int)down_step;
+
+		/* Scene transition: keep the level the frames before the dip
+		 * had. The floor still applies below, so this can only pin a
+		 * descent, never start one. */
+		if (hold && freq < p->next_freq)
+			freq = p->next_freq;
 
 		warmup_ramp_pct = rfx_update_warmup_ramp(p, warmup_active, time);
 
@@ -752,6 +1006,15 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			if (p->little_cap_lifted)
 				cap = rfx_pct(fceil,
 					      RFX_D_LITTLE_SUSTAINED_CAP_PCT);
+
+			/* Knee floor: kill the cold-climb hitch on a keyboard /
+			 * compositor wake, but only while the cluster is doing
+			 * work. A parked Little must still reach fmin or the
+			 * floor is a standing idle-drain cost. Applied before the
+			 * cap clamp below so it can never exceed the ceiling. */
+			if (demand_pct >= RFX_D_LITTLE_FLOOR_GATE_PCT &&
+			    freq < rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT))
+				freq = rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT);
 		} else {
 			cap = rfx_pct(fceil, prime ? RFX_D_PRIME_CAP_PCT :
 						     RFX_D_BIG_CAP_PCT);
@@ -791,7 +1054,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 static bool rfx_iowait_reset(struct rfx_cpu *rfx_c, u64 time, bool set)
 {
-	s64 delta_ns = time - rfx_c->last_update;
+	u64 delta_ns = rfx_elapsed(time, rfx_c->last_update);
 
 	if (delta_ns <= TICK_NSEC)
 		return false;
@@ -1018,7 +1281,12 @@ static void rfx_update(struct update_util_data *hook, u64 time,
 
 	raw_spin_lock_irqsave(&p->update_lock, irqflags);
 
-	rfx_iowait_boost(rfx_c, time, flags);
+	/* I/O wait boost is for daily storage wakeups only. Gaming already
+	 * has warmup floor + frame-risk rescue for burst response; letting
+	 * iowait stack another lift drives the render tier past its frame
+	 * budget and burns the surplus as heat under fceil. */
+	if (!gaming)
+		rfx_iowait_boost(rfx_c, time, flags);
 	rfx_c->last_update = time;
 	rfx_ignore_dl_rate_limit(rfx_c);
 	rfx_set_eval_delay(p, gaming);
@@ -1089,8 +1357,16 @@ static void rfx_thermal_fn(struct work_struct *w)
 	unsigned int delay_ms;
 
 #ifdef CONFIG_THERMAL
-	if (READ_ONCE(rfx_tz) && !thermal_zone_get_temp(READ_ONCE(rfx_tz), &t_mc))
+	struct thermal_zone_device *tz = READ_ONCE(rfx_tz);
+
+	if (tz && !thermal_zone_get_temp(tz, &t_mc)) {
 		have = true;
+		/* Publish so the gaming cooling latch (rfx_target_freq reads
+		 * rfx_temp_mc) sees the die temp from the zone, not only from a
+		 * userspace write. Without this the temp-based early cooldown
+		 * was dead unless something fed temp_mc by hand. */
+		atomic_set(&rfx_temp_mc, t_mc);
+	}
 #endif
 	if (!have) {
 		t_mc = atomic_read(&rfx_temp_mc);
@@ -1118,7 +1394,6 @@ static void rfx_thermal_fn(struct work_struct *w)
 		atomic_set(&rfx_emergency_cap_pct, 100);
 		return;
 	}
-
 
 	if (rfx_gaming_enabled())
 		delay_ms = RFX_THERMAL_POLL_GAMING_MS;
@@ -1201,11 +1476,18 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->warmup_ramp_last_ns = 0;
 	p->gaming_warmup_end_ns = 0;
 	p->gaming_warmup_start_ns = 0;
+	p->gaming_warmup_pending = false;
+	p->warmup_pending_entry = false;
+	p->gaming_warmup_entry = false;
+	p->quiet_since_ns = 0;
 	p->thermal_cooling = false;
 	p->floor_gated = false;
 	p->warmup_low_demand_since_ns = 0;
+	p->risk_high = false;
 	p->little_cap_lifted = false;
 	p->big_cap_lifted = false;
+	p->descend_hold_end_ns = 0;
+	p->prev_demand_pct = 0;
 	p->need_freq_update = true;
 }
 
@@ -1252,15 +1534,16 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 	} else {
 		struct rfx_policy *p;
 		unsigned long flags, pflags;
-		u64 now = sched_clock();
 
 		spin_lock_irqsave(&rfx_policy_list_lock, flags);
 		list_for_each_entry(p, &rfx_policy_list, gov_node) {
 			raw_spin_lock_irqsave(&p->update_lock, pflags);
 			rfx_reset_policy_locked(p);
-			/* Warmup floor lift covers process spawn / asset load. */
-			p->gaming_warmup_end_ns = now + RFX_GAMING_WARMUP_NS;
-			p->gaming_warmup_start_ns = now;
+			/* Warmup floor lift covers process spawn / asset load:
+			 * deferred -- armed here, started by the first
+			 * spawn-sized demand burst. */
+			p->gaming_warmup_pending = true;
+			p->warmup_pending_entry = true;
 			raw_spin_unlock_irqrestore(&p->update_lock, pflags);
 		}
 		spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
@@ -1758,6 +2041,7 @@ static void __init rfx_selfcheck(void)
 
 	/* Ramp: instant to 100, zero at RAMP_DOWN_MS, and a sub-percent step
 	 * keeps its remainder instead of stalling at 100 forever. */
+	p.gaming_warmup_entry = true;
 	WARN_ON(rfx_update_warmup_ramp(&p, true, t) != 100);
 	WARN_ON(rfx_update_warmup_ramp(&p, false, t) != 100);
 	WARN_ON(rfx_update_warmup_ramp(&p, false,
@@ -1766,6 +2050,110 @@ static void __init rfx_selfcheck(void)
 	p.warmup_ramp_last_ns = t;
 	WARN_ON(rfx_update_warmup_ramp(&p, false, t + 250000) != 100 ||
 		p.warmup_ramp_last_ns != t);
+
+	/* Ramp decay tiers: the session-entry window takes the short ramp, a
+	 * re-armed window the medium one -- half decayed at half the medium
+	 * ramp, gone one medium ramp later. */
+	memset(&p, 0, sizeof(p));
+	p.gaming_warmup_entry = true;
+	WARN_ON(rfx_update_warmup_ramp(&p, true, t) != 100);
+	WARN_ON(rfx_update_warmup_ramp(&p, false,
+		t + (u64)RFX_WARMUP_RAMP_DOWN_MS * NSEC_PER_MSEC) != 0);
+	p.gaming_warmup_entry = false;
+	p.warmup_ramp_pct = 100;
+	p.warmup_ramp_last_ns = t;
+	WARN_ON(rfx_update_warmup_ramp(&p, false,
+		t + (u64)RFX_WARMUP_REARM_RAMP_DOWN_MS * NSEC_PER_MSEC / 2) != 50);
+	WARN_ON(rfx_update_warmup_ramp(&p, false,
+		t + (u64)RFX_WARMUP_REARM_RAMP_DOWN_MS * NSEC_PER_MSEC) != 0);
+
+	/* Only the session write marks the pending arm as the entry; a quiet
+	 * re-arm clears the mark, and the arm latches it into the window. */
+	memset(&p, 0, sizeof(p));
+	p.warmup_pending_entry = true;
+	p.gaming_warmup_pending = true;
+	rfx_warmup_arm(&p, RFX_GAMING_WARMUP_TRIGGER_PCT, t);
+	WARN_ON(!p.gaming_warmup_entry);
+	p.gaming_warmup_end_ns = 0;
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1, t);
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1,
+			       t + RFX_GAMING_REARM_QUIET_NS);
+	WARN_ON(!p.gaming_warmup_pending || p.warmup_pending_entry);
+	rfx_warmup_arm(&p, RFX_GAMING_WARMUP_TRIGGER_PCT, t + RFX_GAMING_REARM_QUIET_NS);
+	WARN_ON(p.gaming_warmup_entry);
+
+	/* Frame-risk latch: one crossing arms one window; a second crossing
+	 * while still saturated must NOT re-arm (that would make the lift the
+	 * steady state); demand parked between CLEAR and ARM stays latched
+	 * while the window lives; and the window extends but never shortens. */
+	memset(&p, 0, sizeof(p));
+	p.next_freq = 1;
+	rfx_risk_rearm(&p, RFX_G_RISK_ARM_PCT, 100, t);
+	WARN_ON(!p.risk_high ||
+		p.gaming_warmup_end_ns != t + RFX_G_RISK_BOOST_NS);
+	ns = p.gaming_warmup_end_ns;
+	rfx_risk_rearm(&p, 100, 100, t + 1);
+	WARN_ON(p.gaming_warmup_end_ns != ns);
+	rfx_risk_rearm(&p, RFX_G_RISK_CLEAR_PCT + 1, 100, t + 1);
+	WARN_ON(!p.risk_high);
+	rfx_risk_rearm(&p, RFX_G_RISK_CLEAR_PCT, 100, t + 1);
+	WARN_ON(p.risk_high);
+
+	/* Nothing to gain: already committed at the floor the window
+	 * installs. */
+	memset(&p, 0, sizeof(p));
+	p.next_freq = 100;
+	rfx_risk_rearm(&p, 100, 100, t);
+	WARN_ON(p.risk_high || p.gaming_warmup_end_ns);
+
+	/* A live longer window must survive a fresh edge. */
+	memset(&p, 0, sizeof(p));
+	p.next_freq = 1;
+	p.gaming_warmup_end_ns = t + 10 * RFX_G_RISK_BOOST_NS;
+	rfx_risk_rearm(&p, 100, 100, t);
+	WARN_ON(p.gaming_warmup_end_ns != t + 10 * RFX_G_RISK_BOOST_NS);
+
+	/* Scene-change damper: one fall edge arms one frame-gap hold, a
+	 * sustained dip never re-arms, and the render-band and cooling gates
+	 * disable both paths. */
+	memset(&p, 0, sizeof(p));
+	p.prev_demand_pct = 90;
+	WARN_ON(!rfx_descend_hold(&p, 50, true, false, t));
+	WARN_ON(p.descend_hold_end_ns != t + RFX_G_DESCEND_HOLD_NS);
+	/* Held across the dip, released exactly at the gap; the level demand
+	 * does not re-arm. */
+	WARN_ON(!rfx_descend_hold(&p, 50, true, false, t + 1));
+	WARN_ON(rfx_descend_hold(&p, 50, true, false, t + RFX_G_DESCEND_HOLD_NS));
+	/* Shallow dip from a high level never arms. */
+	memset(&p, 0, sizeof(p));
+	p.prev_demand_pct = 80;
+	WARN_ON(rfx_descend_hold(&p, 70, true, false, t));
+	WARN_ON(p.descend_hold_end_ns);
+	/* Fall from below the render band never arms. */
+	p.prev_demand_pct = 50;
+	WARN_ON(rfx_descend_hold(&p, 10, true, false, t));
+	WARN_ON(p.descend_hold_end_ns);
+	/* Cooling and off-band disable arm and hold alike. */
+	p.prev_demand_pct = 90;
+	WARN_ON(rfx_descend_hold(&p, 10, true, true, t));
+	WARN_ON(rfx_descend_hold(&p, 10, false, false, t));
+	WARN_ON(p.descend_hold_end_ns);
+
+	/* Quiet re-arm needs the full quiet run, so a short lull does not
+	 * re-arm and the full one does. */
+	memset(&p, 0, sizeof(p));
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1, t);
+	WARN_ON(p.gaming_warmup_pending != true);
+	p.gaming_warmup_pending = false;
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1, t);
+	/* Just under the quiet-run threshold: does not re-arm. */
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1,
+			       t + RFX_GAMING_REARM_QUIET_NS - 1);
+	WARN_ON(p.gaming_warmup_pending);
+	/* At the full quiet run: re-arms. */
+	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1,
+			       t + RFX_GAMING_REARM_QUIET_NS);
+	WARN_ON(p.gaming_warmup_pending != true);
 }
 
 static int __init vorpal_gov_init(void)
@@ -1787,6 +2175,10 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_G_IDLE_FLOOR_PCT > RFX_G_LITTLE_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_COOL_STEADY_FLOOR_PCT > RFX_G_BIG_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_CAP_PCT > RFX_D_LITTLE_SUSTAINED_CAP_PCT);
+	BUILD_BUG_ON(RFX_D_LITTLE_FLOOR_PCT > RFX_D_LITTLE_CAP_PCT);
+	/* Wake gate must sit below the drop threshold, or a cluster the latch
+	 * just released still holds the knee floor and never idles. */
+	BUILD_BUG_ON(RFX_D_LITTLE_FLOOR_GATE_PCT >= RFX_D_LITTLE_DROP_PCT);
 	BUILD_BUG_ON(RFX_D_BIG_CAP_PCT > RFX_D_BIG_SUSTAINED_CAP_PCT);
 	BUILD_BUG_ON(RFX_D_PRIME_CAP_PCT > RFX_D_PRIME_SUSTAINED_CAP_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_SUSTAINED_CAP_PCT > 100);
@@ -1796,6 +2188,23 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_EMA_GAMING_DIVISOR < 1 || RFX_EMA_MAX_STEPS < 1);
 	BUILD_BUG_ON(RFX_EMERGENCY_CAP_PCT >= 100);
 	BUILD_BUG_ON(RFX_G_COOL_DEEP_PCT >= RFX_G_COOL_ENTER_PCT);
+	BUILD_BUG_ON(RFX_G_RISK_CLEAR_PCT >= RFX_G_RISK_ARM_PCT);
+	BUILD_BUG_ON(RFX_G_COOL_TEMP_CLEAR_MC >= RFX_G_COOL_TEMP_WARM_MC);
+	BUILD_BUG_ON(RFX_G_COOL_TEMP_WARM_MC >= RFX_TEMP_EMERGENCY_MC);
+	BUILD_BUG_ON(RFX_GAMING_WARMUP_RELEASE_PCT >= RFX_GAMING_WARMUP_TRIGGER_PCT);
+	BUILD_BUG_ON(RFX_GAMING_WARMUP_NS > RFX_GAMING_WARMUP_MAX_NS);
+	BUILD_BUG_ON(RFX_GAMING_WARMUP_EXTEND_PCT < RFX_GAMING_WARMUP_TRIGGER_PCT);
+	BUILD_BUG_ON(RFX_WARMUP_REARM_RAMP_DOWN_MS <= RFX_WARMUP_RAMP_DOWN_MS);
+	/* The damper must arm only from above the gate hold band, and its hold
+	 * must be shorter than the shortest boost window or it is a floor. */
+	BUILD_BUG_ON(RFX_G_DESCEND_FROM_PCT <= RFX_G_FLOOR_GATE_EXIT_PCT);
+	BUILD_BUG_ON(RFX_G_DESCEND_DROP_PCT >= RFX_G_DESCEND_FROM_PCT);
+	BUILD_BUG_ON(RFX_G_DESCEND_HOLD_NS >= RFX_GAMING_WARMUP_NS);
+	/* Render-band thermal cap: must sit between ENTER and 100, and above
+	 * the steady relief floor, or the cap becomes a second floor and the
+	 * descent never reaches it. */
+	BUILD_BUG_ON(RFX_G_COOL_CAP_PCT <= RFX_G_COOL_ENTER_PCT);
+	BUILD_BUG_ON(RFX_G_COOL_CAP_PCT <= RFX_G_COOL_STEADY_FLOOR_PCT);
 	/* Gate at 100 would divide by zero in the headroom ramp. */
 	BUILD_BUG_ON(RFX_HEADROOM_GAMING_GATE >= 100);
 	/* Above 100 the shortcut is unreachable and the constant reads as a
