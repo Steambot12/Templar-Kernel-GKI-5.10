@@ -82,14 +82,15 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * the resting-power dial. Raising one on a render tier lowers fceil via
  * heat and costs FPS. */
 /* 500 kHz grid: 64 = 1536 (M), 58 = 1401 (M), 38 = 900 (M). */
-/* 58%: measured optimum. Raising this to 64 was tried and REGRESSED the
- * throttle-test average (377k -> 355k GIPS) and made the graph jaggier: a
- * higher floor burns more watts in the inter-work troughs, the vendor limiter
- * (LMH / thermal_pressure) reads the extra power and caps harder, and the
- * whole sustained band drops. The floor cannot beat the limiter -- it feeds
- * it. Leave the render floors at the resting-power value and let demand + EMA
- * carry the clock up. */
-#define RFX_G_PRIME_FLOOR_PCT		58	/* spill tier, resting power */
+/* v2.2 scored the benchmark target with an ASYMMETRIC floor: PRIME (spill) 64,
+ * BIG (render) 58. A prior test raised BOTH to 64 and regressed the throttle
+ * average -- but that regression was the BIG/render tier feeding the limiter,
+ * NOT the prime floor. Restore the v2.2 split: the spill tier holds a higher
+ * resting clock (EAS packs the all-core benchmark load onto it, so a high
+ * floor there lifts sustained multi-core throughput) while the render tier
+ * stays at the resting value so it never over-drives the limiter under a
+ * frame load. */
+#define RFX_G_PRIME_FLOOR_PCT		64	/* spill tier, resting power */
 #define RFX_G_BIG_FLOOR_PCT		58	/* render tier (2-tier: top) */
 #define RFX_G_WARMUP_FLOOR_PCT		80	/* render tier only, timed lift */
 /* Little never renders: V/f knee + a small lift so an idle cluster does
