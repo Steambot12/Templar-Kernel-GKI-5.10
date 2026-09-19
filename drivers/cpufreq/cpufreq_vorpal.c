@@ -526,6 +526,21 @@ static void rfx_warmup_rearm_quiet(struct rfx_policy *p, unsigned int demand_pct
 				   u64 time)
 {
 	if (demand_pct >= RFX_GAMING_WARMUP_TRIGGER_PCT) {
+		/* Rising-edge fast arm: a sharp jump from below TRIGGER up
+		 * through it (countdown -> sprint, match spawn) is the start of
+		 * a heavy burst. The 3s quiet re-arm below is too slow to catch
+		 * it, so the first gameplay frames ran on the bare floor with no
+		 * transient lift -- the early-game FPS dip. Arm here so the
+		 * rfx_warmup_arm() call this same eval opens a window. Not the
+		 * session entry (that flag is owned by the sticky write), so it
+		 * takes the medium ramp, not the short one. Gated on no live
+		 * window so a burst inside an existing lift does not re-arm. */
+		if (p->prev_demand_pct < RFX_GAMING_WARMUP_TRIGGER_PCT &&
+		    !p->gaming_warmup_pending &&
+		    time >= p->gaming_warmup_end_ns) {
+			p->gaming_warmup_pending = true;
+			p->warmup_pending_entry = false;
+		}
 		p->quiet_since_ns = 0;
 		return;
 	}
