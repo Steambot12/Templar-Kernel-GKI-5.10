@@ -106,16 +106,26 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * EMA plus PELT already carry any rise a window or burst floor covered. ---- */
 /* Little daily cap: just above the V/f knee. */
 #define RFX_D_LITTLE_CAP_PCT		60
-/* Little daily floor at the V/f knee. HyperOS keyboard-open runs entirely on
- * Little (compositor + IME); from fmin the cold OPP climb plus the 3ms rate
- * gate reads as a transition hitch. The knee is the most efficient OPP, so
- * this removes the hitch at near-zero power. Only Little, only daily, and only
- * once the cluster is actually doing work: below the wake gate the cluster is
- * parked and must fall to fmin, or the floor becomes a standing idle-drain
- * cost (the whole point of the daily profile is battery). The gate reads the
- * same 1.25x-skewed demand as every other daily threshold. */
+/* Little daily knee floor -- TIMED, wake-edge-triggered. HyperOS keyboard-open
+ * runs entirely on Little (compositor + IME); from fmin the cold OPP climb plus
+ * the 3ms rate gate reads as a transition hitch. The knee is the most efficient
+ * OPP, so a brief lift there removes the hitch at near-zero power.
+ *
+ * The lift is a short WINDOW armed on the rising demand edge (idle -> active),
+ * not a sustained floor: a sustained floor gated on demand pinned Little at
+ * ~684MHz all day (any background work stayed above the gate), so it never
+ * reached its 300MHz fmin -- a standing idle-drain cost. The window covers the
+ * wake transition, then decays and lets Little fall to fmin. Only Little, only
+ * daily. */
 #define RFX_D_LITTLE_FLOOR_PCT		38
-#define RFX_D_LITTLE_FLOOR_GATE_PCT	8
+/* Arm the window when demand crosses up through this (idle -> interaction). */
+#define RFX_D_LITTLE_FLOOR_ARM_PCT	20
+/* Below this, the cluster is parked: re-arm becomes possible again. Hysteresis
+ * so steady light background load does not re-trigger every eval. */
+#define RFX_D_LITTLE_FLOOR_REARM_PCT	10
+/* Window length: long enough to carry the cold-climb + a couple of keystrokes,
+ * short enough that it is never a standing floor. */
+#define RFX_D_LITTLE_FLOOR_NS		(120 * NSEC_PER_MSEC)
 /* Sustained caps: long foreground/background work at lower voltage. */
 #define RFX_D_LITTLE_SUSTAINED_CAP_PCT	80
 /* Sustained latches, skewed 1.25x (real demand on at ~58%, off at ~44%). */
@@ -361,6 +371,8 @@ struct rfx_policy {
 
 	bool floor_gated;		/* gaming: floor released to idle, hysteretic */
 	bool little_cap_lifted;		/* daily: sustained-load cap lift latch */
+	u64 little_floor_end_ns;	/* daily: timed knee-floor window (wake edge) */
+	unsigned int little_prev_demand;	/* daily Little demand at previous eval */
 	bool big_cap_lifted;		/* daily: sustained-load cap lift for Big/Prime */
 	bool thermal_cooling;		/* gaming: floors dropped to idle, hysteretic */
 	bool risk_high;			/* gaming: frame-risk edge consumed, hysteretic */
@@ -1015,12 +1027,22 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				cap = rfx_pct(fceil,
 					      RFX_D_LITTLE_SUSTAINED_CAP_PCT);
 
-			/* Knee floor: kill the cold-climb hitch on a keyboard /
-			 * compositor wake, but only while the cluster is doing
-			 * work. A parked Little must still reach fmin or the
-			 * floor is a standing idle-drain cost. Applied before the
-			 * cap clamp below so it can never exceed the ceiling. */
-			if (demand_pct >= RFX_D_LITTLE_FLOOR_GATE_PCT &&
+			/* Timed knee floor: arm a short window on the rising
+			 * demand edge (idle -> interaction, e.g. keyboard open),
+			 * so the wake carries the knee OPP past the cold-climb
+			 * hitch. It decays after the window and Little falls back
+			 * to fmin -- never a standing floor. Rearm only after
+			 * demand has dropped back to the parked band. Applied
+			 * before the cap clamp below so it can never exceed the
+			 * ceiling. */
+			if (p->little_prev_demand < RFX_D_LITTLE_FLOOR_ARM_PCT &&
+			    demand_pct >= RFX_D_LITTLE_FLOOR_ARM_PCT)
+				p->little_floor_end_ns = time + RFX_D_LITTLE_FLOOR_NS;
+			else if (demand_pct < RFX_D_LITTLE_FLOOR_REARM_PCT)
+				p->little_floor_end_ns = 0;
+			p->little_prev_demand = demand_pct;
+
+			if (p->little_floor_end_ns && time < p->little_floor_end_ns &&
 			    freq < rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT))
 				freq = rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT);
 		} else {
@@ -1494,6 +1516,8 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->risk_high = false;
 	p->little_cap_lifted = false;
 	p->big_cap_lifted = false;
+	p->little_floor_end_ns = 0;
+	p->little_prev_demand = 0;
 	p->descend_hold_end_ns = 0;
 	p->prev_demand_pct = 0;
 	p->need_freq_update = true;
@@ -2184,9 +2208,9 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_G_COOL_STEADY_FLOOR_PCT > RFX_G_BIG_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_CAP_PCT > RFX_D_LITTLE_SUSTAINED_CAP_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_FLOOR_PCT > RFX_D_LITTLE_CAP_PCT);
-	/* Wake gate must sit below the drop threshold, or a cluster the latch
-	 * just released still holds the knee floor and never idles. */
-	BUILD_BUG_ON(RFX_D_LITTLE_FLOOR_GATE_PCT >= RFX_D_LITTLE_DROP_PCT);
+	/* Rearm threshold must sit below the arm threshold, or the window arms
+	 * and clears in the same band and can never hold. */
+	BUILD_BUG_ON(RFX_D_LITTLE_FLOOR_REARM_PCT >= RFX_D_LITTLE_FLOOR_ARM_PCT);
 	BUILD_BUG_ON(RFX_D_BIG_CAP_PCT > RFX_D_BIG_SUSTAINED_CAP_PCT);
 	BUILD_BUG_ON(RFX_D_PRIME_CAP_PCT > RFX_D_PRIME_SUSTAINED_CAP_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_SUSTAINED_CAP_PCT > 100);
