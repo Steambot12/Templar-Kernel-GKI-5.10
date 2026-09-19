@@ -82,8 +82,15 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * the resting-power dial. Raising one on a render tier lowers fceil via
  * heat and costs FPS. */
 /* 500 kHz grid: 64 = 1536 (M), 58 = 1401 (M), 38 = 900 (M). */
-#define RFX_G_PRIME_FLOOR_PCT		58	/* spill tier, resting power */
-#define RFX_G_BIG_FLOOR_PCT		58	/* render tier (2-tier: top) */
+/* 64%: holds the sustained clock through inter-work micro-troughs so a
+ * continuous all-core load (benchmark, throttle test) keeps a flat high band
+ * instead of sawtoothing down to the old 58% floor every gap -- lifts the min
+ * of the sustained band and with it the multi-core score. Safe on a cool die
+ * (headroom to the 80C cooling entry is large); the cooling walk still sheds
+ * this floor with depth once the die actually heats, so real thermal events
+ * are unaffected. */
+#define RFX_G_PRIME_FLOOR_PCT		64	/* spill tier, resting power */
+#define RFX_G_BIG_FLOOR_PCT		64	/* render tier (2-tier: top) */
 #define RFX_G_WARMUP_FLOOR_PCT		80	/* render tier only, timed lift */
 /* Little never renders: V/f knee + a small lift so an idle cluster does
  * not bake the die before the first burst. */
