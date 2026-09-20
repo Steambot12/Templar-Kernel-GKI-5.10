@@ -591,7 +591,16 @@ find_matching_se(struct sched_entity **se, struct sched_entity **pse)
 #endif	/* CONFIG_FAIR_GROUP_SCHED */
 
 #ifdef CONFIG_SCHED_BORE
-#define MAX_BURST_PENALTY (39U <<2)
+/*
+ * Demotion cap: a task may lose at most +4 nice steps (burst_score = 4,
+ * penalty = 16), not +39. The ratchet only releases at sleep/yield, so a
+ * thread that stays runnable across a long session accumulates weight loss
+ * with no floor: the old 156 cap scheduled the main thread at up to nice +39
+ * by the back of the session. +4 keeps batch work clearly demoted (enough
+ * for EAS packing) but bounds a long session to nice +4. u8 KABI fields
+ * unaffected: 16 < 255.
+ */
+#define MAX_BURST_PENALTY (4U << 2)
 
 static inline u32 log2plus1_u64_u32f8(u64 v) {
 	u32 msb = fls64(v);

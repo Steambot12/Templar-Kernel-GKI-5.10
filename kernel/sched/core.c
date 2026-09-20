@@ -3369,7 +3369,9 @@ static void update_child_burst_topological(
 		}
 		if (!child_burst_cache_expired(dec, now)) {
 			cnt += dec->se.child_burst_cnt;
-			sum += (u32)dec->se.child_burst * dec->se.child_burst_cnt;
+			/* u8 x u32 widens to u32 and wraps; keep the product in u64. */
+			sum += (u32)((u64)dec->se.child_burst *
+					 dec->se.child_burst_cnt);
 			continue;
 		}
 		update_child_burst_topological(dec, now, depth - 1, &cnt, &sum);
