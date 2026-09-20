@@ -2591,6 +2591,25 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 
 	get_scan_count(lruvec, sc, nr);
 
+	/*
+	 * OOM escape: the le9uo hard watermarks (anon_below_min /
+	 * clean_below_min) zero the scan target in get_scan_count() when
+	 * their LRU is under its floor. If that leaves every evictable
+	 * LRU at zero, nothing is reclaimed this pass, priority lowers
+	 * one notch and the next pass reads the same watermarks and
+	 * zeroes again -- the loop burns out and OOM is the only exit.
+	 * If an LRU held pages but its target was killed, rescan it
+	 * evenly so the watermarks never deadlock the node.
+	 */
+	for_each_evictable_lru(lru) {
+		if (nr[lru])
+			continue;
+		if (lruvec_lru_size(lruvec, lru, sc->reclaim_idx))
+			nr[lru] = lruvec_lru_size(lruvec, lru,
+						   sc->reclaim_idx) /
+				  (1UL << sc->priority);
+	}
+
 	/* Record the original scan target for proportional adjustments later */
 	memcpy(targets, nr, sizeof(nr));
 
