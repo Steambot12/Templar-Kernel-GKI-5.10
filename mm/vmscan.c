@@ -2931,6 +2931,15 @@ static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 
 	target_lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup, pgdat);
 
+	/*
+	 * Set the le9uo workingset-protection floors before any LRU is
+	 * scanned.  prepare_workingset_protection() sets sc->anon_below_min
+	 * and sc->clean_below_min which get_scan_count() reads to zero
+	 * targets; it must run before shrink_node_memcgs() so the OOM
+	 * escape in shrink_lruvec() can actually see a zeroed target.
+	 */
+	prepare_workingset_protection(pgdat, sc);
+
 again:
 	memset(&sc->nr, 0, sizeof(sc->nr));
 
@@ -3024,8 +3033,6 @@ again:
 			!(sc->may_deactivate & DEACTIVATE_ANON) &&
 			anon >> sc->priority;
 	}
-
-	prepare_workingset_protection(pgdat, sc);
 
 	shrink_node_memcgs(pgdat, sc);
 
