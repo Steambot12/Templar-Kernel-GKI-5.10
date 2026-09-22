@@ -18,14 +18,26 @@
 
 /*
  * Default block list. Portable across MTK/QCOM: every entry is either
- * vendor-namespaced (inert where the SoC differs) or a WLAN background-offload
- * wakelock (WiFi still associates on wake; only background scan/roam wakeups
- * are suppressed). No device-specific input/i2c/spi nodes and no
- * alarmtimer/[timerfd] -- those break wake-on-input and RTC alarms, and their
- * numbering is not portable. Per-device offenders go in the runtime sysfs
- * 'wakelock_blocker' node instead.
+ * vendor-namespaced (inert where the SoC differs) or a WLAN/BT background
+ * idle-poll wakelock (connectivity still works; only the high-frequency
+ * firmware poll that keeps the SoC out of deep sleep is suppressed).
+ * No alarmtimer/[timerfd] -- those break RTC alarms and their numbering
+ * is not portable. No input/i2c/spi nodes -- those break wake-on-touch.
+ * No modem keep-alive (mtk_md, mtk_md_wl) -- the 5G modem requires the
+ * link to stay up through idle; blocking it drops the data connection.
+ * Per-device offenders go in the runtime sysfs 'wakelock_blocker' node.
+ *
+ * Q6BIOS_WLAN : QCOM WLAN firmware idle poll (WiFi stays associated)
+ * mtk_wmt_top : MTK Wireless Module Top idle poll (inert on QCOM)
+ * btsdio_wl   : QCOM/MTK BT controller idle poll (BT stays paired)
  */
-#define LIST_WL_DEFAULT				"RMNET_DFC;DIAG_WS;qcom_rx_wakelock;wlan;wlan_wow_wl;wlan_extscan_wl;wlan_pno_wl;wlan_roam_wl;wlan_ipa;netmgr_wl;NETLINK;a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;IPA_WS;IPA_CLIENT_APPS_WAN_COAL_CONS;IPA_CLIENT_APPS_WAN_LOW_LAT_CONS;IPA_CLIENT_APPS_LAN_CONS;rmnet_ipa%d;rmnet_ctl;RMNET_SHS"
+#define LIST_WL_DEFAULT \
+	"RMNET_DFC;DIAG_WS;qcom_rx_wakelock;wlan;wlan_wow_wl;wlan_extscan_wl;" \
+	"wlan_pno_wl;wlan_roam_wl;wlan_ipa;netmgr_wl;NETLINK;" \
+	"a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;" \
+	"IPA_WS;IPA_CLIENT_APPS_WAN_COAL_CONS;IPA_CLIENT_APPS_WAN_LOW_LAT_CONS;" \
+	"IPA_CLIENT_APPS_LAN_CONS;rmnet_ipa%d;rmnet_ctl;RMNET_SHS;" \
+	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl"
 
 #define LENGTH_LIST_WL				1024
 /* Both lists are sysfs-writable, so both get the full capacity. Deriving this
