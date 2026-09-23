@@ -30,6 +30,9 @@
  * Q6BIOS_WLAN : QCOM WLAN firmware idle poll (WiFi stays associated)
  * mtk_wmt_top : MTK Wireless Module Top idle poll (inert on QCOM)
  * btsdio_wl   : QCOM/MTK BT controller idle poll (BT stays paired)
+ * mgmt_txrx   : WLAN mgmt-frame TX/RX idle poll -- beacon/probe/assoc
+ *               churn; association is kept by the firmware WoW offload, a
+ *               real deauth/wake still fires via the hard-event path.
  */
 #define LIST_WL_DEFAULT \
 	"RMNET_DFC;DIAG_WS;qcom_rx_wakelock;wlan;wlan_wow_wl;wlan_extscan_wl;" \
@@ -37,7 +40,7 @@
 	"a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;" \
 	"IPA_WS;IPA_CLIENT_APPS_WAN_COAL_CONS;IPA_CLIENT_APPS_WAN_LOW_LAT_CONS;" \
 	"IPA_CLIENT_APPS_LAN_CONS;rmnet_ipa%d;rmnet_ctl;RMNET_SHS;" \
-	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl"
+	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;mgmt_txrx"
 
 #define LENGTH_LIST_WL				1024
 /* Both lists are sysfs-writable, so both get the full capacity. Deriving this
