@@ -110,21 +110,23 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* ---- Gaming feature tunables (Feature 9 backbone), runtime knobs exposed as
  * gaming_* sysfs nodes. Every default below is chosen so gaming_mode=1 out of
- * the box reproduces the measured-good v2.2-1 shape: each knob is either OFF
- * (0) or a no-op at its default, so "features active" never regresses
- * "sustain + stable". Tune on-device; nothing here is standing behaviour. */
+ * These are now built-in (no sysfs): every knob carries its standing
+ * gaming_mode=1 value here, applied automatically whenever gaming_mode=1 and
+ * inert whenever gaming_mode=0 (the daily path never reads them). Tune here,
+ * one lever at a time, and re-measure -- floors/caps are the regression-prone
+ * levers (see the tuning history). */
 #define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* F6 cadence */
-#define RFX_G_HISPEED_PCT_DEFAULT		0	/* F1 off (warmup floor covers render) */
+#define RFX_G_HISPEED_PCT_DEFAULT		70	/* F1 hispeed render floor */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
 #define RFX_G_HISPEED_HOLD_US_DEFAULT		20000	/* F1 hold after last go-demand */
-#define RFX_G_TOUCH_PCT_DEFAULT			0	/* F2 off */
-#define RFX_G_TOUCH_MS_DEFAULT			0	/* F2 off */
-#define RFX_G_THERM_CAP_MC_DEFAULT		0	/* F3 off (cool latch owns thermal) */
+#define RFX_G_TOUCH_PCT_DEFAULT			75	/* F2 input render floor */
+#define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
+#define RFX_G_THERM_CAP_MC_DEFAULT		80000	/* F3 pre-emptive cap start mC */
 #define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		70	/* F3 floor of the graduated cap */
-#define RFX_G_MIN_SAMPLE_US_DEFAULT		0	/* F5 off */
-#define RFX_G_DOWN_FAST_PCT_DEFAULT		RFX_GAMING_DOWN_PCT_PER_2MS /* F6 == slow */
-#define RFX_G_DOWN_FAST_MS_DEFAULT		0	/* F6 off (single-phase descent) */
-#define RFX_G_ENERGY_AWARE_DEFAULT		0	/* F4 off (round-up resolve) */
+#define RFX_G_MIN_SAMPLE_US_DEFAULT		4000	/* F5 min dwell before a drop */
+#define RFX_G_DOWN_FAST_PCT_DEFAULT		2	/* F6 fast-phase shed rate */
+#define RFX_G_DOWN_FAST_MS_DEFAULT		40	/* F6 fast-phase length */
+#define RFX_G_ENERGY_AWARE_DEFAULT		1	/* F4 round-down on descent */
 #define RFX_G_MODE2_FLOOR_PCT_DEFAULT		62	/* F10 render floor, mode 2 only */
 
 /* ---- Daily shaping, percent of the effective ceiling. Caps only: the util
@@ -414,21 +416,6 @@ struct rfx_tunables {
 	unsigned int rate_limit_us;
 	unsigned int up_rate_limit_us;
 	unsigned int down_rate_limit_us;
-
-	/* Gaming feature knobs (Feature 9). Default-inert: see *_DEFAULT. */
-	unsigned int g_eval_us;			/* F6 gaming eval cadence */
-	unsigned int g_hispeed_pct;		/* F1 hispeed floor, 0=off */
-	unsigned int g_go_hispeed_pct;		/* F1 demand to arm hispeed */
-	unsigned int g_hispeed_hold_us;		/* F1 hold after last go-demand */
-	unsigned int g_touch_pct;		/* F2 input floor, 0=off */
-	unsigned int g_touch_ms;		/* F2 input window, 0=off */
-	unsigned int g_therm_cap_mc;		/* F3 graduated cap start mC, 0=off */
-	unsigned int g_therm_cap_min_pct;	/* F3 floor of the graduated cap */
-	unsigned int g_min_sample_us;		/* F5 min dwell before a drop, 0=off */
-	unsigned int g_down_fast_pct;		/* F6 two-phase fast descent rate */
-	unsigned int g_down_fast_ms;		/* F6 fast-phase length, 0=single */
-	unsigned int g_energy_aware;		/* F4 round-down on descent, 0=off */
-	unsigned int g_mode2_floor_pct;		/* F10 render floor for mode 2 */
 };
 
 struct rfx_policy {
@@ -1020,7 +1007,6 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		unsigned int down_pct;
 		bool hold;
 		int t_mc;
-		struct rfx_tunables *tn = p->tunables;
 
 		/*
 		 * Demand before headroom inflation. CAVEAT: raw_util already
@@ -1133,7 +1119,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			 * opt-in performance tier that trades valley power/heat
 			 * for a higher resting render clock. Mode 1 is unchanged. */
 			if (rfx_gaming_level() >= 2)
-				fl = max(fl, rfx_pct(fceil, tn->g_mode2_floor_pct));
+				fl = max(fl, rfx_pct(fceil, RFX_G_MODE2_FLOOR_PCT_DEFAULT));
 		} else			/* Little: compositor / audio / input */
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
 		/* Warmup floor lives where the render tier lives: on a 3-tier
@@ -1194,24 +1180,25 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				freq = walk;
 		}
 
-		/* F3: graduated pre-emptive thermal cap (opt-in, start_mc=0
-		 * disables). Render band only. Linearly sheds fceil -> min_pct
-		 * as temp climbs from start_mc to the emergency horizon,
-		 * independent of the fceil cool latch so it can bite before the
-		 * limiter moves. Inert at the default. */
-		if (!little && !prime && tn->g_therm_cap_mc &&
-		    tn->g_therm_cap_mc < RFX_TEMP_EMERGENCY_MC &&
-		    t_mc >= (int)tn->g_therm_cap_mc) {
+		/* F3: graduated pre-emptive thermal cap (start_mc=0 disables at
+		 * build). Render band only. Linearly sheds fceil -> min_pct as
+		 * temp climbs from start_mc to the emergency horizon, independent
+		 * of the fceil cool latch so it can bite before the limiter
+		 * moves. */
+#if RFX_G_THERM_CAP_MC_DEFAULT
+		if (!little && !prime &&
+		    t_mc >= (int)RFX_G_THERM_CAP_MC_DEFAULT) {
 			unsigned int span = RFX_TEMP_EMERGENCY_MC -
-					    tn->g_therm_cap_mc;
+					    RFX_G_THERM_CAP_MC_DEFAULT;
 			unsigned int over = min((unsigned int)(t_mc -
-					    (int)tn->g_therm_cap_mc), span);
+					    (int)RFX_G_THERM_CAP_MC_DEFAULT), span);
 			unsigned int cap = rfx_pct(fceil, 100 -
-				(100 - tn->g_therm_cap_min_pct) * over / span);
+				(100 - RFX_G_THERM_CAP_MIN_PCT_DEFAULT) * over / span);
 
 			if (freq > cap)
 				freq = cap;
 		}
+#endif
 
 		/*
 		 * Bounded slew, measured from last commit (not last eval) so
@@ -1228,10 +1215,10 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * commit), then the slow rate. down_fast_ms=0 -> single slow
 		 * phase (current behaviour). */
 		down_pct = RFX_GAMING_DOWN_PCT_PER_2MS;
-		if (tn->g_down_fast_ms &&
+		if (RFX_G_DOWN_FAST_MS_DEFAULT &&
 		    rfx_elapsed(time, p->last_upfreq_time) <
-			(u64)tn->g_down_fast_ms * NSEC_PER_MSEC)
-			down_pct = tn->g_down_fast_pct;
+			(u64)RFX_G_DOWN_FAST_MS_DEFAULT * NSEC_PER_MSEC)
+			down_pct = RFX_G_DOWN_FAST_PCT_DEFAULT;
 		down_step = (u64)rfx_pct(fceil, down_pct) *
 			    slew_ns / (2 * NSEC_PER_MSEC);
 		if (down_step < fceil && p->next_freq > (unsigned int)down_step &&
@@ -1269,24 +1256,26 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (!little && !prime && !p->thermal_cooling) {
 			unsigned int boost_fl = 0;
 
-			if (tn->g_hispeed_pct) {
-				if (demand_pct >= tn->g_go_hispeed_pct)
+			if (RFX_G_HISPEED_PCT_DEFAULT) {
+				if (demand_pct >= RFX_G_GO_HISPEED_PCT_DEFAULT)
 					p->hispeed_hold_end_ns = time +
-					  (u64)tn->g_hispeed_hold_us *
+					  (u64)RFX_G_HISPEED_HOLD_US_DEFAULT *
 					  NSEC_PER_USEC;
 				if (p->hispeed_hold_end_ns &&
 				    time < p->hispeed_hold_end_ns)
 					boost_fl = rfx_pct(fceil,
-							   tn->g_hispeed_pct);
+							   RFX_G_HISPEED_PCT_DEFAULT);
 			}
-			if (tn->g_touch_pct && tn->g_touch_ms) {
+#if RFX_G_TOUCH_PCT_DEFAULT && RFX_G_TOUCH_MS_DEFAULT
+			{
 				u64 ts = (u64)atomic64_read(&rfx_input_ts);
 
 				if (ts && rfx_elapsed(time, ts) <
-				      (u64)tn->g_touch_ms * NSEC_PER_MSEC)
+				      (u64)RFX_G_TOUCH_MS_DEFAULT * NSEC_PER_MSEC)
 					boost_fl = max(boost_fl,
-						rfx_pct(fceil, tn->g_touch_pct));
+						rfx_pct(fceil, RFX_G_TOUCH_PCT_DEFAULT));
 			}
+#endif
 			if (freq < boost_fl)
 				freq = boost_fl;
 		}
@@ -1362,7 +1351,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 	p->pending_raw_freq = freq;
 	/* F4: on a descent round to the OPP at or below the target (round-up
 	 * default keeps the rise responsive). Opt-in; needs a freq table. */
-	if (gaming && p->tunables->g_energy_aware && pol->freq_table &&
+	if (gaming && RFX_G_ENERGY_AWARE_DEFAULT && pol->freq_table &&
 	    freq < p->next_freq) {
 		int idx = cpufreq_frequency_table_target(pol, freq,
 							 CPUFREQ_RELATION_H);
@@ -1466,7 +1455,7 @@ static inline void rfx_set_down_delay(struct rfx_policy *p, bool gaming)
 		/* F5: minimum dwell since the last upward commit before a
 		 * drop is allowed (0 = off). */
 		p->min_sample_ns =
-			(s64)p->tunables->g_min_sample_us * NSEC_PER_USEC;
+			(s64)RFX_G_MIN_SAMPLE_US_DEFAULT * NSEC_PER_USEC;
 	} else {
 		p->down_rate_delay_ns =
 			(s64)p->tunables->down_rate_limit_us * NSEC_PER_USEC;
@@ -1490,7 +1479,7 @@ static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming)
 static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
 {
 	p->freq_update_delay_ns = gaming ?
-		(s64)p->tunables->g_eval_us * NSEC_PER_USEC :
+		(s64)RFX_G_EVAL_US_DEFAULT * NSEC_PER_USEC :
 		(s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
 }
 
@@ -1822,67 +1811,6 @@ static ssize_t down_rate_limit_us_store(struct gov_attr_set *attr_set,
 static struct governor_attr down_rate_limit_us = __ATTR_RW(down_rate_limit_us);
 
 /*
- * Gaming feature tunables (Feature 9). Plain uint knobs; the macro clamps to
- * maxv (0 = no ceiling). attr is the sysfs node name, field the struct member.
- * A write out of range is rejected at the trust boundary rather than clamped
- * silently, so a bad value never masquerades as accepted.
- */
-#define RFX_GTUNABLE(attr, field, maxv)					\
-static ssize_t attr##_show(struct gov_attr_set *as, char *buf)		\
-{									\
-	return sprintf(buf, "%u\n", to_rfx_tunables(as)->field);		\
-}									\
-static ssize_t attr##_store(struct gov_attr_set *as,			\
-			    const char *buf, size_t count)		\
-{									\
-	struct rfx_tunables *t = to_rfx_tunables(as);			\
-	unsigned int val;						\
-									\
-	if (kstrtouint(buf, 10, &val))					\
-		return -EINVAL;						\
-	if ((maxv) && val > (maxv))					\
-		return -EINVAL;						\
-	t->field = val;							\
-	return count;							\
-}									\
-static struct governor_attr attr = __ATTR_RW(attr)
-
-RFX_GTUNABLE(gaming_eval_us,          g_eval_us,          0);
-RFX_GTUNABLE(gaming_hispeed_pct,      g_hispeed_pct,      100);
-RFX_GTUNABLE(gaming_go_hispeed_pct,   g_go_hispeed_pct,   100);
-RFX_GTUNABLE(gaming_hispeed_hold_us,  g_hispeed_hold_us,  0);
-RFX_GTUNABLE(gaming_touch_pct,        g_touch_pct,        100);
-RFX_GTUNABLE(gaming_touch_ms,         g_touch_ms,         0);
-RFX_GTUNABLE(gaming_therm_cap_min_pct, g_therm_cap_min_pct, 100);
-RFX_GTUNABLE(gaming_min_sample_us,    g_min_sample_us,    0);
-RFX_GTUNABLE(gaming_down_fast_pct,    g_down_fast_pct,    100);
-RFX_GTUNABLE(gaming_down_fast_ms,     g_down_fast_ms,     0);
-RFX_GTUNABLE(gaming_energy_aware,     g_energy_aware,     1);
-RFX_GTUNABLE(gaming_mode2_floor_pct,  g_mode2_floor_pct,  100);
-
-/* Graduated-cap start temp: 0 (off) or strictly below the emergency horizon,
- * or the F3 span underflows. Hand-written for that range check. */
-static ssize_t gaming_therm_cap_mc_show(struct gov_attr_set *as, char *buf)
-{
-	return sprintf(buf, "%u\n", to_rfx_tunables(as)->g_therm_cap_mc);
-}
-static ssize_t gaming_therm_cap_mc_store(struct gov_attr_set *as,
-					 const char *buf, size_t count)
-{
-	struct rfx_tunables *t = to_rfx_tunables(as);
-	unsigned int val;
-
-	if (kstrtouint(buf, 10, &val))
-		return -EINVAL;
-	if (val && val >= RFX_TEMP_EMERGENCY_MC)
-		return -EINVAL;
-	t->g_therm_cap_mc = val;
-	return count;
-}
-static struct governor_attr gaming_therm_cap_mc =
-	__ATTR_RW(gaming_therm_cap_mc);
-
-/*
  * Clear every transient latch and window on one policy. Called on both profile
  * edges: neither profile's residue may shape the other. Caller holds
  * p->update_lock.
@@ -2039,19 +1967,6 @@ static struct attribute *rfx_attrs[] = {
 	&down_rate_limit_us.attr,
 	&temp_mc.attr,
 	&thermal_zone.attr,
-	&gaming_eval_us.attr,
-	&gaming_hispeed_pct.attr,
-	&gaming_go_hispeed_pct.attr,
-	&gaming_hispeed_hold_us.attr,
-	&gaming_touch_pct.attr,
-	&gaming_touch_ms.attr,
-	&gaming_therm_cap_mc.attr,
-	&gaming_therm_cap_min_pct.attr,
-	&gaming_min_sample_us.attr,
-	&gaming_down_fast_pct.attr,
-	&gaming_down_fast_ms.attr,
-	&gaming_energy_aware.attr,
-	&gaming_mode2_floor_pct.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(rfx);
@@ -2267,22 +2182,6 @@ static int rfx_init(struct cpufreq_policy *policy)
 		t->up_rate_limit_us = RFX_BIG_UP_US;
 		t->down_rate_limit_us = RFX_BIG_DOWN_US;
 	}
-
-	/* Gaming feature defaults: identical on every cluster, all inert so
-	 * gaming_mode=1 reproduces the measured-good shape until tuned. */
-	t->g_eval_us = RFX_G_EVAL_US_DEFAULT;
-	t->g_hispeed_pct = RFX_G_HISPEED_PCT_DEFAULT;
-	t->g_go_hispeed_pct = RFX_G_GO_HISPEED_PCT_DEFAULT;
-	t->g_hispeed_hold_us = RFX_G_HISPEED_HOLD_US_DEFAULT;
-	t->g_touch_pct = RFX_G_TOUCH_PCT_DEFAULT;
-	t->g_touch_ms = RFX_G_TOUCH_MS_DEFAULT;
-	t->g_therm_cap_mc = RFX_G_THERM_CAP_MC_DEFAULT;
-	t->g_therm_cap_min_pct = RFX_G_THERM_CAP_MIN_PCT_DEFAULT;
-	t->g_min_sample_us = RFX_G_MIN_SAMPLE_US_DEFAULT;
-	t->g_down_fast_pct = RFX_G_DOWN_FAST_PCT_DEFAULT;
-	t->g_down_fast_ms = RFX_G_DOWN_FAST_MS_DEFAULT;
-	t->g_energy_aware = RFX_G_ENERGY_AWARE_DEFAULT;
-	t->g_mode2_floor_pct = RFX_G_MODE2_FLOOR_PCT_DEFAULT;
 
 	policy->governor_data = p;
 	p->tunables = t;
