@@ -108,14 +108,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * loosen both. */
 #define RFX_GAMING_DOWN_PCT_PER_2MS	1
 
-/* ---- Gaming feature tunables (Feature 9 backbone), runtime knobs exposed as
- * gaming_* sysfs nodes. Every default below is chosen so gaming_mode=1 out of
- * These are now built-in (no sysfs): every knob carries its standing
- * gaming_mode=1 value here, applied automatically whenever gaming_mode=1 and
- * inert whenever gaming_mode=0 (the daily path never reads them). Tune here,
- * one lever at a time, and re-measure -- floors/caps are the regression-prone
- * levers (see the tuning history). */
-#define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* F6 cadence */
+/* ---- Gaming feature constants. Built-in (no sysfs): each carries its
+ * gaming_mode=1 value, applied automatically while gaming_mode=1 and inert
+ * while gaming_mode=0 (the daily path never reads them). Set one to 0 to
+ * disable that feature at build. Tune one lever at a time and re-measure --
+ * floors/caps are the regression-prone levers (see the tuning history). ---- */
+#define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* gaming eval cadence */
 #define RFX_G_HISPEED_PCT_DEFAULT		70	/* F1 hispeed render floor */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
 #define RFX_G_HISPEED_HOLD_US_DEFAULT		20000	/* F1 hold after last go-demand */
@@ -1115,9 +1113,9 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			fl = rfx_pct(fceil, RFX_G_PRIME_FLOOR_PCT);
 		else if (!little) {	/* Big: render tier, demand-tracked */
 			fl = rfx_pct(fceil, RFX_G_BIG_FLOOR_PCT);
-			/* F10: mode 2 lifts the render baseline floor -- an
-			 * opt-in performance tier that trades valley power/heat
-			 * for a higher resting render clock. Mode 1 is unchanged. */
+			/* F10: mode 2 lifts the render baseline floor, trading
+			 * valley power/heat for a higher resting render clock.
+			 * Mode 1 is unchanged. */
 			if (rfx_gaming_level() >= 2)
 				fl = max(fl, rfx_pct(fceil, RFX_G_MODE2_FLOOR_PCT_DEFAULT));
 		} else			/* Little: compositor / audio / input */
@@ -1213,7 +1211,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		/* F6 two-phase descent: a faster shed for the first
 		 * down_fast_ms of a descent (measured from the last upward
 		 * commit), then the slow rate. down_fast_ms=0 -> single slow
-		 * phase (current behaviour). */
+		 * phase. */
 		down_pct = RFX_GAMING_DOWN_PCT_PER_2MS;
 		if (RFX_G_DOWN_FAST_MS_DEFAULT &&
 		    rfx_elapsed(time, p->last_upfreq_time) <
@@ -1248,11 +1246,11 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (freq < fl)
 			freq = fl;
 
-		/* F1 hispeed floor + F2 touch boost: extra render-band floors,
-		 * both opt-in and default-off. Skipped under the cooling latch
-		 * so they never fight the thermal walk, and past the idle gate
-		 * (touch anticipates the next burst). rfx_pct(fceil, <=100) can
-		 * never exceed the ceiling. */
+		/* F1 hispeed floor + F2 touch boost: extra render-band floors.
+		 * Skipped under the cooling latch so they never fight the
+		 * thermal walk, and past the idle gate (touch anticipates the
+		 * next burst). rfx_pct(fceil, <=100) can never exceed the
+		 * ceiling. */
 		if (!little && !prime && !p->thermal_cooling) {
 			unsigned int boost_fl = 0;
 
@@ -1350,7 +1348,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		return p->next_freq;
 	p->pending_raw_freq = freq;
 	/* F4: on a descent round to the OPP at or below the target (round-up
-	 * default keeps the rise responsive). Opt-in; needs a freq table. */
+	 * default keeps the rise responsive). Needs a freq table. */
 	if (gaming && RFX_G_ENERGY_AWARE_DEFAULT && pol->freq_table &&
 	    freq < p->next_freq) {
 		int idx = cpufreq_frequency_table_target(pol, freq,
@@ -2584,10 +2582,9 @@ static void __init rfx_selfcheck(void)
 }
 
 /* ===================================================================== */
-/* Input handler (Feature 2): stamp the last touch/key time while gaming.  */
-/* The consumer (F2 touch-boost floor) is gated by tunables and default-off */
-/* so registration alone changes nothing; sched_clock keeps the stamp on    */
-/* the same time base the governor compares against.                        */
+/* Input handler (Feature 2): stamp the last touch/key time while gaming.   */
+/* sched_clock keeps the stamp on the same time base the governor compares   */
+/* against; the F2 floor consumes it only while gaming_mode=1.               */
 /* ===================================================================== */
 
 static bool rfx_input_registered;
@@ -2726,8 +2723,7 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_SAT_TO_MAX_GAMING_PCT > 100);
 	BUILD_BUG_ON(RFX_SAT_TO_MAX_DAILY_PCT > 100);
 
-	/* Gaming feature-tunable defaults (Feature 9): valid at the values
-	 * that ship. Runtime writes are range-checked in their stores. */
+	/* Gaming feature constants: valid at the values that ship. */
 	BUILD_BUG_ON(RFX_G_EVAL_US_DEFAULT < 1);
 	BUILD_BUG_ON(RFX_G_HISPEED_PCT_DEFAULT > 100);
 	BUILD_BUG_ON(RFX_G_GO_HISPEED_PCT_DEFAULT > 100);
