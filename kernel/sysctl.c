@@ -142,11 +142,14 @@ extern u8   sched_burst_smoothness_short;
 extern u8   sched_burst_fork_atavistic;
 extern u8   sched_burst_penalty_offset;
 extern uint sched_burst_penalty_scale;
+extern uint sched_burst_penalty_max;
 extern uint sched_burst_cache_lifetime;
 extern int sched_bore_update_handler(struct ctl_table *table, int write,
 		void __user *buffer, size_t *lenp, loff_t *ppos);
 static int __maybe_unused sixty_four     = 64;
 static int __maybe_unused maxval_12_bits = 4095;
+static int __maybe_unused burst_pen_min  = 4;
+static int __maybe_unused burst_pen_max  = 156;
 #endif // CONFIG_SCHED_BORE
 
 /*
@@ -1825,6 +1828,15 @@ static struct ctl_table kern_table[] = {
 		.proc_handler = proc_douintvec_minmax,
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= &maxval_12_bits,
+	},
+	{
+		.procname	= "sched_burst_penalty_max",
+		.data		= &sched_burst_penalty_max,
+		.maxlen		= sizeof(uint),
+		.mode		= 0644,
+		.proc_handler = proc_douintvec_minmax,
+		.extra1		= &burst_pen_min,
+		.extra2		= &burst_pen_max,
 	},
 	{
 		.procname	= "sched_burst_cache_lifetime",
