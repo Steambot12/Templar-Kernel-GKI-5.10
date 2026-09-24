@@ -60,10 +60,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* DAILY eval rate limits (us), at rest only: gaming and the DL bypass
  * override. Slower idle evals = fewer governor evaluations and frequency
- * decisions while awake (Little 6ms / Big 6ms). The up-rate gate stays
+ * decisions while awake (Little 8ms / Big 6ms). The up-rate gate stays
  * sub-ms (200/100us), so an interaction climbs on the next eligible
  * evaluation/commit; the slower cadence only quiets the idle side. */
-#define RFX_LITTLE_RATE_US		6000
+#define RFX_LITTLE_RATE_US		8000
 #define RFX_LITTLE_UP_US		200
 #define RFX_LITTLE_DOWN_US		3000
 
@@ -230,11 +230,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * regressed). Relief-side readers (cooling latch, relief depth) keep the raw
  * value -- the clock's ceiling alone goes through here. */
 #define RFX_CEIL_RISE_PCT_PER_2MS	1
-/* R2 stage 1: 6%/12ms -- widen the shallow-cut band and dwell so limiter
- * noise below 6% of fceil does not drop the clock; deep cuts (>=6%)
- * remain instant. R2 stage 2 (if stage 1 gates clean): 8%/15ms. */
-#define RFX_CEIL_FALL_DWELL_NS		(12 * NSEC_PER_MSEC)
-#define RFX_CEIL_FALL_BYPASS_PCT	6
+/* R2 stage 2: 8%/15ms -- widen the shallow-cut band and dwell so limiter
+ * noise below 8% of fceil does not drop the clock; deep cuts (>=8%)
+ * remain instant. Stage 1 (6%/12ms) gated clean. */
+#define RFX_CEIL_FALL_DWELL_NS		(15 * NSEC_PER_MSEC)
+#define RFX_CEIL_FALL_BYPASS_PCT	8
 
 /* Warmup ramp: instant rise, linear decay back to the baseline floor. The
  * session-entry window decays over the short ramp; a re-armed window over the
