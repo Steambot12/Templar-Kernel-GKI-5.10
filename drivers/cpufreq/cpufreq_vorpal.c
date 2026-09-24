@@ -174,6 +174,30 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_BIG_SUSTAINED_CAP_PCT	80
 #define RFX_D_PRIME_SUSTAINED_CAP_PCT	80
 
+/* ---- Daily-only power features: applied while gaming_mode=0, inert while
+ * gaming (the gaming band never reads them). Any 0 disables at build. ---- */
+/* Screen-off profile, fed by the screen_off sysfs node (1 = off): hard caps +
+ * slow eval so clusters fall to fmin and the platform can reach deep idle. */
+#define RFX_D_SCREENOFF_LITTLE_CAP_PCT	45
+#define RFX_D_SCREENOFF_BIG_CAP_PCT	40
+#define RFX_D_SCREENOFF_PRIME_CAP_PCT	35
+#define RFX_D_SCREENOFF_EVAL_US		100000
+/* Adaptive idle eval: poll slower while parked at fmin (never below tunable). */
+#define RFX_D_IDLE_EVAL_US		20000
+/* F5 daily: min dwell since the last up-commit before a drop (anti down-flap). */
+#define RFX_D_LITTLE_MIN_SAMPLE_US	3000
+#define RFX_D_BIG_MIN_SAMPLE_US		1500
+/* F4 daily: round down on descent, only above MIN_PCT so the fmin park stays fast. */
+#define RFX_D_ENERGY_AWARE		1
+#define RFX_D_ENERGY_AWARE_MIN_PCT	50
+/* Daily thermal pre-cap: slide fceil -> MIN_PCT across START..FULL_MC (warmth). */
+#define RFX_D_THERM_CAP_MC		45000
+#define RFX_D_THERM_CAP_FULL_MC		52000
+#define RFX_D_THERM_CAP_MIN_PCT		65
+/* Park latch: enter fmin below ~3% (max_cap>>5), hold until EXIT_PCT for EXIT_EVALS. */
+#define RFX_D_PARK_EXIT_PCT		7
+#define RFX_D_PARK_EXIT_EVALS		2
+
 /* ---- Util EMA: rise instant, decay time-normalised, so the time constant is
  * independent of eval rate. Period = interval removing 1/DIVISOR of the
  * remaining error. ---- */
@@ -400,6 +424,8 @@ static atomic64_t rfx_input_ts = ATOMIC64_INIT(0);
 static atomic_t rfx_emergency_cap_pct = ATOMIC_INIT(100);
 /* Userspace-fed temperature fallback (milli-Celsius); 0 = unavailable. */
 static atomic_t rfx_temp_mc = ATOMIC_INIT(0);
+/* Display state, fed by the screen_off sysfs node: 1 = off. Daily only. */
+static atomic_t rfx_screen_off = ATOMIC_INIT(0);
 
 /* All live policies, so gaming-off can reset every cluster (not just Prime). */
 static LIST_HEAD(rfx_policy_list);
@@ -477,6 +503,8 @@ struct rfx_policy {
 	u64 little_floor_end_ns;	/* daily: timed knee-floor window (wake edge) */
 	unsigned int little_prev_demand;	/* daily Little demand at previous eval */
 	bool big_cap_lifted;		/* daily: sustained-load cap lift for Big/Prime */
+	bool parked;			/* daily: park latch (fmin) */
+	unsigned int park_exit_count;	/* daily: consecutive evals above exit thr */
 	bool thermal_cooling;		/* gaming: floors dropped to idle, hysteretic */
 	bool risk_high;			/* gaming: frame-risk edge consumed, hysteretic */
 
@@ -948,6 +976,25 @@ static unsigned int rfx_thermal_clamp(unsigned int freq, unsigned int fceil)
 	return min(freq, rfx_pct(fceil, pct));
 }
 
+/*
+ * Daily thermal pre-cap: fceil at/below START_MC, MIN_PCT at/above FULL_MC,
+ * linear between. Returns fceil when disabled or cool.
+ */
+static unsigned int rfx_daily_therm_cap(unsigned int fceil, int t_mc)
+{
+#if RFX_D_THERM_CAP_MC
+	unsigned int span = RFX_D_THERM_CAP_FULL_MC - RFX_D_THERM_CAP_MC;
+	unsigned int over;
+
+	if (t_mc < (int)RFX_D_THERM_CAP_MC)
+		return fceil;
+	over = min((unsigned int)(t_mc - (int)RFX_D_THERM_CAP_MC), span);
+	return rfx_pct(fceil, 100 - (100 - RFX_D_THERM_CAP_MIN_PCT) * over / span);
+#else
+	return fceil;
+#endif
+}
+
 /* ===================================================================== */
 /* Frequency decision                                                    */
 /* ===================================================================== */
@@ -1279,6 +1326,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		}
 	} else {
 		unsigned int cap, demand_pct;
+		bool screen_off = atomic_read(&rfx_screen_off);
 
 		/* Raw demand, before headroom: post-headroom util is stepped by
 		 * tier, so a crossing jumps the value with no load change. Same
@@ -1291,7 +1339,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (little) {
 			cap = rfx_pct(fceil, RFX_D_LITTLE_CAP_PCT);
 
-			if (demand_pct >= RFX_D_LITTLE_LIFT_PCT)
+			/* No sustained lift off-screen (background sync). */
+			if (!screen_off && demand_pct >= RFX_D_LITTLE_LIFT_PCT)
 				p->little_cap_lifted = true;
 			else if (demand_pct <= RFX_D_LITTLE_DROP_PCT)
 				p->little_cap_lifted = false;
@@ -1306,23 +1355,28 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			 * to fmin -- never a standing floor. Rearm only after
 			 * demand has dropped back to the parked band. Applied
 			 * before the cap clamp below so it can never exceed the
-			 * ceiling. */
-			if (p->little_prev_demand < RFX_D_LITTLE_FLOOR_ARM_PCT &&
-			    demand_pct >= RFX_D_LITTLE_FLOOR_ARM_PCT)
-				p->little_floor_end_ns = time + RFX_D_LITTLE_FLOOR_NS;
-			else if (demand_pct < RFX_D_LITTLE_FLOOR_REARM_PCT)
+			 * ceiling. Skipped off-screen. */
+			if (screen_off) {
 				p->little_floor_end_ns = 0;
-			p->little_prev_demand = demand_pct;
+				p->little_prev_demand = demand_pct;
+			} else {
+				if (p->little_prev_demand < RFX_D_LITTLE_FLOOR_ARM_PCT &&
+				    demand_pct >= RFX_D_LITTLE_FLOOR_ARM_PCT)
+					p->little_floor_end_ns = time + RFX_D_LITTLE_FLOOR_NS;
+				else if (demand_pct < RFX_D_LITTLE_FLOOR_REARM_PCT)
+					p->little_floor_end_ns = 0;
+				p->little_prev_demand = demand_pct;
 
-			if (p->little_floor_end_ns && time < p->little_floor_end_ns &&
-			    freq < rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT))
-				freq = rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT);
+				if (p->little_floor_end_ns && time < p->little_floor_end_ns &&
+				    freq < rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT))
+					freq = rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT);
+			}
 		} else {
 			cap = rfx_pct(fceil, prime ? RFX_D_PRIME_CAP_PCT :
 						     RFX_D_BIG_CAP_PCT);
 
-			/* Big/Prime share one latch. */
-			if (demand_pct >= RFX_D_BIG_LIFT_PCT)
+			/* Big/Prime share one latch. No lift off-screen. */
+			if (!screen_off && demand_pct >= RFX_D_BIG_LIFT_PCT)
 				p->big_cap_lifted = true;
 			else if (demand_pct <= RFX_D_BIG_DROP_PCT)
 				p->big_cap_lifted = false;
@@ -1330,6 +1384,24 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				cap = rfx_pct(fceil, prime ?
 					RFX_D_PRIME_SUSTAINED_CAP_PCT :
 					RFX_D_BIG_SUSTAINED_CAP_PCT);
+		}
+
+		/* Screen-off hard cap: tighter than any daily cap. */
+		if (screen_off) {
+			unsigned int soc = rfx_pct(fceil, little ?
+				RFX_D_SCREENOFF_LITTLE_CAP_PCT : (prime ?
+				RFX_D_SCREENOFF_PRIME_CAP_PCT :
+				RFX_D_SCREENOFF_BIG_CAP_PCT));
+			if (cap > soc)
+				cap = soc;
+		}
+
+		/* Daily thermal pre-cap (warmth / battery). */
+		{
+			unsigned int tcap = rfx_daily_therm_cap(fceil,
+						atomic_read(&rfx_temp_mc));
+			if (cap > tcap)
+				cap = tcap;
 		}
 
 		if (freq > cap)
@@ -1348,13 +1420,22 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		return p->next_freq;
 	p->pending_raw_freq = freq;
 	/* F4: on a descent round to the OPP at or below the target (round-up
-	 * default keeps the rise responsive). Needs a freq table. */
-	if (gaming && RFX_G_ENERGY_AWARE_DEFAULT && pol->freq_table &&
-	    freq < p->next_freq) {
-		int idx = cpufreq_frequency_table_target(pol, freq,
-							 CPUFREQ_RELATION_H);
+	 * keeps the rise responsive). Gaming always; daily only above MIN_PCT. */
+	if (pol->freq_table && freq < p->next_freq) {
+		bool round_down;
 
-		return pol->freq_table[idx].frequency;
+		if (gaming)
+			round_down = RFX_G_ENERGY_AWARE_DEFAULT;
+		else
+			round_down = RFX_D_ENERGY_AWARE &&
+				freq >= rfx_pct(fceil, RFX_D_ENERGY_AWARE_MIN_PCT);
+
+		if (round_down) {
+			int idx = cpufreq_frequency_table_target(pol, freq,
+								 CPUFREQ_RELATION_H);
+
+			return pol->freq_table[idx].frequency;
+		}
 	}
 	return cpufreq_driver_resolve_freq(pol, freq);
 }
@@ -1457,7 +1538,10 @@ static inline void rfx_set_down_delay(struct rfx_policy *p, bool gaming)
 	} else {
 		p->down_rate_delay_ns =
 			(s64)p->tunables->down_rate_limit_us * NSEC_PER_USEC;
-		p->min_sample_ns = 0;
+		/* F5 daily: small dwell since last up-commit (anti down-flap). */
+		p->min_sample_ns = (s64)(p->is_little ?
+			RFX_D_LITTLE_MIN_SAMPLE_US :
+			RFX_D_BIG_MIN_SAMPLE_US) * NSEC_PER_USEC;
 	}
 }
 
@@ -1476,9 +1560,26 @@ static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming)
  * depend on state known without util. */
 static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
 {
-	p->freq_update_delay_ns = gaming ?
-		(s64)RFX_G_EVAL_US_DEFAULT * NSEC_PER_USEC :
-		(s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
+	s64 base;
+
+	if (gaming) {
+		p->freq_update_delay_ns =
+			(s64)RFX_G_EVAL_US_DEFAULT * NSEC_PER_USEC;
+		return;
+	}
+	/* Screen off: near-silent cadence. */
+	if (atomic_read(&rfx_screen_off)) {
+		p->freq_update_delay_ns =
+			(s64)RFX_D_SCREENOFF_EVAL_US * NSEC_PER_USEC;
+		return;
+	}
+	base = (s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
+	/* Adaptive idle: poll slower while parked at fmin, never below tunable.
+	 * Uses last-committed freq only -- known without this eval's util. */
+	if (RFX_D_IDLE_EVAL_US && p->next_freq == p->policy->cpuinfo.min_freq)
+		base = max_t(s64, base,
+			     (s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC);
+	p->freq_update_delay_ns = base;
 }
 
 /*
@@ -1582,23 +1683,31 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	rfx_pol_up_delay(p, gaming);
 
 	/*
-	 * Daily parking fast-path: demand near zero and not already parked ->
-	 * request fmin, skip the shaping walk. The down-rate gate STILL owns
-	 * the commit (rfx_commit_freq), so the descent is paced exactly like a
-	 * normal down step -- this only saves the redundant shaping work, it
-	 * does not bypass any rate limit. Gaming keeps its floors, so this
-	 * branch is off there by construction.
-	 *
-	 * Threshold ~3% of capacity (max_cap >> 5): the shaping walk already
-	 * resolves to fmin at that util on any real OPP table, so parking
-	 * earlier costs no frequency -- it drops the redundant walk and lets
-	 * Little fall to fmin without riding a stale knee-floor window once
-	 * demand has collapsed. The down-rate gate still paces the descent.
+	 * Daily park latch with exit hysteresis: enter fmin below ~3%
+	 * (max_cap>>5), hold until util clears the exit threshold for
+	 * RFX_D_PARK_EXIT_EVALS evals -- kills the fmin<->OPP2 bounce (a real
+	 * wake clears it in one eval). The down-rate gate still paces the
+	 * descent; parking only skips the shaping walk. Off in gaming.
 	 */
-	if (!gaming && p->filt_util < (max_cap >> 5) &&
-	    p->next_freq != p->policy->cpuinfo.min_freq) {
-		p->pending_raw_freq = p->policy->cpuinfo.min_freq;
-		return p->policy->cpuinfo.min_freq;
+	if (!gaming) {
+		unsigned int fmin = p->policy->cpuinfo.min_freq;
+
+		if (p->filt_util < (max_cap >> 5)) {
+			p->parked = true;
+			p->park_exit_count = 0;
+		} else if (p->parked) {
+			if (p->filt_util >=
+			    (max_cap * RFX_D_PARK_EXIT_PCT / 100)) {
+				if (++p->park_exit_count >= RFX_D_PARK_EXIT_EVALS)
+					p->parked = false;
+			} else {
+				p->park_exit_count = 0;
+			}
+		}
+		if (p->parked) {
+			p->pending_raw_freq = fmin;
+			return fmin;
+		}
 	}
 
 	return rfx_target_freq(p, p->filt_util, max_cap, time, gaming);
@@ -1832,6 +1941,8 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->big_cap_lifted = false;
 	p->little_floor_end_ns = 0;
 	p->little_prev_demand = 0;
+	p->parked = false;
+	p->park_exit_count = 0;
 	p->descend_hold_end_ns = 0;
 	p->prev_demand_pct = 0;
 	p->ceil_rise_pct = 100;
@@ -1959,12 +2070,49 @@ static ssize_t thermal_zone_store(struct gov_attr_set *attr_set,
 }
 static struct governor_attr thermal_zone = __ATTR_RW(thermal_zone);
 
+static ssize_t screen_off_show(struct gov_attr_set *attr_set, char *buf)
+{
+	return sprintf(buf, "%u\n", atomic_read(&rfx_screen_off) ? 1 : 0);
+}
+static ssize_t screen_off_store(struct gov_attr_set *attr_set,
+				const char *buf, size_t count)
+{
+	struct rfx_policy *p;
+	unsigned long flags, pflags;
+	unsigned int val;
+
+	if (kstrtouint(buf, 10, &val))
+		return -EINVAL;
+	val = !!val;
+	if (atomic_xchg(&rfx_screen_off, val) == val)
+		return count;			/* no edge */
+
+	/* Screen-off edge: drop wake latches. Screen-on edge: force a fresh eval
+	 * so the first frame skips the slow off-screen cadence. Inert in gaming. */
+	spin_lock_irqsave(&rfx_policy_list_lock, flags);
+	list_for_each_entry(p, &rfx_policy_list, gov_node) {
+		raw_spin_lock_irqsave(&p->update_lock, pflags);
+		if (val) {
+			p->little_cap_lifted = false;
+			p->big_cap_lifted = false;
+			p->little_floor_end_ns = 0;
+		} else {
+			p->need_freq_update = true;
+		}
+		raw_spin_unlock_irqrestore(&p->update_lock, pflags);
+	}
+	spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
+	return count;
+}
+static struct governor_attr screen_off = __ATTR_RW(screen_off);
+
 static struct attribute *rfx_attrs[] = {
 	&rate_limit_us.attr,
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
 	&temp_mc.attr,
 	&thermal_zone.attr,
+	&screen_off.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(rfx);
@@ -2532,6 +2680,18 @@ static void __init rfx_selfcheck(void)
 	for (ns = RFX_G_COOL_DEEP_PCT; ns <= RFX_G_COOL_EXIT_PCT; ns++)
 		WARN_ON(rfx_cool_depth(ns - 1) < rfx_cool_depth(ns));
 
+	/* Daily thermal cap: full ceiling cool, MIN_PCT at/beyond the horizon,
+	 * monotonic non-increasing between. */
+#if RFX_D_THERM_CAP_MC
+	WARN_ON(rfx_daily_therm_cap(1000, RFX_D_THERM_CAP_MC - 1) != 1000);
+	WARN_ON(rfx_daily_therm_cap(1000, RFX_D_THERM_CAP_FULL_MC) !=
+		rfx_pct(1000, RFX_D_THERM_CAP_MIN_PCT));
+	WARN_ON(rfx_daily_therm_cap(1000, RFX_D_THERM_CAP_FULL_MC + 5000) !=
+		rfx_pct(1000, RFX_D_THERM_CAP_MIN_PCT));
+	WARN_ON(rfx_daily_therm_cap(1000, (RFX_D_THERM_CAP_MC +
+		RFX_D_THERM_CAP_FULL_MC) / 2) >= 1000);
+#endif
+
 	/* Ceiling filter: deep falls instant, shallow falls dwell-filtered,
 	 * rises paced from the last consumed budget, and a gap with no
 	 * evaluation returns the whole budget at once. */
@@ -2684,6 +2844,21 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_D_LITTLE_SUSTAINED_CAP_PCT > 100);
 	BUILD_BUG_ON(RFX_D_BIG_SUSTAINED_CAP_PCT > 100);
 	BUILD_BUG_ON(RFX_D_PRIME_SUSTAINED_CAP_PCT > 100);
+	/* Screen-off caps stay at/below the on-screen tier caps (lower only). */
+	BUILD_BUG_ON(RFX_D_SCREENOFF_LITTLE_CAP_PCT > RFX_D_LITTLE_CAP_PCT);
+	BUILD_BUG_ON(RFX_D_SCREENOFF_BIG_CAP_PCT > RFX_D_BIG_CAP_PCT);
+	BUILD_BUG_ON(RFX_D_SCREENOFF_PRIME_CAP_PCT > RFX_D_PRIME_CAP_PCT);
+	BUILD_BUG_ON(RFX_D_SCREENOFF_EVAL_US < 1);
+	BUILD_BUG_ON(RFX_D_ENERGY_AWARE > 1);
+	BUILD_BUG_ON(RFX_D_ENERGY_AWARE_MIN_PCT > 100);
+	BUILD_BUG_ON(RFX_D_THERM_CAP_MIN_PCT > 100);
+#if RFX_D_THERM_CAP_MC
+	BUILD_BUG_ON(RFX_D_THERM_CAP_FULL_MC <= RFX_D_THERM_CAP_MC);
+	BUILD_BUG_ON(RFX_D_THERM_CAP_MC >= RFX_TEMP_EMERGENCY_MC);
+#endif
+	/* Park exit must sit above the ~3% (max_cap>>5) entry and hold >=1 eval. */
+	BUILD_BUG_ON(RFX_D_PARK_EXIT_PCT * 32 <= 100);
+	BUILD_BUG_ON(RFX_D_PARK_EXIT_EVALS < 1);
 	BUILD_BUG_ON(RFX_LITTLE_CAP_THRESHOLD >= RFX_PRIME_CAP_THRESHOLD);
 	BUILD_BUG_ON(RFX_EMA_GAMING_DIVISOR < 1 || RFX_EMA_MAX_STEPS < 1);
 	BUILD_BUG_ON(RFX_EMERGENCY_CAP_PCT >= 100);
