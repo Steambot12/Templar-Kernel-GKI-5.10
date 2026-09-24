@@ -159,6 +159,7 @@ u8   __read_mostly sched_burst_fork_atavistic   = 0;
 u8   __read_mostly sched_burst_penalty_offset   = 27;
 uint __read_mostly sched_burst_penalty_scale    = 1024;
 uint __read_mostly sched_burst_cache_lifetime   = 75000000;
+uint __read_mostly sched_burst_penalty_max      = 16;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 4;
@@ -592,15 +593,14 @@ find_matching_se(struct sched_entity **se, struct sched_entity **pse)
 
 #ifdef CONFIG_SCHED_BORE
 /*
- * Demotion cap: a task may lose at most +4 nice steps (burst_score = 4,
- * penalty = 16), not +39. The ratchet only releases at sleep/yield, so a
- * thread that stays runnable across a long session accumulates weight loss
- * with no floor: the old 156 cap scheduled the main thread at up to nice +39
- * by the back of the session. +4 keeps batch work clearly demoted (enough
- * for EAS packing) but bounds a long session to nice +4. u8 KABI fields
- * unaffected: 16 < 255.
+ * Demotion cap, runtime tunable via sysctl sched_burst_penalty_max.
+ * Bounds how far a chronically-runnable thread demotes: the ratchet only
+ * releases at sleep/yield, so without a cap a thread that never sleeps loses
+ * weight with no floor. A low cap protects an always-runnable foreground
+ * thread from late-session starvation; a higher cap buries background hogs
+ * harder for idle efficiency. Value is a penalty (burst_score = value >> 2);
+ * default 16 = burst_score 4. The u8 burst_score field bounds it below 256.
  */
-#define MAX_BURST_PENALTY (4U << 2)
 
 static inline u32 log2plus1_u64_u32f8(u64 v) {
 	u32 msb = fls64(v);
@@ -620,7 +620,7 @@ static inline u32 calc_burst_penalty(u64 burst_time) {
 	penalty = max(0, (s32)(greed - tolerance));
 	scaled_penalty = penalty * sched_burst_penalty_scale >> 16;
 
-	return min(MAX_BURST_PENALTY, scaled_penalty);
+	return min(sched_burst_penalty_max, scaled_penalty);
 }
 
 /* set_load_weight() with the prio supplied instead of derived from static_prio. */
