@@ -2083,10 +2083,8 @@ static void rfx_exit(struct cpufreq_policy *policy)
 	mutex_lock(&rfx_global_tunables_lock);
 	count = gov_attr_set_put(&t->attr_set, &p->tunables_hook);
 	policy->governor_data = NULL;
-	if (!count) {
+	if (!count)
 		rfx_clear_global_tunables();
-		atomic_set(&rfx_gaming, 0);
-	}
 	mutex_unlock(&rfx_global_tunables_lock);
 
 	rfx_kthread_stop(p);
