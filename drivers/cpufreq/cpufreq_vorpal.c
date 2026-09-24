@@ -2423,10 +2423,10 @@ static void __init rfx_selfcheck(void)
 	/* Bounce back to the ceiling: the pending fall is cancelled. */
 	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 6 * NSEC_PER_MSEC) != 100);
 	WARN_ON(rfx_ceil_rise_filter(&p, 98, t + 7 * NSEC_PER_MSEC) != 100);
-	/* Held past the dwell: the shallow fall lands. */
-	WARN_ON(rfx_ceil_rise_filter(&p, 98, t + 18 * NSEC_PER_MSEC) != 98);
+	/* Held past the dwell (>=15ms from the fall): the shallow fall lands. */
+	WARN_ON(rfx_ceil_rise_filter(&p, 98, t + 23 * NSEC_PER_MSEC) != 98);
 	/* Deep after shallow: still instant. */
-	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 19 * NSEC_PER_MSEC) != 90);
+	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 24 * NSEC_PER_MSEC) != 90);
 
 	/* Quiet re-arm needs the full quiet run, so a short lull does not
 	 * re-arm and the full one does. */
