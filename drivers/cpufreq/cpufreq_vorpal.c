@@ -1460,8 +1460,14 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	 * normal down step -- this only saves the redundant shaping work, it
 	 * does not bypass any rate limit. Gaming keeps its floors, so this
 	 * branch is off there by construction.
+	 *
+	 * Threshold ~3% of capacity (max_cap >> 5): the shaping walk already
+	 * resolves to fmin at that util on any real OPP table, so parking
+	 * earlier costs no frequency -- it drops the redundant walk and lets
+	 * Little fall to fmin without riding a stale knee-floor window once
+	 * demand has collapsed. The down-rate gate still paces the descent.
 	 */
-	if (!gaming && p->filt_util < (max_cap >> 6) &&
+	if (!gaming && p->filt_util < (max_cap >> 5) &&
 	    p->next_freq != p->policy->cpuinfo.min_freq) {
 		p->pending_raw_freq = p->policy->cpuinfo.min_freq;
 		return p->policy->cpuinfo.min_freq;
