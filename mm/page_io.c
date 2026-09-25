@@ -290,8 +290,18 @@ int kcompressd(void *p)
 	current->flags |= PF_MEMALLOC | PF_KSWAPD;
 
 	while (!kthread_should_stop()) {
+		/*
+		 * Wake on new work OR a stop request. Without the
+		 * kthread_should_stop() term, an empty FIFO at teardown leaves
+		 * this thread asleep forever (kthread_stop() only wakes, never
+		 * signals), hanging node-offline. Waking on stop also lets the
+		 * drain loop below flush any still-queued pages before exit, so
+		 * kfifo_free() in kswapd_stop() never discards a locked page
+		 * (which would silently lose a swap write and leak the lock).
+		 */
 		wait_event_interruptible(kcompress_data[node_id].kcompressd_wait,
-				!kfifo_is_empty(&kcompress_data[node_id].kcompress_fifo));
+				!kfifo_is_empty(&kcompress_data[node_id].kcompress_fifo) ||
+				kthread_should_stop());
 
 		while (!kfifo_is_empty(&kcompress_data[node_id].kcompress_fifo)) {
 			if (kfifo_out(&kcompress_data[node_id].kcompress_fifo, &page, sizeof(page))) {
