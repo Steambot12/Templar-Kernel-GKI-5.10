@@ -2598,16 +2598,33 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 	 * LRU at zero, nothing is reclaimed this pass, priority lowers
 	 * one notch and the next pass reads the same watermarks and
 	 * zeroes again -- the loop burns out and OOM is the only exit.
-	 * If an LRU held pages but its target was killed, rescan it
-	 * evenly so the watermarks never deadlock the node.
+	 *
+	 * Only the *all-zero* case is a real deadlock. The previous code
+	 * refilled per-LRU (rescanned any single zeroed LRU that still
+	 * held pages), which defeated the soft clean_low/anon tiers --
+	 * get_scan_count() intentionally zeroes one LRU to steer reclaim
+	 * to the other (SCAN_FILE/SCAN_ANON), and the refill undid that,
+	 * reclaiming clean file pages that clean_low was meant to protect.
+	 * Gate the even rescan on all targets being zero so the watermarks
+	 * can never deadlock the node without breaking the soft protection.
 	 */
-	for_each_evictable_lru(lru) {
-		if (nr[lru])
-			continue;
-		if (lruvec_lru_size(lruvec, lru, sc->reclaim_idx))
-			nr[lru] = lruvec_lru_size(lruvec, lru,
-						   sc->reclaim_idx) /
-				  (1UL << sc->priority);
+	{
+		bool all_zero = true;
+
+		for_each_evictable_lru(lru) {
+			if (nr[lru]) {
+				all_zero = false;
+				break;
+			}
+		}
+		if (all_zero) {
+			for_each_evictable_lru(lru) {
+				if (lruvec_lru_size(lruvec, lru, sc->reclaim_idx))
+					nr[lru] = lruvec_lru_size(lruvec, lru,
+								   sc->reclaim_idx) /
+						  (1UL << sc->priority);
+			}
+		}
 	}
 
 	/* Record the original scan target for proportional adjustments later */
