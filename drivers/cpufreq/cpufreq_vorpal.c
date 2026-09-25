@@ -102,7 +102,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_HISPEED_PCT_DEFAULT		70	/* F1 hispeed render floor */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
 #define RFX_G_HISPEED_HOLD_US_DEFAULT		30000	/* F1 hold after last go-demand */
-#define RFX_G_TOUCH_PCT_DEFAULT			75	/* F2 input render floor */
+#define RFX_G_TOUCH_PCT_DEFAULT			68	/* F2 input render floor */
 #define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
 #define RFX_G_THERM_CAP_MC_DEFAULT		80000	/* F3 pre-emptive cap start mC */
 #define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		70	/* F3 floor of the graduated cap */
@@ -139,12 +139,6 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* ---- Daily-only power features: applied while gaming_mode=0, inert while
  * gaming (the gaming band never reads them). Any 0 disables at build. ---- */
-/* Screen-off profile, fed by the screen_off sysfs node (1 = off): hard caps +
- * slow eval so clusters fall to fmin and the platform can reach deep idle. */
-#define RFX_D_SCREENOFF_LITTLE_CAP_PCT	45
-#define RFX_D_SCREENOFF_BIG_CAP_PCT	40
-#define RFX_D_SCREENOFF_PRIME_CAP_PCT	35
-#define RFX_D_SCREENOFF_EVAL_US		100000
 /* Adaptive idle eval: poll slower while parked at fmin (never below tunable). */
 #define RFX_D_IDLE_EVAL_US		20000
 /* F5 daily: min dwell since the last up-commit before a drop (anti down-flap). */
@@ -338,8 +332,6 @@ static atomic64_t rfx_input_ts = ATOMIC64_INIT(0);
 static atomic_t rfx_emergency_cap_pct = ATOMIC_INIT(100);
 /* Userspace-fed temperature fallback (milli-Celsius); 0 = unavailable. */
 static atomic_t rfx_temp_mc = ATOMIC_INIT(0);
-/* Display state, fed by the screen_off sysfs node: 1 = off. Daily only. */
-static atomic_t rfx_screen_off = ATOMIC_INIT(0);
 
 /* All live policies, so gaming-off can reset every cluster (not just Prime). */
 static LIST_HEAD(rfx_policy_list);
@@ -1017,7 +1009,9 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * EXTEND_PCT (absolute cap MAX_NS from arm), release early below
 		 * RELEASE_PCT for RELEASE_NS. No extension once the limiter is
 		 * taking capacity: riding the floor through a throttle adds heat
-		 * exactly where fceil is falling. */
+		 * exactly where fceil is falling. The session-entry window skips
+		 * early release: asset load is I/O-bound so demand dips into the
+		 * release band, and lapsing there causes the start-of-match dip. */
 		if (warmup_active) {
 			/* Hard-cancel before extend: a sustained peg cancels the
 			 * window now; extending it would ride the 80% floor under a
@@ -1042,7 +1036,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				if (ext > p->gaming_warmup_end_ns)
 					p->gaming_warmup_end_ns = ext;
 				p->warmup_low_demand_since_ns = 0;
-			} else if (demand_pct < RFX_GAMING_WARMUP_RELEASE_PCT) {
+			} else if (!p->gaming_warmup_entry &&
+				   demand_pct < RFX_GAMING_WARMUP_RELEASE_PCT) {
 				if (!p->warmup_low_demand_since_ns)
 					p->warmup_low_demand_since_ns = time;
 				else if (rfx_elapsed(time,
@@ -1227,7 +1222,6 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		}
 	} else {
 		unsigned int cap, demand_pct;
-		bool screen_off = atomic_read(&rfx_screen_off);
 
 		/* Raw demand, before headroom: post-headroom util is stepped by
 		 * tier, so a crossing jumps the value with no load change. Same
@@ -1240,8 +1234,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (little) {
 			cap = rfx_pct(fceil, RFX_D_LITTLE_CAP_PCT);
 
-			/* No sustained lift off-screen (background sync). */
-			if (!screen_off && demand_pct >= RFX_D_LITTLE_LIFT_PCT)
+			if (demand_pct >= RFX_D_LITTLE_LIFT_PCT)
 				p->little_cap_lifted = true;
 			else if (demand_pct <= RFX_D_LITTLE_DROP_PCT)
 				p->little_cap_lifted = false;
@@ -1250,34 +1243,24 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 					      RFX_D_LITTLE_SUSTAINED_CAP_PCT);
 
 			/* Timed knee floor: arm a short window on the rising
-			 * demand edge (idle -> interaction, e.g. keyboard open),
-			 * so the wake carries the knee OPP past the cold-climb
-			 * hitch. It decays after the window and Little falls back
-			 * to fmin -- never a standing floor. Rearm only after
-			 * demand has dropped back to the parked band. Applied
-			 * before the cap clamp below so it can never exceed the
-			 * ceiling. Skipped off-screen. */
-			if (screen_off) {
+			 * demand edge (idle -> interaction) so the wake carries the
+			 * knee OPP past the cold-climb hitch, then decays to fmin. */
+			if (p->little_prev_demand < RFX_D_LITTLE_FLOOR_ARM_PCT &&
+			    demand_pct >= RFX_D_LITTLE_FLOOR_ARM_PCT)
+				p->little_floor_end_ns = time + RFX_D_LITTLE_FLOOR_NS;
+			else if (demand_pct < RFX_D_LITTLE_FLOOR_REARM_PCT)
 				p->little_floor_end_ns = 0;
-				p->little_prev_demand = demand_pct;
-			} else {
-				if (p->little_prev_demand < RFX_D_LITTLE_FLOOR_ARM_PCT &&
-				    demand_pct >= RFX_D_LITTLE_FLOOR_ARM_PCT)
-					p->little_floor_end_ns = time + RFX_D_LITTLE_FLOOR_NS;
-				else if (demand_pct < RFX_D_LITTLE_FLOOR_REARM_PCT)
-					p->little_floor_end_ns = 0;
-				p->little_prev_demand = demand_pct;
+			p->little_prev_demand = demand_pct;
 
-				if (p->little_floor_end_ns && time < p->little_floor_end_ns &&
-				    freq < rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT))
-					freq = rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT);
-			}
+			if (p->little_floor_end_ns && time < p->little_floor_end_ns &&
+			    freq < rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT))
+				freq = rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT);
 		} else {
 			cap = rfx_pct(fceil, prime ? RFX_D_PRIME_CAP_PCT :
 						     RFX_D_BIG_CAP_PCT);
 
-			/* Big/Prime share one latch. No lift off-screen. */
-			if (!screen_off && demand_pct >= RFX_D_BIG_LIFT_PCT)
+			/* Big/Prime share one latch. */
+			if (demand_pct >= RFX_D_BIG_LIFT_PCT)
 				p->big_cap_lifted = true;
 			else if (demand_pct <= RFX_D_BIG_DROP_PCT)
 				p->big_cap_lifted = false;
@@ -1285,16 +1268,6 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				cap = rfx_pct(fceil, prime ?
 					RFX_D_PRIME_SUSTAINED_CAP_PCT :
 					RFX_D_BIG_SUSTAINED_CAP_PCT);
-		}
-
-		/* Screen-off hard cap: tighter than any daily cap. */
-		if (screen_off) {
-			unsigned int soc = rfx_pct(fceil, little ?
-				RFX_D_SCREENOFF_LITTLE_CAP_PCT : (prime ?
-				RFX_D_SCREENOFF_PRIME_CAP_PCT :
-				RFX_D_SCREENOFF_BIG_CAP_PCT));
-			if (cap > soc)
-				cap = soc;
 		}
 
 		/* Daily thermal pre-cap (warmth / battery). */
@@ -1466,12 +1439,6 @@ static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
 	if (gaming) {
 		p->freq_update_delay_ns =
 			(s64)RFX_G_EVAL_US_DEFAULT * NSEC_PER_USEC;
-		return;
-	}
-	/* Screen off: near-silent cadence. */
-	if (atomic_read(&rfx_screen_off)) {
-		p->freq_update_delay_ns =
-			(s64)RFX_D_SCREENOFF_EVAL_US * NSEC_PER_USEC;
 		return;
 	}
 	base = (s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
@@ -1971,49 +1938,12 @@ static ssize_t thermal_zone_store(struct gov_attr_set *attr_set,
 }
 static struct governor_attr thermal_zone = __ATTR_RW(thermal_zone);
 
-static ssize_t screen_off_show(struct gov_attr_set *attr_set, char *buf)
-{
-	return sprintf(buf, "%u\n", atomic_read(&rfx_screen_off) ? 1 : 0);
-}
-static ssize_t screen_off_store(struct gov_attr_set *attr_set,
-				const char *buf, size_t count)
-{
-	struct rfx_policy *p;
-	unsigned long flags, pflags;
-	unsigned int val;
-
-	if (kstrtouint(buf, 10, &val))
-		return -EINVAL;
-	val = !!val;
-	if (atomic_xchg(&rfx_screen_off, val) == val)
-		return count;			/* no edge */
-
-	/* Screen-off edge: drop wake latches. Screen-on edge: force a fresh eval
-	 * so the first frame skips the slow off-screen cadence. Inert in gaming. */
-	spin_lock_irqsave(&rfx_policy_list_lock, flags);
-	list_for_each_entry(p, &rfx_policy_list, gov_node) {
-		raw_spin_lock_irqsave(&p->update_lock, pflags);
-		if (val) {
-			p->little_cap_lifted = false;
-			p->big_cap_lifted = false;
-			p->little_floor_end_ns = 0;
-		} else {
-			p->need_freq_update = true;
-		}
-		raw_spin_unlock_irqrestore(&p->update_lock, pflags);
-	}
-	spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
-	return count;
-}
-static struct governor_attr screen_off = __ATTR_RW(screen_off);
-
 static struct attribute *rfx_attrs[] = {
 	&rate_limit_us.attr,
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
 	&temp_mc.attr,
 	&thermal_zone.attr,
-	&screen_off.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(rfx);
@@ -2745,11 +2675,6 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_D_LITTLE_SUSTAINED_CAP_PCT > 100);
 	BUILD_BUG_ON(RFX_D_BIG_SUSTAINED_CAP_PCT > 100);
 	BUILD_BUG_ON(RFX_D_PRIME_SUSTAINED_CAP_PCT > 100);
-	/* Screen-off caps stay at/below the on-screen tier caps (lower only). */
-	BUILD_BUG_ON(RFX_D_SCREENOFF_LITTLE_CAP_PCT > RFX_D_LITTLE_CAP_PCT);
-	BUILD_BUG_ON(RFX_D_SCREENOFF_BIG_CAP_PCT > RFX_D_BIG_CAP_PCT);
-	BUILD_BUG_ON(RFX_D_SCREENOFF_PRIME_CAP_PCT > RFX_D_PRIME_CAP_PCT);
-	BUILD_BUG_ON(RFX_D_SCREENOFF_EVAL_US < 1);
 	BUILD_BUG_ON(RFX_D_ENERGY_AWARE > 1);
 	BUILD_BUG_ON(RFX_D_ENERGY_AWARE_MIN_PCT > 100);
 	BUILD_BUG_ON(RFX_D_THERM_CAP_MIN_PCT > 100);
