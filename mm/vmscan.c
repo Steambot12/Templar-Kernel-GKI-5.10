@@ -2591,6 +2591,42 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 
 	get_scan_count(lruvec, sc, nr);
 
+	/*
+	 * OOM escape: the le9uo hard watermarks (anon_below_min /
+	 * clean_below_min) zero the scan target in get_scan_count() when
+	 * their LRU is under its floor. If that leaves every evictable
+	 * LRU at zero, nothing is reclaimed this pass, priority lowers
+	 * one notch and the next pass reads the same watermarks and
+	 * zeroes again -- the loop burns out and OOM is the only exit.
+	 *
+	 * Only the *all-zero* case is a real deadlock. The previous code
+	 * refilled per-LRU (rescanned any single zeroed LRU that still
+	 * held pages), which defeated the soft clean_low/anon tiers --
+	 * get_scan_count() intentionally zeroes one LRU to steer reclaim
+	 * to the other (SCAN_FILE/SCAN_ANON), and the refill undid that,
+	 * reclaiming clean file pages that clean_low was meant to protect.
+	 * Gate the even rescan on all targets being zero so the watermarks
+	 * can never deadlock the node without breaking the soft protection.
+	 */
+	{
+		bool all_zero = true;
+
+		for_each_evictable_lru(lru) {
+			if (nr[lru]) {
+				all_zero = false;
+				break;
+			}
+		}
+		if (all_zero) {
+			for_each_evictable_lru(lru) {
+				if (lruvec_lru_size(lruvec, lru, sc->reclaim_idx))
+					nr[lru] = lruvec_lru_size(lruvec, lru,
+								   sc->reclaim_idx) /
+						  (1UL << sc->priority);
+			}
+		}
+	}
+
 	/* Record the original scan target for proportional adjustments later */
 	memcpy(targets, nr, sizeof(nr));
 
@@ -2912,6 +2948,15 @@ static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 
 	target_lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup, pgdat);
 
+	/*
+	 * Set the le9uo workingset-protection floors before any LRU is
+	 * scanned.  prepare_workingset_protection() sets sc->anon_below_min
+	 * and sc->clean_below_min which get_scan_count() reads to zero
+	 * targets; it must run before shrink_node_memcgs() so the OOM
+	 * escape in shrink_lruvec() can actually see a zeroed target.
+	 */
+	prepare_workingset_protection(pgdat, sc);
+
 again:
 	memset(&sc->nr, 0, sizeof(sc->nr));
 
@@ -3005,8 +3050,6 @@ again:
 			!(sc->may_deactivate & DEACTIVATE_ANON) &&
 			anon >> sc->priority;
 	}
-
-	prepare_workingset_protection(pgdat, sc);
 
 	shrink_node_memcgs(pgdat, sc);
 
