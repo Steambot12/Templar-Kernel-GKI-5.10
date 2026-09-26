@@ -28,6 +28,15 @@
 #define ZRAM_SECTOR_PER_LOGICAL_BLOCK	\
 	(1 << (ZRAM_LOGICAL_BLOCK_SHIFT - SECTOR_SHIFT))
 
+/*
+ * BACKPORT (from mainline v6.2): multiple compression streams.
+ * A zram device may hold up to ZRAM_MAX_COMPS algorithms; slot 0 is the
+ * primary (used on the write path), higher slots are used to recompress
+ * (opt-in) idle/cold pages into a smaller form.
+ */
+#define ZRAM_PRIMARY_COMP	0
+#define ZRAM_SECONDARY_COMP	1
+#define ZRAM_MAX_COMPS		4
 
 /*
  * The lower ZRAM_FLAG_SHIFT bits of table.flags is for
@@ -50,6 +59,10 @@ enum zram_pageflags {
 	ZRAM_UNDER_WB,	/* page is under writeback */
 	ZRAM_HUGE,	/* Incompressible page */
 	ZRAM_IDLE,	/* not accessed page since last idle marking */
+	ZRAM_INCOMPRESSIBLE,	/* none of the algorithms could compress it */
+
+	ZRAM_COMP_PRIORITY_BIT1, /* First bit of comp priority index */
+	ZRAM_COMP_PRIORITY_BIT2, /* Second bit of comp priority index */
 
 	__NR_ZRAM_PAGEFLAGS,
 };
@@ -92,7 +105,7 @@ struct zram_stats {
 struct zram {
 	struct zram_table_entry *table;
 	struct zs_pool *mem_pool;
-	struct zcomp *comp;
+	struct zcomp *comps[ZRAM_MAX_COMPS];
 	struct gendisk *disk;
 	/* Prevent concurrent execution of device init */
 	struct rw_semaphore init_lock;
@@ -107,7 +120,7 @@ struct zram {
 	 * we can store in a disk.
 	 */
 	u64 disksize;	/* bytes */
-	char compressor[CRYPTO_MAX_ALG_NAME];
+	char comp_algs[ZRAM_MAX_COMPS][CRYPTO_MAX_ALG_NAME];
 	/*
 	 * zram is claimed so open request will be failed
 	 */

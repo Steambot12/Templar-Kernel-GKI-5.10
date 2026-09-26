@@ -37,3 +37,19 @@ config ZRAM_MEMORY_TRACKING
 	  /sys/kernel/debug/zram/zramX/block_state.
 
 	  See Documentation/admin-guide/blockdev/zram.rst for more information.
+
+config ZRAM_MULTI_COMP
+	bool "Enable multiple compression streams"
+	depends on ZRAM
+	help
+	  BACKPORT (mainline v6.2): allow a zram device to be configured with
+	  more than one compression algorithm. The primary algorithm is used on
+	  the write (swap-out) path as before; up to three additional secondary
+	  algorithms can be assigned via /sys/block/zramX/recomp_algorithm and
+	  applied to idle/cold pages with /sys/block/zramX/recompress to trade a
+	  little CPU for a better compression ratio.
+
+	  When disabled, zram behaves exactly as before (single algorithm).
+
+	  See Documentation/admin-guide/blockdev/zram.rst for more information.
+
