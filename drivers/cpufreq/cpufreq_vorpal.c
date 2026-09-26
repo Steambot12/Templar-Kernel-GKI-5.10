@@ -110,7 +110,6 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_DOWN_FAST_PCT_DEFAULT		2	/* F6 fast-phase shed rate */
 #define RFX_G_DOWN_FAST_MS_DEFAULT		40	/* F6 fast-phase length */
 #define RFX_G_ENERGY_AWARE_DEFAULT		1	/* F4 round-down on descent */
-#define RFX_G_MODE2_FLOOR_PCT_DEFAULT		62	/* F10 render floor, mode 2 only */
 
 /* ---- Daily shaping, percent of effective ceiling. Caps only: the util EMA
  * plus PELT already carry any rise. ---- */
@@ -317,7 +316,7 @@ static inline bool rfx_gaming_enabled(void)
 	return atomic_read(&rfx_gaming) != 0;
 }
 
-/* Gaming tier: 0 daily, 1 standard gaming, 2 aggressive (Feature 10). */
+/* Gaming switch: 0 daily (off), 1 gaming (on). Binary trigger only. */
 static inline int rfx_gaming_level(void)
 {
 	return atomic_read(&rfx_gaming);
@@ -1056,11 +1055,6 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			fl = rfx_pct(fceil, RFX_G_PRIME_FLOOR_PCT);
 		else if (!little) {	/* Big: render tier, demand-tracked */
 			fl = rfx_pct(fceil, RFX_G_BIG_FLOOR_PCT);
-			/* F10: mode 2 lifts the render baseline floor, trading
-			 * valley power/heat for a higher resting render clock.
-			 * Mode 1 is unchanged. */
-			if (rfx_gaming_level() >= 2)
-				fl = max(fl, rfx_pct(fceil, RFX_G_MODE2_FLOOR_PCT_DEFAULT));
 		} else			/* Little: compositor / audio / input */
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
 		/* Warmup floor lives where the render tier lives: on a 3-tier
@@ -1853,7 +1847,7 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 
 	if (kstrtouint(buf, 10, &val))
 		return -EINVAL;
-	if (val > 2)		/* 0 daily, 1 gaming, 2 aggressive (Feature 10) */
+	if (val > 1)		/* 0 daily (off), 1 gaming (on) */
 		return -EINVAL;
 
 	atomic_set(&rfx_gaming, val);
@@ -2733,10 +2727,6 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_G_THERM_CAP_MIN_PCT_DEFAULT > 100);
 	BUILD_BUG_ON(RFX_G_DOWN_FAST_PCT_DEFAULT > 100);
 	BUILD_BUG_ON(RFX_G_ENERGY_AWARE_DEFAULT > 1);
-	BUILD_BUG_ON(RFX_G_MODE2_FLOOR_PCT_DEFAULT > 100);
-	/* Mode-2 render floor is a lift, not a cut: keep it at/above the mode-1
-	 * baseline so the aggressive tier never parks lower than standard. */
-	BUILD_BUG_ON(RFX_G_MODE2_FLOOR_PCT_DEFAULT < RFX_G_BIG_FLOOR_PCT);
 
 	pr_info("Vorpal Governor v%s by %s\n", CPUFREQ_VORPAL_VERSION,
 		CPUFREQ_VORPAL_AUTHOR);
