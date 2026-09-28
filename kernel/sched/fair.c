@@ -89,8 +89,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_N
  * preemption, and 0.75ms was a quarter of stock CFS on an 8-core -- costly on
  * a little core where cache/TLB refill is a real fraction of the slice.
  */
-unsigned int sysctl_sched_min_granularity			= 2000000ULL;
-static unsigned int normalized_sysctl_sched_min_granularity	= 2000000ULL;
+unsigned int sysctl_sched_min_granularity			= 2500000ULL;
+static unsigned int normalized_sysctl_sched_min_granularity	= 2500000ULL;
 EXPORT_SYMBOL_GPL(sysctl_sched_min_granularity);
 
 /*
