@@ -80,8 +80,9 @@
  */
 
 // Balanced latency windows for UFS + eMMC (ns)
-static u64 default_global_latency_window = 12000000ULL;  // 12ms
-static u8  default_bq_refill_below_ratio = 25;
+// Reduced window for faster dispatch during game loading
+static u64 default_global_latency_window = 8000000ULL;  // 8ms (was 12ms)
+static u8  default_bq_refill_below_ratio = 40;  // More aggressive refill
 static u64 default_lat_model_latency_limit = 500 * NSEC_PER_MSEC;  // 500ms cap (eMMC-safe)
 static u64 default_batch_order = 0;
 
@@ -94,10 +95,10 @@ enum adios_compliance_flags {
 
 static u64 default_compliance_flags = 0x0;
 
-// Dynamic thresholds for shrinkage
-static u32 default_lm_shrink_at_kreqs  =  5000;
-static u32 default_lm_shrink_at_gbytes =    50;
-static u32 default_lm_shrink_resist    =     2;
+// Dynamic thresholds for shrinkage - Lower for faster stabilization
+static u32 default_lm_shrink_at_kreqs  =  1500;  // Was 5000 - stabilize after 1.5k requests
+static u32 default_lm_shrink_at_gbytes =    15;  // Was 50 - faster adaptation
+static u32 default_lm_shrink_resist    =     1;  // Was 2 - less resistance to shrink
 
 enum adios_optype {
 	ADIOS_READ    = 0,
@@ -108,17 +109,18 @@ enum adios_optype {
 };
 
 // Balanced latency targets (async only; sync writes bypass via Tier-2)
+// Lower write latency target for game asset loading responsiveness
 static u64 default_latency_target[ADIOS_OPTYPES] = {
 	[ADIOS_READ]    =    2ULL * NSEC_PER_MSEC,  // 2ms
-	[ADIOS_WRITE]   =  250ULL * NSEC_PER_MSEC,  // 250ms: coalesce writeback to let storage idle
+	[ADIOS_WRITE]   =  150ULL * NSEC_PER_MSEC,  // 150ms (was 250ms): faster writeback
 	[ADIOS_DISCARD] = 5000ULL * NSEC_PER_MSEC,  // 5s
 	[ADIOS_OTHER]   =    0ULL * NSEC_PER_MSEC,
 };
 
-// Batch limits: moderate caps; async_depth auto-scales to device queue depth
+// Batch limits: higher limits for game loading bursts
 static u32 default_batch_limit[ADIOS_OPTYPES] = {
-	[ADIOS_READ]    = 32,
-	[ADIOS_WRITE]   = 64,
+	[ADIOS_READ]    = 48,  // Was 32 - handle asset loading bursts
+	[ADIOS_WRITE]   = 96,  // Was 64 - faster writeback
 	[ADIOS_DISCARD] =  1,
 	[ADIOS_OTHER]   =  1,
 };
