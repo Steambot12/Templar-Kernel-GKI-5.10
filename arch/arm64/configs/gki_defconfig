@@ -475,7 +475,7 @@ CONFIG_REGULATOR_FIXED_VOLTAGE=y
 CONFIG_RC_CORE=y
 # CONFIG_RC_MAP is not set
 CONFIG_LIRC=y
-CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none noirqdebug loglevel=3 nohz=on rcu_nocbs=all mem_sleep_default=deep transparent_hugepage=madvise cgroup_enable=memory workqueue.power_efficient=1 vm.swappiness=3 cpuidle.governor=nap watermark_scale_factor=150 vm.dirty_ratio=8 vm.dirty_background_ratio=1 vm.dirty_expire_centisecs=300 kernel.panic_on_oom=0"
+CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none noirqdebug loglevel=3 nohz=on rcu_nocbs=all mem_sleep_default=deep transparent_hugepage=madvise cgroup_enable=memory workqueue.power_efficient=1 sysctl.vm.swappiness=3 cpuidle.governor=nap sysctl.vm.watermark_scale_factor=150 sysctl.vm.dirty_ratio=8 sysctl.vm.dirty_background_ratio=1 sysctl.vm.dirty_expire_centisecs=300 sysctl.kernel.panic_on_oom=0"
 CONFIG_RC_DECODERS=y
 CONFIG_RC_DEVICES=y
 CONFIG_MEDIA_CEC_RC=y
