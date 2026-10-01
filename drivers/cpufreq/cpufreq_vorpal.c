@@ -86,7 +86,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_BIG_FLOOR_PCT		44	/* render tier (2-tier: top) */
 /* Render tier's warmup floor; the cool walk tapers it off linearly across the
  * latch band (COOL_DEEP to COOL_EXIT) under thermal pressure. */
-#define RFX_G_WARMUP_FLOOR_PCT		80	/* render tier only, timed lift */
+#define RFX_G_WARMUP_FLOOR_PCT		74	/* render tier only, timed lift */
 /* Little never renders: V/f knee + a small lift so an idle cluster does
  * not bake the die before the first burst. Lowered for more idle time. */
 #define RFX_G_LITTLE_FLOOR_PCT		34
@@ -102,7 +102,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_HISPEED_PCT_DEFAULT		70	/* F1 hispeed render floor */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
 #define RFX_G_HISPEED_HOLD_US_DEFAULT		30000	/* F1 hold after last go-demand */
-#define RFX_G_TOUCH_PCT_DEFAULT			68	/* F2 input render floor */
+#define RFX_G_TOUCH_PCT_DEFAULT			60	/* F2 input render floor */
 #define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
 #define RFX_G_THERM_CAP_MC_DEFAULT		80000	/* F3 pre-emptive cap start mC */
 #define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		70	/* F3 floor of the graduated cap */
