@@ -87,6 +87,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Render tier's warmup floor; the cool walk tapers it off linearly across the
  * latch band (COOL_DEEP to COOL_EXIT) under thermal pressure. */
 #define RFX_G_WARMUP_FLOOR_PCT		78	/* render tier only, timed lift */
+/* Steady warmup floor: once the session-entry window (WARMUP_MAX_NS from arm)
+ * has lapsed, the frame-risk re-arm keeps extending the window through normal
+ * play -- holding the full entry floor there pins the render tier high and is
+ * the bulk of the sustained draw. Drop to this lower floor for the steady,
+ * re-armed windows; the opening still gets the full lift above. */
+#define RFX_G_WARMUP_STEADY_FLOOR_PCT	72	/* re-armed windows, steady play */
 /* Little never renders: V/f knee + a small lift so an idle cluster does
  * not bake the die before the first burst. Lowered for more idle time. */
 #define RFX_G_LITTLE_FLOOR_PCT		34
@@ -954,7 +960,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 	if (gaming) {
 		bool warmup_active;
 		unsigned int warmup_ramp_pct;
-		unsigned int fl, warmup_fl, demand_pct;
+		unsigned int fl, warmup_fl, warmup_floor_pct, demand_pct;
 		unsigned int depth;
 		u64 down_step, slew_ns;
 		unsigned int down_pct;
@@ -1000,9 +1006,18 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * heat and offload, not frames. */
 		rfx_warmup_rearm_quiet(p, demand_pct, time);
 		rfx_warmup_arm(p, demand_pct, time);
+		/* Full lift only for the live session-entry window (its
+		 * WARMUP_MAX_NS span from arm); once that has lapsed the window
+		 * is kept alive solely by frame-risk re-arm through steady play,
+		 * where the full floor pins the render tier and dominates the
+		 * sustained draw -- use the lower steady floor there. */
+		warmup_floor_pct = (p->gaming_warmup_entry &&
+			rfx_elapsed(time, p->gaming_warmup_start_ns) <
+				RFX_GAMING_WARMUP_MAX_NS) ?
+			RFX_G_WARMUP_FLOOR_PCT : RFX_G_WARMUP_STEADY_FLOOR_PCT;
 		if (!little && !prime)
 			rfx_risk_rearm(p, demand_pct,
-				       rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT),
+				       rfx_pct(fceil, warmup_floor_pct),
 				       time);
 		hold = rfx_descend_hold(p, demand_pct, !little && !prime,
 					p->thermal_cooling, time);
@@ -1020,10 +1035,15 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * early release: asset load is I/O-bound so demand dips into the
 		 * release band, and lapsing there causes the start-of-match dip. */
 		if (warmup_active) {
-			/* Hard-cancel before extend: a sustained peg cancels the
-			 * window now; extending it would ride the 80% floor under a
-			 * live limiter and burn extra valley heat. */
-			if (demand_pct >= RFX_GAMING_WARMUP_HARD_CANCEL_PCT) {
+			/* Hard-cancel before extend: a sustained peg under the
+			 * limiter cancels the window now; extending it would ride
+			 * the floor through a throttle and burn valley heat. Gated
+			 * on thermal_cooling: a cold peg (start-of-match asset load
+			 * pegs the CPU with no limiter yet) must NOT cancel the
+			 * entry window -- that dropped the floor right as rendering
+			 * began and caused the early-game FPS dip. */
+			if (p->thermal_cooling &&
+			    demand_pct >= RFX_GAMING_WARMUP_HARD_CANCEL_PCT) {
 				if (++p->sat_consecutive >=
 					 RFX_GAMING_WARMUP_HARD_CANCEL_EVALS)
 					p->gaming_warmup_end_ns = time;
@@ -1071,7 +1091,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * the top tier is render and keeps the lift. Little never
 		 * renders. Same render-band restriction as the risk re-arm. */
 		warmup_fl = (!little && !prime) ?
-				rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT) : fl;
+				rfx_pct(fceil, warmup_floor_pct) : fl;
 
 		/* Relief depth: proportional in fceil_pct across the whole
 		 * latch band (0 at EXIT, full at DEEP), maxed with the
@@ -2668,6 +2688,9 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_G_PRIME_FLOOR_PCT > RFX_G_WARMUP_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_BIG_FLOOR_PCT > RFX_G_WARMUP_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_WARMUP_FLOOR_PCT > 100);
+	BUILD_BUG_ON(RFX_G_WARMUP_STEADY_FLOOR_PCT > RFX_G_WARMUP_FLOOR_PCT);
+	BUILD_BUG_ON(RFX_G_BIG_FLOOR_PCT > RFX_G_WARMUP_STEADY_FLOOR_PCT);
+	BUILD_BUG_ON(RFX_G_PRIME_FLOOR_PCT > RFX_G_WARMUP_STEADY_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_IDLE_FLOOR_PCT > RFX_G_LITTLE_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_COOL_STEADY_FLOOR_PCT > RFX_G_BIG_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_CAP_PCT > RFX_D_LITTLE_SUSTAINED_CAP_PCT);
