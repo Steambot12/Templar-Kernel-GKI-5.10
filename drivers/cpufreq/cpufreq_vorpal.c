@@ -90,6 +90,14 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Little never renders: V/f knee + a small lift so an idle cluster does
  * not bake the die before the first burst. Lowered for more idle time. */
 #define RFX_G_LITTLE_FLOOR_PCT		34
+/* Little renders nothing in gaming (compositor / input / audio). Cap it so a
+ * busy non-render cluster stops pinning near fmax -- a gaming trace measured it
+ * at ~95% / 1715MHz, the single largest power sink, while Big/Prime did the
+ * actual frame work. A fresh touch still lifts it up to the cap for shade/
+ * scroll responsiveness, so the cap does not add UI jitter. Render tiers are
+ * untouched, so there is no FPS cost. */
+#define RFX_G_LITTLE_CAP_PCT		80
+#define RFX_G_LITTLE_TOUCH_PCT		60
 
 /* Max downward slew, pct of ceiling per 2ms. Bounds how deep a short lull digs
  * the clock; the EMA owns descent shape. Tuned with the EMA -- never loosen both. */
@@ -1232,6 +1240,26 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 #endif
 			if (freq < boost_fl)
 				freq = boost_fl;
+		}
+
+		/* Little gaming cap + input floor. Little carries compositor/
+		 * input/audio, never frames, so a modest ceiling trims its
+		 * resting power without touching the render tiers; a fresh touch
+		 * lifts it (up to the cap) so shade/scroll stay smooth. Applied
+		 * last so it clamps whatever demand produced above. */
+		if (little) {
+			u64 ts = (u64)atomic64_read(&rfx_input_ts);
+			unsigned int lcap = rfx_pct(fceil, RFX_G_LITTLE_CAP_PCT);
+
+			if (ts && rfx_elapsed(time, ts) <
+				  (u64)RFX_G_TOUCH_MS_DEFAULT * NSEC_PER_MSEC) {
+				unsigned int tfl = rfx_pct(fceil,
+							   RFX_G_LITTLE_TOUCH_PCT);
+				if (freq < tfl)
+					freq = tfl;
+			}
+			if (freq > lcap)
+				freq = lcap;
 		}
 	} else {
 		unsigned int cap, demand_pct;
@@ -2700,6 +2728,9 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_G_BIG_FLOOR_PCT > RFX_G_WARMUP_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_WARMUP_FLOOR_PCT > 100);
 	BUILD_BUG_ON(RFX_G_IDLE_FLOOR_PCT > RFX_G_LITTLE_FLOOR_PCT);
+	BUILD_BUG_ON(RFX_G_LITTLE_TOUCH_PCT > RFX_G_LITTLE_CAP_PCT);
+	BUILD_BUG_ON(RFX_G_LITTLE_CAP_PCT > 100);
+	BUILD_BUG_ON(RFX_G_LITTLE_FLOOR_PCT > RFX_G_LITTLE_CAP_PCT);
 	BUILD_BUG_ON(RFX_G_COOL_STEADY_FLOOR_PCT > RFX_G_BIG_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_CAP_PCT > RFX_D_LITTLE_SUSTAINED_CAP_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_FLOOR_PCT > RFX_D_LITTLE_CAP_PCT);
