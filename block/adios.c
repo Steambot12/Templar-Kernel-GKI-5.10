@@ -95,10 +95,11 @@ enum adios_compliance_flags {
 
 static u64 default_compliance_flags = 0x0;
 
-// Dynamic thresholds for shrinkage - Lower for faster stabilization
+// Low kreqs/gbytes keep startup adaptation fast; resist stays at 2 so the
+// model keeps enough history to stay stable over a long session.
 static u32 default_lm_shrink_at_kreqs  =  1500;  // Was 5000 - stabilize after 1.5k requests
 static u32 default_lm_shrink_at_gbytes =    15;  // Was 50 - faster adaptation
-static u32 default_lm_shrink_resist    =     1;  // Was 2 - less resistance to shrink
+static u32 default_lm_shrink_resist    =     2;  // quarter-shrink, stable long-run
 
 enum adios_optype {
 	ADIOS_READ    = 0,
