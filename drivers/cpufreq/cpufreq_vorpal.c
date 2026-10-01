@@ -142,6 +142,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Adaptive idle eval: poll slower while parked at fmin (never below tunable).
  * 35000us = 35ms reduces eval overhead during idle, saving power. */
 #define RFX_D_IDLE_EVAL_US		35000
+/* A real input event is an unambiguous wake: within this window daily skips the
+ * idle-eval stretch and the park-exit hysteresis, so a shade/scroll gesture
+ * leaves fmin on the first eval instead of ~100ms later. Idle with no touch is
+ * untouched, so this costs nothing while the screen is quiet. */
+#define RFX_D_INPUT_NS			(150 * NSEC_PER_MSEC)
 /* F5 daily: min dwell since the last up-commit before a drop (anti down-flap). */
 #define RFX_D_LITTLE_MIN_SAMPLE_US	4000
 #define RFX_D_BIG_MIN_SAMPLE_US		2000
@@ -1441,9 +1446,18 @@ static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming)
 			(s64)p->tunables->up_rate_limit_us * NSEC_PER_USEC;
 }
 
+/* Fresh input (touch/scroll) within RFX_D_INPUT_NS. Read-only on the input
+ * timestamp, so it is safe to use before this eval's util is known. */
+static inline bool rfx_input_fresh(u64 time)
+{
+	u64 ts = (u64)atomic64_read(&rfx_input_ts);
+
+	return ts && rfx_elapsed(time, ts) < RFX_D_INPUT_NS;
+}
+
 /* Eval delay for this update. Set BEFORE rfx_should_update_freq, so it may only
  * depend on state known without util. */
-static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
+static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming, u64 time)
 {
 	s64 base;
 
@@ -1454,8 +1468,11 @@ static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
 	}
 	base = (s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
 	/* Adaptive idle: poll slower while parked at fmin, never below tunable.
-	 * Uses last-committed freq only -- known without this eval's util. */
-	if (RFX_D_IDLE_EVAL_US && p->next_freq == p->policy->cpuinfo.min_freq)
+	 * Uses last-committed freq only -- known without this eval's util. A
+	 * fresh touch skips the stretch so a wake-from-idle gesture is evaluated
+	 * at the tunable rate, not up to 35ms late. */
+	if (RFX_D_IDLE_EVAL_US && p->next_freq == p->policy->cpuinfo.min_freq &&
+	    !rfx_input_fresh(time))
 		base = max_t(s64, base,
 			     (s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC);
 	p->freq_update_delay_ns = base;
@@ -1571,7 +1588,15 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	if (!gaming) {
 		unsigned int fmin = p->policy->cpuinfo.min_freq;
 
-		if (p->filt_util < (max_cap >> 5)) {
+		/* A fresh touch is an unambiguous wake: leave the park latch now
+		 * (and never enter it) instead of waiting out the EXIT_EVALS
+		 * hysteresis at the 35ms idle cadence, which held the shade/scroll
+		 * gesture at fmin for ~100ms. The hysteresis still damps the
+		 * fmin<->OPP bounce when nothing is touching the screen. */
+		if (rfx_input_fresh(time)) {
+			p->parked = false;
+			p->park_exit_count = 0;
+		} else if (p->filt_util < (max_cap >> 5)) {
 			p->parked = true;
 			p->park_exit_count = 0;
 		} else if (p->parked) {
@@ -1617,7 +1642,7 @@ static void rfx_update(struct update_util_data *hook, u64 time,
 		rfx_iowait_boost(rfx_c, time, flags);
 	rfx_c->last_update = time;
 	rfx_ignore_dl_rate_limit(rfx_c);
-	rfx_set_eval_delay(p, gaming);
+	rfx_set_eval_delay(p, gaming, time);
 
 	if (rfx_should_update_freq(p, time)) {
 		p->last_eval_time = time;
