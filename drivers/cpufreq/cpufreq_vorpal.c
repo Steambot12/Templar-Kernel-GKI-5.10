@@ -86,7 +86,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_BIG_FLOOR_PCT		44	/* render tier (2-tier: top) */
 /* Render tier's warmup floor; the cool walk tapers it off linearly across the
  * latch band (COOL_DEEP to COOL_EXIT) under thermal pressure. */
-#define RFX_G_WARMUP_FLOOR_PCT		80	/* render tier only, timed lift */
+#define RFX_G_WARMUP_FLOOR_PCT		76	/* render tier only, timed lift */
 /* Little never renders: V/f knee + a small lift so an idle cluster does
  * not bake the die before the first burst. Lowered for more idle time. */
 #define RFX_G_LITTLE_FLOOR_PCT		34
@@ -102,7 +102,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_HISPEED_PCT_DEFAULT		70	/* F1 hispeed render floor */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
 #define RFX_G_HISPEED_HOLD_US_DEFAULT		30000	/* F1 hold after last go-demand */
-#define RFX_G_TOUCH_PCT_DEFAULT			68	/* F2 input render floor */
+#define RFX_G_TOUCH_PCT_DEFAULT			62	/* F2 input render floor */
 #define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
 #define RFX_G_THERM_CAP_MC_DEFAULT		80000	/* F3 pre-emptive cap start mC */
 #define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		70	/* F3 floor of the graduated cap */
@@ -242,7 +242,13 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * under the cooling latch, one-shot per gaming_mode entry. Extends above
  * EXTEND_PCT up to MAX_NS, releases early below RELEASE_PCT; the 60ms ramp decay
  * pulls the floor back during lulls so it never becomes a standing lift. */
-#define RFX_GAMING_WARMUP_NS		(1000 * NSEC_PER_MSEC)
+/* 2200ms base: the entry lift must still be live when the FIRST rendered
+ * gameplay frames arrive, not just during spawn. The demand>=60 arm often
+ * fires on the loading-screen decode spike, so a 1000ms base lapsed before
+ * play began -> the start-of-match dip. Transient and one-shot (hard-cancel
+ * at >=92 for 2 evals, absolute MAX_NS cap), so it costs spawn-window heat
+ * only, never sustained draw. */
+#define RFX_GAMING_WARMUP_NS		(2200 * NSEC_PER_MSEC)
 #define RFX_GAMING_WARMUP_MAX_NS	(6000 * NSEC_PER_MSEC)
 /* 60 skewed = 48% real: low enough that inter-frame bursts re-arm the deferred
  * window before the clock drops out of the render band (65 let troughs lapse the
