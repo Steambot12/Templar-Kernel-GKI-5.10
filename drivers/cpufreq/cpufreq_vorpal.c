@@ -135,15 +135,16 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_LITTLE_SUSTAINED_CAP_PCT	68
 #define RFX_D_LITTLE_LIFT_PCT		62
 #define RFX_D_LITTLE_DROP_PCT		48
-/* Big/Prime daily caps + shared sustained latch. Base 62% holds resting draw
- * low; the latch lifts to 72% under sustained demand so bursts (app launch,
- * scroll) finish quickly and race back to idle without chasing fmax. */
-#define RFX_D_BIG_CAP_PCT		62
-#define RFX_D_PRIME_CAP_PCT		62
-#define RFX_D_BIG_LIFT_PCT		75
-#define RFX_D_BIG_DROP_PCT		55
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	72
-#define RFX_D_PRIME_SUSTAINED_CAP_PCT	72
+/* Big/Prime daily caps + shared sustained latch. Base 56% trims the standing
+ * draw (62 was the battery leak: idle-tier clocks sat high all day); the
+ * latch lifts to 68% under sustained demand so bursts (app launch, scroll)
+ * finish quickly and race back to idle without chasing fmax. */
+#define RFX_D_BIG_CAP_PCT		56
+#define RFX_D_PRIME_CAP_PCT		56
+#define RFX_D_BIG_LIFT_PCT		68
+#define RFX_D_BIG_DROP_PCT		50
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	68
+#define RFX_D_PRIME_SUSTAINED_CAP_PCT	68
 
 /* ---- Daily-only power features: applied while gaming_mode=0, inert while
  * gaming (the gaming band never reads them). Any 0 disables at build. ---- */
@@ -260,17 +261,23 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * fires on the loading-screen decode spike, so a 1000ms base lapsed before
  * play began -> the start-of-match dip. Transient and one-shot (hard-cancel
  * at >=92 for 2 evals, absolute MAX_NS cap), so it costs spawn-window heat
- * only, never sustained draw. */
+ * only, never sustained draw. MAX 15s: a live one-shot window spans the whole
+ * load->matchmaking->first-play sequence (the entry floor keeps the render
+ * tier out of the baseline band until real play), and a sustained peg
+ * (hard-cancel) still drops it instantly. */
 #define RFX_GAMING_WARMUP_NS		(2200 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_MAX_NS	(6000 * NSEC_PER_MSEC)
+#define RFX_GAMING_WARMUP_MAX_NS	(15000 * NSEC_PER_MSEC)
 /* 60 skewed = 48% real: low enough that inter-frame bursts re-arm the deferred
  * window before the clock drops out of the render band (65 let troughs lapse the
  * floor to baseline every lull -- the jank source). */
 #define RFX_GAMING_WARMUP_TRIGGER_PCT	60
-/* 85 skewed = spawn + asset-load band; keeps the window alive through spawn
- * without extending on a true idle lull (90 lapsed mid-load -> the freeze). */
-#define RFX_GAMING_WARMUP_EXTEND_PCT	85
-#define RFX_GAMING_WARMUP_RELEASE_PCT	40
+/* 78 skewed = 62% real: load-screen decode + asset-load bursts hold the window
+ * alive through the entry into play; a true idle lull still lapses it (85
+ * lapsed mid-load -> the freeze). */
+#define RFX_GAMING_WARMUP_EXTEND_PCT	78
+/* 30 skewed = 24% real: I/O-wait asset loads park demand in the 25-40 band;
+ * only a deeper idle lull lapses the re-armed window early. */
+#define RFX_GAMING_WARMUP_RELEASE_PCT	30
 #define RFX_GAMING_WARMUP_RELEASE_NS	(100 * NSEC_PER_MSEC)
 /* Hard-cancel: 2 consecutive evals >= this drop the warmup floor instantly
  * (skip the cool-walk taper). Above a single asset-load burst so one spike does
