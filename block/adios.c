@@ -80,9 +80,10 @@
  */
 
 // Balanced latency windows for UFS + eMMC (ns)
-// Reduced window for faster dispatch during game loading
-static u64 default_global_latency_window = 8000000ULL;  // 8ms (was 12ms)
-static u8  default_bq_refill_below_ratio = 40;  // More aggressive refill
+// Widen the dispatch window so bursts refill less often and storage idles,
+// letting the CPU reach deep cpuidle instead of waking on every completion.
+static u64 default_global_latency_window = 12000000ULL;  // 12ms (was 8ms)
+static u8  default_bq_refill_below_ratio = 25;  // Lazy refill: fewer re-wakes
 static u64 default_lat_model_latency_limit = 500 * NSEC_PER_MSEC;  // 500ms cap (eMMC-safe)
 static u64 default_batch_order = 0;
 
@@ -95,10 +96,12 @@ enum adios_compliance_flags {
 
 static u64 default_compliance_flags = 0x0;
 
-// Low kreqs/gbytes keep startup adaptation fast; resist stays at 2 so the
-// model keeps enough history to stay stable over a long session.
-static u32 default_lm_shrink_at_kreqs  =  1500;  // Was 5000 - stabilize after 1.5k requests
-static u32 default_lm_shrink_at_gbytes =    15;  // Was 50 - faster adaptation
+// Low kreqs/gbytes keep startup adaptation fast (game-loading responsiveness);
+// resist stays at 2 so the model keeps enough history to stay stable over a
+// long session (the adios mid-session freeze fix). Only the coalescing knobs
+// above (window/refill/writeback/batch) change the I/O wake behaviour.
+static u32 default_lm_shrink_at_kreqs  =  1500;  // fast first-adaptation
+static u32 default_lm_shrink_at_gbytes =    15;  // fast first-adaptation
 static u32 default_lm_shrink_resist    =     2;  // quarter-shrink, stable long-run
 
 enum adios_optype {
@@ -110,18 +113,19 @@ enum adios_optype {
 };
 
 // Balanced latency targets (async only; sync writes bypass via Tier-2)
-// Lower write latency target for game asset loading responsiveness
+// Coalesced writeback: storage idles between drains so the CPU can reach
+// deep cpuidle instead of waking per-completion.
 static u64 default_latency_target[ADIOS_OPTYPES] = {
 	[ADIOS_READ]    =    2ULL * NSEC_PER_MSEC,  // 2ms
-	[ADIOS_WRITE]   =  150ULL * NSEC_PER_MSEC,  // 150ms (was 250ms): faster writeback
+	[ADIOS_WRITE]   =  250ULL * NSEC_PER_MSEC,  // 250ms (was 150ms): coalesce writeback
 	[ADIOS_DISCARD] = 5000ULL * NSEC_PER_MSEC,  // 5s
 	[ADIOS_OTHER]   =    0ULL * NSEC_PER_MSEC,
 };
 
-// Batch limits: higher limits for game loading bursts
+// Batch limits: balanced depth
 static u32 default_batch_limit[ADIOS_OPTYPES] = {
-	[ADIOS_READ]    = 48,  // Was 32 - handle asset loading bursts
-	[ADIOS_WRITE]   = 96,  // Was 64 - faster writeback
+	[ADIOS_READ]    = 32,
+	[ADIOS_WRITE]   = 64,  // was 96: fewer in-flight keeps completion IRQs sparse
 	[ADIOS_DISCARD] =  1,
 	[ADIOS_OTHER]   =  1,
 };
