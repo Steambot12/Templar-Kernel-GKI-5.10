@@ -1325,8 +1325,10 @@ static void adios_completed_request(struct request *rq, u64 now) {
 		rd->block_size, latency, rd->pred_lat, 1);
 
 	// Arm the model-update timer ~100ms out. timer_reduce() only pulls it
-	// earlier, so a burst of completions collapses into one update and an
-	// idle device leaves the timer unarmed entirely (no wakeups when idle).
+	// earlier, so a burst of completions collapses into one update. The
+	// timer is deferrable: it expires only while some CPU is running, so
+	// an idle device slips the model update into the next wakeup instead
+	// of waking a CPU just for it (no idle wakeups).
 	timer_reduce(&ad->update_timer, jiffies + msecs_to_jiffies(100));
 }
 
@@ -1461,7 +1463,7 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 	spin_lock_init(&ad->barrier_lock);
 	INIT_LIST_HEAD(&ad->barrier_queue);
 
-	timer_setup(&ad->update_timer, update_timer_callback, 0);
+	timer_setup(&ad->update_timer, update_timer_callback, TIMER_DEFERRABLE);
 
 	ad->queue = q;
 	blk_stat_enable_accounting(q);
