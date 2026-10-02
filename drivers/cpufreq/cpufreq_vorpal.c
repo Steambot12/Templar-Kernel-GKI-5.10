@@ -281,12 +281,15 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * quiet stretches, so it is not measured from the burst that consumed the arm. */
 #define RFX_GAMING_REARM_QUIET_NS	(3000 * NSEC_PER_MSEC)
 
-/* Frame-risk re-arm of the warmup window: one crossing arms one 80ms boost;
- * demand must fall under CLEAR before another can arm. CLEAR must stay below
- * TRIGGER (60) or the latch parks and never re-arms. 80ms spans a scope-open /
- * weapon-switch animation (20ms released mid-burst -> an FPS dip). */
+/* Frame-risk re-arm of the warmup window. After the entry window lapses the
+ * render tiers run the bare baseline floor with no transient left; one
+ * crossing above ARM arms a boost, and the latch re-arms on the NEXT crossing
+ * only after demand dips below ARM again. The dip is the re-arm edge: a
+ * running / scope-open lull parks its skew in the 60-70 band between frames,
+ * and clearing it there lets the burst that follows re-extend the floor
+ * instead of shedding to baseline. A true idle lull lapses the window on its
+ * own, so this is not a standing lift. 80ms spans the burst that follows. */
 #define RFX_G_RISK_ARM_PCT		70
-#define RFX_G_RISK_CLEAR_PCT		50
 #define RFX_G_RISK_BOOST_NS		(80 * NSEC_PER_MSEC)
 
 /* Gaming demand gate -- the only demand threshold in the gaming band. Below GATE
@@ -678,27 +681,25 @@ static void rfx_warmup_arm(struct rfx_policy *p, unsigned int demand_pct,
 
 /*
  * Frame-risk re-arm. After the warmup window lapses the render clusters run
- * on the bare baseline floor with no transient response left. One crossing
- * above ARM arms one 20ms boost; demand must fall under CLEAR (or the
- * window lapse) before another arms. Already at or above the floor buys
- * nothing -- a lift there only pins the clock.
+ * on the bare baseline floor with no transient response left. A valley below
+ * ARM is the re-arm edge; the next crossing above it arms one boost window.
+ * Already at or above the floor buys nothing -- a lift there only pins the
+ * clock.
  */
 static void rfx_risk_rearm(struct rfx_policy *p, unsigned int demand_pct,
 			   unsigned int warmup_fl, u64 time)
 {
 	if (demand_pct < RFX_G_RISK_ARM_PCT) {
-		/* Clear on demand under CLEAR, or on window lapse. Without the
-		 * lapse test, demand parked between CLEAR and ARM -- where a busy
-		 * scene sits between frames -- latches the edge forever after the
-		 * first window and blocks every re-arm. */
-		if (demand_pct <= RFX_G_RISK_CLEAR_PCT ||
-		    time >= p->gaming_warmup_end_ns)
-			p->risk_high = false;
+		/* Valley: the re-arm edge. A running / scope-open lull parks
+		 * its skew between frames in the 60-70 band; clearing the latch
+		 * here lets the next burst re-arm. A true idle lull lapses the
+		 * window on its own, so this is not a standing lift. */
+		p->risk_high = false;
 		return;
 	}
 
-	/* Nothing to gain: already committed at or above the floor this window
-	 * would install, so arming cannot raise this OPP -- only pin it. */
+	/* Nothing to gain: already committed at or above the floor this
+	 * window would install, so arming cannot raise this OPP -- only pin it. */
 	if (p->risk_high || p->next_freq >= warmup_fl)
 		return;
 
@@ -2506,10 +2507,10 @@ static void __init rfx_selfcheck(void)
 		WARN_ON(sc != 0);
 	}
 
-	/* Frame-risk latch: one crossing arms one window; a second crossing
-	 * while still saturated must NOT re-arm (that would make the lift the
-	 * steady state); demand parked between CLEAR and ARM stays latched
-	 * while the window lives; and the window extends but never shortens. */
+	/* Frame-risk re-arm: one crossing above ARM extends the boost window;
+	 * saturation alone neither re-arms nor shortens a live window; and a
+	 * valley below the arm edge clears the latch so the next crossing
+	 * re-arms it (a lull parked between frames must not block re-arm). */
 	memset(&p, 0, sizeof(p));
 	p.next_freq = 1;
 	rfx_risk_rearm(&p, RFX_G_RISK_ARM_PCT, 100, t);
@@ -2518,10 +2519,11 @@ static void __init rfx_selfcheck(void)
 	ns = p.gaming_warmup_end_ns;
 	rfx_risk_rearm(&p, 100, 100, t + 1);
 	WARN_ON(p.gaming_warmup_end_ns != ns);
-	rfx_risk_rearm(&p, RFX_G_RISK_CLEAR_PCT + 1, 100, t + 1);
-	WARN_ON(!p.risk_high);
-	rfx_risk_rearm(&p, RFX_G_RISK_CLEAR_PCT, 100, t + 1);
+	rfx_risk_rearm(&p, RFX_G_RISK_ARM_PCT - 1, 100, t + 1);
 	WARN_ON(p.risk_high);
+	rfx_risk_rearm(&p, 100, 100, t + 1);
+	WARN_ON(!p.risk_high ||
+		p.gaming_warmup_end_ns != t + 1 + RFX_G_RISK_BOOST_NS);
 
 	/* Nothing to gain: already committed at the floor the window
 	 * installs. */
@@ -2758,7 +2760,6 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_G_COOL_DEEP_PCT >= RFX_G_COOL_ENTER_PCT);
 	/* rfx_cool_depth divides by EXIT - DEEP and its sign. */
 	BUILD_BUG_ON(RFX_G_COOL_DEEP_PCT >= RFX_G_COOL_EXIT_PCT);
-	BUILD_BUG_ON(RFX_G_RISK_CLEAR_PCT >= RFX_G_RISK_ARM_PCT);
 	BUILD_BUG_ON(RFX_G_COOL_TEMP_CLEAR_MC >= RFX_G_COOL_TEMP_WARM_MC);
 	BUILD_BUG_ON(RFX_G_COOL_TEMP_WARM_MC >= RFX_TEMP_EMERGENCY_MC);
 	BUILD_BUG_ON(RFX_GAMING_WARMUP_RELEASE_PCT >= RFX_GAMING_WARMUP_TRIGGER_PCT);
