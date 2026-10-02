@@ -107,8 +107,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * gaming_mode=1, inert while gaming_mode=0. Set one to 0 to disable it at
  * build. Floors/caps are the regression-prone levers -- tune one at a time. ---- */
 #define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* gaming eval cadence */
-#define RFX_G_HISPEED_PCT_DEFAULT		70	/* F1 hispeed render floor */
-#define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
+#define RFX_G_HISPEED_PCT_DEFAULT		76	/* F1 hispeed render floor (== warmup) */
+#define RFX_G_GO_HISPEED_PCT_DEFAULT		70	/* F1 arm demand (skewed pct) */
 #define RFX_G_HISPEED_HOLD_US_DEFAULT		30000	/* F1 hold after last go-demand */
 #define RFX_G_TOUCH_PCT_DEFAULT			62	/* F2 input render floor */
 #define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
@@ -223,8 +223,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * the vendor engine is absent. One trip, one release. Trip sits ABOVE a normal
  * pre-match soak (a lower trip pinned every cluster at session start -> MC
  * stall); 80% cap where LMH is absent avoids the old 70% benchmark stall. */
-/* Longer poll interval in idle for power saving (10s = less wakeups). */
-#define RFX_THERMAL_POLL_GAMING_MS	50
+/* 100ms gaming: the vendor HAL/LMH path covers hard limits; this poll only
+ * feeds the warm pre-cap and the 110k emergency net, so halving the cadence
+ * halves the wake-from-idle sampling cost. Idle stays at 10s. */
+#define RFX_THERMAL_POLL_GAMING_MS	100
 #define RFX_THERMAL_POLL_IDLE_MS	10000	/* deferrable: free in deep sleep */
 #define RFX_THERMAL_POLL_WARM_MS	2000
 #define RFX_TEMP_WARM_MC		70000
@@ -295,9 +297,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * running / scope-open lull parks its skew in the 60-70 band between frames,
  * and clearing it there lets the burst that follows re-extend the floor
  * instead of shedding to baseline. A true idle lull lapses the window on its
- * own, so this is not a standing lift. 80ms spans the burst that follows. */
+ * own, so this is not a standing lift. 200ms spans an enemy-encounter burst
+ * at 120fps (24 frames); the hard-cancel and cooling latch still bound it. */
 #define RFX_G_RISK_ARM_PCT		70
-#define RFX_G_RISK_BOOST_NS		(80 * NSEC_PER_MSEC)
+#define RFX_G_RISK_BOOST_NS		(200 * NSEC_PER_MSEC)
 
 /* Gaming demand gate -- the only demand threshold in the gaming band. Below GATE
  * a cluster is idle: floor releases, no lift may arm; rejoins above GATE_EXIT.
@@ -1566,6 +1569,26 @@ static bool rfx_commit_freq(struct rfx_policy *p, u64 time, unsigned int next_fr
 			return false;
 		p->last_downfreq_time = time;
 	} else {
+		/* Ascent deadband: the F4 round-down commit lands on the OPP
+		 * BELOW the raw floor target, and the next ascent rounds the
+		 * same raw value back UP to the OPP above it -- the 2-OPP
+		 * sawtooth in the trace (921600 <-> 1036800 at demand 10-23,
+		 * floor target 32% = 933888 sitting between the two OPPs).
+		 * If this ascent's raw request would F4-round back down to
+		 * the currently committed OPP, the two commits cancel: skip
+		 * the ascent and hold the lower OPP (which is exactly what
+		 * the energy-aware descent wanted). One-sided by design:
+		 * descent pacing (F4/F5/F6) and the warmup ramp walk are
+		 * untouched. */
+		if (p->policy->freq_table && p->pending_raw_freq) {
+			int idx = cpufreq_frequency_table_target(
+						p->policy, p->pending_raw_freq,
+						CPUFREQ_RELATION_H);
+
+			if (p->policy->freq_table[idx].frequency ==
+			    p->next_freq)
+				return false;
+		}
 		delta = (s64)(time - p->last_upfreq_time);
 		if (p->up_rate_delay_ns > 0 && delta < p->up_rate_delay_ns)
 			return false;
