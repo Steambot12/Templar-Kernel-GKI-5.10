@@ -280,6 +280,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * so a tier oscillating in a narrow band would sawtooth the clock. */
 #define RFX_G_FLOOR_GATE_PCT		22
 #define RFX_G_FLOOR_GATE_EXIT_PCT	42
+/* Dwell below GATE before the latch engages. Measured mid-game lulls run
+ * 100-700ms of decay but the gating dips run under 250ms of sub-GATE demand;
+ * latching those walks the clock into the idle floor and the recovery burst
+ * pays the full V/f climb out of it (the start-of-game dip). True idle -- the
+ * power case this latch owns -- holds under GATE far longer than this. */
+#define RFX_G_GATE_DWELL_MS		250
 
 /* Floor for a gated (idle) cluster: at the V/f knee -- from fmin the OPP
  * transition plus rate gate turn a cold climb into a visible hitch. */
@@ -408,6 +414,7 @@ struct rfx_policy {
 	u64 last_ema_ns;			/* timestamp of last EMA update */
 
 	bool floor_gated;		/* gaming: floor released to idle, hysteretic */
+	u64 gate_low_since_ns;		/* first eval under the gaming gate */
 	/* Saturation latch: consecutive gaming evals at/above the hard-cancel
 	 * threshold; cancels the warmup floor without the cool-walk taper. */
 	unsigned int sat_consecutive;
@@ -1174,12 +1181,23 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		warmup_ramp_pct = rfx_update_warmup_ramp(p, warmup_active, time);
 
-		/* Idle latch: enter below GATE, leave only above GATE_EXIT.
-		 * Role-independent; every lift reads this, never demand_pct. */
-		if (demand_pct < RFX_G_FLOOR_GATE_PCT)
-			p->floor_gated = true;
-		else if (demand_pct >= RFX_G_FLOOR_GATE_EXIT_PCT)
-			p->floor_gated = false;
+		/* Idle latch: enter after a GATE_DWELL under GATE, leave only
+		 * above GATE_EXIT. The dwell keeps an inter-frame lull from
+		 * dropping the clock into the idle floor mid-game -- the
+		 * recovery burst would pay the full V/f climb (the measured
+		 * start-of-game dip). Role-independent; every lift reads this,
+		 * never demand_pct. */
+		if (demand_pct < RFX_G_FLOOR_GATE_PCT) {
+			if (!p->gate_low_since_ns)
+				p->gate_low_since_ns = time;
+			else if (rfx_elapsed(time, p->gate_low_since_ns) >=
+				 (u64)RFX_G_GATE_DWELL_MS * NSEC_PER_MSEC)
+				p->floor_gated = true;
+		} else {
+			p->gate_low_since_ns = 0;
+			if (demand_pct >= RFX_G_FLOOR_GATE_EXIT_PCT)
+				p->floor_gated = false;
+		}
 
 		if (p->floor_gated)
 			fl = rfx_pct(fceil, RFX_G_IDLE_FLOOR_PCT);
@@ -1803,6 +1821,7 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->quiet_since_ns = 0;
 	p->thermal_cooling = false;
 	p->floor_gated = false;
+	p->gate_low_since_ns = 0;
 	p->sat_consecutive = 0;
 	p->warmup_low_demand_since_ns = 0;
 	p->risk_high = false;
@@ -2657,6 +2676,11 @@ static int __init vorpal_gov_init(void)
 	 * or below the cap that clamps it. An inversion here is a latch that can
 	 * never release (or never engage) and is invisible at runtime. */
 	BUILD_BUG_ON(RFX_G_FLOOR_GATE_PCT >= RFX_G_FLOOR_GATE_EXIT_PCT);
+	/* The dwell is an inter-frame lull filter: it must stay below the
+	 * warmup window or a spawn lull longer than it would enter the latch
+	 * while the warmup floor it needs is still armed. */
+	BUILD_BUG_ON((u64)RFX_G_GATE_DWELL_MS * NSEC_PER_MSEC >
+		     RFX_GAMING_WARMUP_NS);
 	BUILD_BUG_ON(RFX_G_COOL_ENTER_PCT >= RFX_G_COOL_EXIT_PCT);
 	BUILD_BUG_ON(RFX_D_LITTLE_DROP_PCT >= RFX_D_LITTLE_LIFT_PCT);
 	BUILD_BUG_ON(RFX_D_BIG_DROP_PCT >= RFX_D_BIG_LIFT_PCT);
