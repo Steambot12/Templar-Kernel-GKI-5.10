@@ -175,7 +175,7 @@ void nf_ct_l3proto_module_put(unsigned short l3proto);
 
 static inline bool nf_ct_shared(const struct nf_conn *ct)
 {
-	return refcount_read(&ct->ct_general.use) > 1;
+	return atomic_read(&ct->ct_general.use) > 1;
 }
 
 /* load module; enable/disable conntrack in this namespace */
