@@ -143,6 +143,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Adaptive idle eval: poll slower while parked at fmin (never below tunable).
  * 35000us = 35ms reduces eval overhead during idle, saving power. */
 #define RFX_D_IDLE_EVAL_US		35000
+/* Light-load eval: below this committed OPP the cadence stretches linearly
+ * from the tunable up to IDLE_EVAL. The tuning-build battery drain was
+ * eval+commit traffic at light load (the 8ms/6ms -> 3ms cadence tripled it);
+ * light-load OPPs are exactly where activity is low and the extra cadence
+ * buys nothing. High demand keeps the full tunable rate -- UI stays smooth. */
+#define RFX_D_LIGHT_EVAL_OPP_PCT	25
 /* F5 daily: min dwell since the last up-commit before a drop (anti down-flap). */
 #define RFX_D_LITTLE_MIN_SAMPLE_US	4000
 #define RFX_D_BIG_MIN_SAMPLE_US		2000
@@ -1465,9 +1471,25 @@ static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
 	base = (s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
 	/* Adaptive idle: poll slower while parked at fmin, never below tunable.
 	 * Uses last-committed freq only -- known without this eval's util. */
-	if (RFX_D_IDLE_EVAL_US && p->next_freq == p->policy->cpuinfo.min_freq)
-		base = max_t(s64, base,
-			     (s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC);
+	if (RFX_D_IDLE_EVAL_US && p->next_freq == p->policy->cpuinfo.min_freq) {
+		p->freq_update_delay_ns =
+			(s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC;
+		return;
+	}
+	/* Light load: stretch the cadence down to IDLE_EVAL as the committed
+	 * OPP falls below LIGHT_EVAL_OPP_PCT. Above it the tunable owns the
+	 * rate untouched. */
+	if (RFX_D_IDLE_EVAL_US && p->next_freq <
+	    rfx_pct(p->policy->cpuinfo.max_freq, RFX_D_LIGHT_EVAL_OPP_PCT)) {
+		unsigned int opp_pct = (unsigned int)((u64)p->next_freq * 100 /
+					p->policy->cpuinfo.max_freq);
+		s64 stretch = (s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC -
+			      base;
+
+		base += stretch * (100 - opp_pct) /
+			(100 - RFX_D_LIGHT_EVAL_OPP_PCT);
+		base = min_t(s64, base, (s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC);
+	}
 	p->freq_update_delay_ns = base;
 }
 
