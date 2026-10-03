@@ -26,6 +26,7 @@ CONFIG_SCHED_BORE=y
 CONFIG_CGROUPS=y
 CONFIG_MEMCG=y
 CONFIG_BLK_CGROUP=y
+CONFIG_BLK_CGROUP_RWSTAT=y
 CONFIG_CGROUP_SCHED=y
 CONFIG_UCLAMP_TASK_GROUP=y
 CONFIG_CGROUP_FREEZER=y
@@ -84,7 +85,7 @@ CONFIG_HIBERNATION=y
 CONFIG_PM_AUTOSLEEP=y
 CONFIG_PM_WAKELOCKS=y
 CONFIG_PM_WAKELOCKS_LIMIT=0
-# CONFIG_PM_WAKELOCKS_GC is not set
+CONFIG_PM_WAKELOCKS_GC=y
 CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
 CONFIG_ENERGY_MODEL=y
 CONFIG_BOEFFLA_WL_BLOCKER=y
@@ -147,6 +148,10 @@ CONFIG_CMA_SYSFS=y
 CONFIG_CMA_AREAS=16
 CONFIG_ZPOOL=y
 CONFIG_ZSMALLOC=y
+CONFIG_SWAP=y
+CONFIG_FRONTSWAP=y
+CONFIG_ZSWAP=y
+CONFIG_ZSWAP_COMPRESSOR_DEFAULT_ZSTD=y
 CONFIG_ZRAM=y
 CONFIG_ZRAM_WRITEBACK=y
 CONFIG_ZRAM_MULTI_COMP=y
@@ -154,6 +159,7 @@ CONFIG_IDLE_PAGE_TRACKING=y
 CONFIG_READ_ONLY_THP_FOR_FS=y
 CONFIG_DAMON=y
 CONFIG_DAMON_PADDR=y
+CONFIG_DAMON_RECLAIM=y
 CONFIG_NET=y
 CONFIG_PACKET=y
 CONFIG_UNIX=y
@@ -475,7 +481,7 @@ CONFIG_REGULATOR_FIXED_VOLTAGE=y
 CONFIG_RC_CORE=y
 # CONFIG_RC_MAP is not set
 CONFIG_LIRC=y
-CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none noirqdebug loglevel=3 nohz=on rcu_nocbs=all mem_sleep_default=deep transparent_hugepage=madvise cgroup_enable=memory workqueue.power_efficient=1 sysctl.vm.swappiness=60 cpuidle.governor=nap sysctl.vm.watermark_scale_factor=150 sysctl.vm.dirty_ratio=8 sysctl.vm.dirty_background_ratio=1 sysctl.vm.dirty_expire_centisecs=300 sysctl.kernel.panic_on_oom=0"
+CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none noirqdebug audit=0 cgroup_disable=pressure loglevel=3 nohz=on rcu_nocbs=all mem_sleep_default=deep transparent_hugepage=madvise cgroup_enable=memory workqueue.power_efficient=1 sysctl.vm.swappiness=60 cpuidle.governor=nap sysctl.vm.watermark_scale_factor=150 sysctl.vm.dirty_ratio=8 sysctl.vm.dirty_background_ratio=1 sysctl.vm.dirty_expire_centisecs=300 sysctl.kernel.panic_on_oom=0"
 CONFIG_RC_DECODERS=y
 CONFIG_RC_DEVICES=y
 CONFIG_MEDIA_CEC_RC=y
