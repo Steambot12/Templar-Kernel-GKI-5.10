@@ -62,14 +62,15 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_LITTLE_CAP_THRESHOLD	614
 #define RFX_PRIME_CAP_THRESHOLD		1000
 
-/* Daily eval rate limits (us): slow idle cadence (Little 8ms / Big 6ms); the
- * sub-ms up-rate gate still lets an interaction climb on the next eval. */
-#define RFX_LITTLE_RATE_US		8000
+/* Daily eval rate limits (us): slow idle cadence; the sub-ms up-rate gate
+ * still lets an interaction climb on the next eval. Idle battery is owned by
+ * the adaptive park rate (RFX_D_IDLE_EVAL_US), not these. */
+#define RFX_LITTLE_RATE_US		3000
 #define RFX_LITTLE_UP_US		200
 #define RFX_LITTLE_DOWN_US		3000
 
-#define RFX_BIG_RATE_US			6000
-#define RFX_BIG_UP_US			100
+#define RFX_BIG_RATE_US			3000
+#define RFX_BIG_UP_US			0
 #define RFX_BIG_DOWN_US			2500
 
 /* Gaming eval rate. Measured-stable; do not raise without an FPS measurement. */
@@ -113,9 +114,9 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* ---- Daily shaping, percent of effective ceiling. Caps only: the util EMA
  * plus PELT already carry any rise. ---- */
-/* Little daily cap (compositor + IME). Tighter cap for battery saving:
- * 58% keeps UI responsive while significantly reducing voltage at sustained load. */
-#define RFX_D_LITTLE_CAP_PCT		58
+/* Little daily cap (compositor + IME). 60% keeps swipe/notification latency
+ * down; a tighter cap made control-center pulls hitch on the Little tier. */
+#define RFX_D_LITTLE_CAP_PCT		60
 /* Little knee floor -- a TIMED window on the wake edge, not a standing floor,
  * to carry the cold OPP climb past its transition hitch. Only Little, daily. */
 #define RFX_D_LITTLE_FLOOR_PCT		32
@@ -123,8 +124,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_LITTLE_FLOOR_REARM_PCT	6	/* re-arm only after parking (hysteresis) */
 #define RFX_D_LITTLE_FLOOR_NS		(80 * NSEC_PER_MSEC)	/* window length */
 /* Sustained caps: long foreground work at lower voltage, above the lift gate so
- * the latch cannot flap. Latches skewed 1.25x (on ~58% real, off ~44%). */
-#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	68
+ * the latch cannot flap. Latches skewed 1.25x (on ~60% real, off ~46%). */
+#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	66
 #define RFX_D_LITTLE_LIFT_PCT		62
 #define RFX_D_LITTLE_DROP_PCT		48
 /* Big/Prime daily caps + shared sustained latch. Base 62% holds resting draw
@@ -157,7 +158,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_THERM_CAP_FULL_MC		44000
 #define RFX_D_THERM_CAP_MIN_PCT		55
 /* Park latch: enter fmin below ~3% (max_cap>>5), hold until EXIT_PCT for EXIT_EVALS.
- * Higher exit threshold = deeper park hold = less frequency thrashing. */
+ * Deeper hold = less frequency thrashing during brief UI lulls. */
 #define RFX_D_PARK_EXIT_PCT		12
 #define RFX_D_PARK_EXIT_EVALS		3
 
@@ -184,9 +185,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_DESCEND_HOLD_NS		((u64)RFX_EMA_MAX_STEPS * \
 					 RFX_EMA_DECAY_PERIOD_NS)	/* one frame gap */
 
-/* ---- Headroom above demand, percent. Stacks on the 25% DVFS margin already
- * applied by rfx_get_util_gki510, so this only raises the resting OPP. ---- */
-/* Daily: lower headroom for battery saving. 0/0 = no voltage overhead. */
+/* Headroom above demand, percent. Stacks on the 25% DVFS margin already
+ * applied by rfx_get_util_gki510, so this only raises the resting OPP.
+ * Daily 0/0 = no voltage overhead: benchmark multicore regressed when these
+ * were nonzero (the surplus sat a full OPP above the load), so the DVFS
+ * margin and the daily caps own the daily shape. */
 #define RFX_HEADROOM_DAILY_HIGH		0
 #define RFX_HEADROOM_DAILY_MID		0
 /* Gaming headroom, phased in linearly from the GATE: below it the resting OPP
@@ -316,18 +319,14 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Global state                                                          */
 /* ===================================================================== */
 
-/* Master gaming switch, written by gaming_mode sysfs (Prime cluster only). */
+/* Master gaming switch: 0 = daily, 1 = gaming. Written only by the
+ * gaming_mode sysfs node; nothing in this driver writes it.
+ */
 static atomic_t rfx_gaming = ATOMIC_INIT(0);
 
 static inline bool rfx_gaming_enabled(void)
 {
 	return atomic_read(&rfx_gaming) != 0;
-}
-
-/* Gaming switch: 0 daily (off), 1 gaming (on). Binary trigger only. */
-static inline int rfx_gaming_level(void)
-{
-	return atomic_read(&rfx_gaming);
 }
 
 /* Last input-event timestamp (sched_clock ns), stamped by the input handler
@@ -837,10 +836,9 @@ static unsigned long rfx_apply_headroom(unsigned long util, unsigned long max_ca
 		return util;
 	}
 
-	/* Big/Prime headroom trimmed one notch (4->2, 2->1): the old values
-	 * sat a full OPP above the load on ordinary scroll/chat work and the
-	 * surplus burned as heat. The DVFS margin still covers OPP
-	 * granularity below 45. */
+	/* Big/Prime: the DVFS margin covers OPP granularity; any nonzero value
+	 * here sat a full OPP above the load on ordinary scroll/chat work and
+	 * regressed multicore. */
 	if (upct >= 70)
 		return min(util + util * RFX_HEADROOM_DAILY_HIGH / 100, max_cap);
 	if (upct >= 45)
@@ -1617,7 +1615,7 @@ static void rfx_update(struct update_util_data *hook, u64 time,
 		p->last_eval_time = time;
 		next_f = rfx_next_freq(rfx_c, time, gaming);
 		if (rfx_commit_freq(p, time, next_f)) {
-			trace_vorpal(rfx_c->cpu, rfx_gaming_level(),
+			trace_vorpal(rfx_c->cpu, atomic_read(&rfx_gaming),
 				     p->next_freq, p->dbg_demand_pct,
 				     p->dbg_fceil_pct);
 			/* Inside update_lock: the call may not run twice in
@@ -1714,8 +1712,6 @@ static void rfx_thermal_fn(struct work_struct *w)
 			pr_info("vorpal: thermal emergency cleared %d mC\n", t_mc);
 		}
 	} else {
-		/* No source configured: the poll can never do anything, so stop
-		 * re-arming. Both sysfs stores re-arm when a source appears. */
 		atomic_set(&rfx_emergency_cap_pct, 100);
 		return;
 	}
@@ -1849,7 +1845,7 @@ static void rfx_reset_all_policies(void)
 
 static ssize_t gaming_mode_show(struct gov_attr_set *attr_set, char *buf)
 {
-	return sprintf(buf, "%u\n", rfx_gaming_level());
+	return sprintf(buf, "%u\n", atomic_read(&rfx_gaming));
 }
 static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 				 const char *buf, size_t count)
