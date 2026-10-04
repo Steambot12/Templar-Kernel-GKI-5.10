@@ -4943,7 +4943,9 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 	 * EEVDF: new tasks start with half a slice for gentler entry.
 	 * BORE 6.8.0: wakeups also enter with half a slice — a woken task
 	 * does not need a full granularity before its first preemption
-	 * check, which sharpens interactive response.
+	 * check, which sharpens interactive response. Ping-pong between
+	 * near-equal tasks is handled by the wakeup-granularity guard in
+	 * check_preempt_wakeup(), not here.
 	 */
 	if (sched_feat(PLACE_DEADLINE_INITIAL) && initial)
 		vslice /= 2;
@@ -8046,10 +8048,20 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	 *
 	 * An eligible wakee with an earlier virtual deadline preempts the
 	 * current entity. Ineligible wakees must wait until their lag permits
-	 * execution, preserving EEVDF fairness and avoiding wakeup ping-pong.
+	 * execution, preserving EEVDF fairness.
+	 *
+	 * The deadline advantage must exceed one wakeup granularity (virtual,
+	 * of the wakee): with fixed-size slices every placement lands the
+	 * deadline at vruntime + 1..2 granularity, so two frequently
+	 * interacting tasks with near-equal vruntimes would otherwise
+	 * preempt each other every wakeup. That ping-pong keeps light
+	 * workloads (two binder threads, UI + RenderThread) from reaching a
+	 * restful state and measurably raises idle power on the little
+	 * cores. CFS had the same guard via wakeup_preempt_entity().
 	 */
 	if (entity_eligible(cfs_rq_of(pse), pse) &&
-	    (s64)(pse->deadline - se->deadline) < 0) {
+	    (s64)(se->deadline - pse->deadline) >
+	    (s64)calc_delta_fair(sysctl_sched_wakeup_granularity, pse)) {
 		if (!next_buddy_marked)
 			set_next_buddy(pse);
 		goto preempt;
