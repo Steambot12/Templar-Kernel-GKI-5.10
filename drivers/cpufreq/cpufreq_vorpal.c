@@ -292,6 +292,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * pays the full V/f climb out of it (the start-of-game dip). True idle -- the
  * power case this latch owns -- holds under GATE far longer than this. */
 #define RFX_G_GATE_DWELL_MS		250
+/* Dwell of sustained demand >= GATE before the latch releases without hitting
+ * GATE_EXIT. Clears the 23-41 dead zone where real work kept the floor parked
+ * at the idle OPP. Oscillation resets the stamp; only sustained work clears. */
+#define RFX_G_GATE_EXIT_DWELL_MS	50
 
 /* Floor for a gated (idle) cluster: at the V/f knee -- from fmin the OPP
  * transition plus rate gate turn a cold climb into a visible hitch. */
@@ -421,6 +425,7 @@ struct rfx_policy {
 
 	bool floor_gated;		/* gaming: floor released to idle, hysteretic */
 	u64 gate_low_since_ns;		/* first eval under the gaming gate */
+	u64 gate_exit_since_ns;		/* first eval of sustained demand >= GATE */
 	/* Saturation latch: consecutive gaming evals at/above the hard-cancel
 	 * threshold; cancels the warmup floor without the cool-walk taper. */
 	unsigned int sat_consecutive;
@@ -1192,7 +1197,16 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * dropping the clock into the idle floor mid-game -- the
 		 * recovery burst would pay the full V/f climb (the measured
 		 * start-of-game dip). Role-independent; every lift reads this,
-		 * never demand_pct. */
+		 * never demand_pct.
+		 *
+		 * Exit has a dwell path too: sustained real work in the 23-41
+		 * dead zone (between GATE and GATE_EXIT) used to hold the latch
+		 * closed and the floor parked at the idle OPP -- the recovery
+		 * burst then paid the full V/f climb out of it (measured
+		 * mid-game: 3139 post-burst dips >50ms below 2GHz, 709 mid-band
+		 * samples at <=1171MHz). Oscillation resets the stamps, so a
+		 * demand sawtooth cannot walk the dwell out; only sustained work
+		 * clears it. */
 		if (demand_pct < RFX_G_FLOOR_GATE_PCT) {
 			if (!p->gate_low_since_ns)
 				p->gate_low_since_ns = time;
@@ -1201,8 +1215,17 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				p->floor_gated = true;
 		} else {
 			p->gate_low_since_ns = 0;
-			if (demand_pct >= RFX_G_FLOOR_GATE_EXIT_PCT)
+			if (demand_pct >= RFX_G_FLOOR_GATE_EXIT_PCT) {
 				p->floor_gated = false;
+				p->gate_exit_since_ns = 0;
+			} else if (demand_pct >= RFX_G_FLOOR_GATE_PCT) {
+				if (!p->gate_exit_since_ns)
+					p->gate_exit_since_ns = time;
+				else if (rfx_elapsed(time, p->gate_exit_since_ns) >=
+					 (u64)RFX_G_GATE_EXIT_DWELL_MS *
+					 NSEC_PER_MSEC)
+					p->floor_gated = false;
+			}
 		}
 
 		if (p->floor_gated)
@@ -1844,6 +1867,7 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->thermal_cooling = false;
 	p->floor_gated = false;
 	p->gate_low_since_ns = 0;
+	p->gate_exit_since_ns = 0;
 	p->sat_consecutive = 0;
 	p->warmup_low_demand_since_ns = 0;
 	p->risk_high = false;
