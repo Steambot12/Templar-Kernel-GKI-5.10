@@ -126,9 +126,17 @@ const_debug unsigned int sysctl_sched_migration_cost	= 250000UL;
 
 #ifdef CONFIG_SCHED_BORE
 /*
- * Upstream BORE 6.6.3 semantics inside the GKI-safe integration (KABI-slot
- * sched_entity fields, sysctl knobs and CFS hooks unchanged; the 6.6.3
- * task_struct/bore.c/futex machinery is NOT ported -- it would break KMI).
+ * Upstream BORE 6.8.0 semantics inside the GKI-safe integration (KABI-slot
+ * sched_entity fields, sysctl knobs and CFS hooks unchanged; the 6.8.0
+ * task_struct bore_ctx/bore.c/futex_waiting machinery is NOT ported -- a new
+ * task_struct field breaks KMI, and protect_slice_lv depends on
+ * custom_slice/DELAY_DEQUEUE which this 5.10 EEVDF backport does not have).
+ *
+ * Ported from 6.8.0: yield deadline rescale (restart_burst_rescale_deadline),
+ * lag clamp halved under BORE, wakeup half-slice entry, unified binary_smooth
+ * round-up growth. Kept local (would regress if taken from upstream):
+ * penalty_offset 27, penalty_scale 1024, demotion cap sched_burst_penalty_max,
+ * kthread exclusion, atavistic off (see below).
  *
  * penalty_scale 1024 makes the curve exact: burst_score = fls64(burst_time) -
  * penalty_offset, i.e. one nice step per doubling of an uninterrupted burst,
@@ -142,10 +150,13 @@ const_debug unsigned int sysctl_sched_migration_cost	= 250000UL;
  * would; 134ms won't. Upstream's 24 (16ms) suits a desktop where a demotion
  * costs a scroll, not a frame.
  *
- * smoothness 1/0: penalties grow by halves (rounded up) and collapse instantly
- * at sleep, so one heavy burst costs weight for one cycle, not several.
- * fork_atavistic MUST stay 0 on this tree: upstream 6.6.3 bounds its topological
- * inheritance with RCU sample/scan limits, but the 5.10 in-tree walk recurses
+ * smoothness_long 1: penalties grow by halves (rounded up), 6.8.0's unified
+ * curve. smoothness_short 0 kept: instant baseline collapse at sleep so one
+ * heavy burst costs weight for one cycle, not several -- 6.8.0 never decays
+ * the baseline below the latest burst, which on mobile keeps a stale penalty
+ * pinned to background workers between sessions of activity.
+ * fork_atavistic MUST stay 0 on this tree: upstream bounds its topological
+ * inheritance with sample/scan limits, but the 5.10 in-tree walk recurses
  * over unbounded children lists under read_lock(&tasklist_lock) in the fork
  * path -- on a long session the walk lengthens until tasklist_lock contention
  * freezes the system (forced reboot). Direct inheritance is bounded (one
@@ -763,6 +774,34 @@ static void restart_burst(struct sched_entity *se) {
 	se->curr_burst_penalty = 0;
 	se->burst_time = 0;
 	update_burst_score(se);
+}
+
+/*
+ * BORE 6.8.0: on yield, the burst may demote (restart_burst raises the
+ * effective prio). Rescale the remaining virtual slice from the old weight
+ * domain to the new one so the yielder does not suddenly gain (or lose) a
+ * large chunk of deadline just because its weight changed.
+ */
+static void restart_burst_rescale_deadline(struct sched_entity *se) {
+	struct task_struct *p = task_of(se);
+	s64 vscaled, vremain = se->deadline - se->vruntime;
+	u8 old_prio, new_prio;
+
+	old_prio = effective_prio(p);
+	restart_burst(se);
+	new_prio = effective_prio(p);
+
+	if (old_prio > new_prio) {
+		u64 mag = vremain < 0 ? (u64)(-vremain) : (u64)vremain;
+
+		vscaled = mul_u64_u32_shr(mag,
+					  sched_prio_to_weight[old_prio], 10);
+		vscaled = mul_u64_u32_shr(vscaled,
+					  sched_prio_to_wmult[new_prio], 22);
+		if (unlikely(vremain < 0))
+			vscaled = -vscaled;
+		se->deadline = se->vruntime + vscaled;
+	}
 }
 
 /*
@@ -4844,6 +4883,16 @@ static void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	lag = avg_vruntime(cfs_rq) - se->vruntime;
 
 	limit = calc_delta_fair(max_t(u64, 2 * se->slice, TICK_NSEC), se);
+#ifdef CONFIG_SCHED_BORE
+	/*
+	 * BORE 6.8.0: halve the clamp so a sleeper restores at most one
+	 * slice of credit/debt on wake. Long sleepers stop banking huge
+	 * catch-up credit, which smooths the post-sleep burst without
+	 * touching steady-state fairness.
+	 */
+	if (likely(sched_bore))
+		limit >>= 1;
+#endif /* CONFIG_SCHED_BORE */
 	se->vlag = clamp(lag, -limit, limit);
 }
 
@@ -4892,9 +4941,16 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 
 	/*
 	 * EEVDF: new tasks start with half a slice for gentler entry.
+	 * BORE 6.8.0: wakeups also enter with half a slice — a woken task
+	 * does not need a full granularity before its first preemption
+	 * check, which sharpens interactive response.
 	 */
 	if (sched_feat(PLACE_DEADLINE_INITIAL) && initial)
 		vslice /= 2;
+#ifdef CONFIG_SCHED_BORE
+	else if (likely(sched_bore))
+		vslice /= 2;
+#endif /* CONFIG_SCHED_BORE */
 
 	/*
 	 * EEVDF virtual deadline: vd_i = ve_i + r_i / w_i
@@ -8219,7 +8275,7 @@ static void yield_task_fair(struct rq *rq)
 	 */
 	update_curr(cfs_rq);
 #ifdef CONFIG_SCHED_BORE
-	restart_burst(se);
+	restart_burst_rescale_deadline(se);
 	if (unlikely(rq->nr_running == 1))
 		return;
 
