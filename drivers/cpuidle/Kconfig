@@ -57,8 +57,8 @@ config CPU_IDLE_GOV_NAP
 	  All arithmetic is fixed point, so no kernel FPU/SIMD is used and
 	  results are identical across CPUs.
 
-	  It does not out-rank menu or teo: select it explicitly with
-	  cpuidle.governor=nap on the kernel command line.
+	  Select it with the cpuidle.governor=nap kernel command line
+	  argument.
 
 config CPU_IDLE_GOV_NAP_SELFTEST
 	bool "Self-test the NAP governor's fixed-point math at boot"

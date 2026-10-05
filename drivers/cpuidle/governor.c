@@ -13,10 +13,26 @@
 #include <linux/mutex.h>
 #include <linux/module.h>
 #include <linux/pm_qos.h>
+#include <linux/string.h>
 
 #include "cpuidle.h"
 
 char param_governor[CPUIDLE_NAME_LEN];
+
+/*
+ * cpuidle is built-in on GKI arm64, so module_param is never reached from
+ * the boot command line.  Honor "cpuidle.governor=<name>" at boot: drivers
+ * and governors registered afterwards switch to the named governor.
+ */
+static int __init cpuidle_governor_setup(char *str)
+{
+	if (!str[0])
+		return 0;
+
+	strlcpy(param_governor, str, sizeof(param_governor));
+	return 1;
+}
+__setup("cpuidle.governor", cpuidle_governor_setup);
 
 LIST_HEAD(cpuidle_governors);
 struct cpuidle_governor *cpuidle_curr_governor;
