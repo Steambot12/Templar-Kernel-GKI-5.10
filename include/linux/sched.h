@@ -1411,7 +1411,14 @@ struct task_struct {
 		unsigned	user_dumpable:1;
 		});
 
-	ANDROID_KABI_RESERVE(3);
+	/*
+	 * Appended in a reserved slot to preserve every offset above (KMI).
+	 * BORE 6.8.0 protect_slice_lv equivalent: set while the task sleeps
+	 * in futex_wait_queue_me(), read by place_entity() to keep the full
+	 * deadline window for futex waiters (binder/GPU fence waiters).
+	 */
+	ANDROID_KABI_USE(3, bool	futex_waiting);
+
 	ANDROID_KABI_RESERVE(4);
 	ANDROID_KABI_RESERVE(5);
 
