@@ -128,15 +128,15 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_LITTLE_SUSTAINED_CAP_PCT	66
 #define RFX_D_LITTLE_LIFT_PCT		62
 #define RFX_D_LITTLE_DROP_PCT		48
-/* Big/Prime daily caps + shared sustained latch. Base 62% holds resting draw
- * low; the latch lifts to 72% under sustained demand so bursts (app launch,
- * scroll) finish quickly and race back to idle without chasing fmax. */
-#define RFX_D_BIG_CAP_PCT		62
-#define RFX_D_PRIME_CAP_PCT		62
-#define RFX_D_BIG_LIFT_PCT		75
-#define RFX_D_BIG_DROP_PCT		55
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	72
-#define RFX_D_PRIME_SUSTAINED_CAP_PCT	72
+/* Big/Prime daily caps + shared sustained latch. Base 56% trims the
+ * standing idle-tier draw; the latch lifts to 68% under sustained demand
+ * so bursts (app launch, scroll) finish without chasing fmax. */
+#define RFX_D_BIG_CAP_PCT		56
+#define RFX_D_PRIME_CAP_PCT		56
+#define RFX_D_BIG_LIFT_PCT		68
+#define RFX_D_BIG_DROP_PCT		50
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	68
+#define RFX_D_PRIME_SUSTAINED_CAP_PCT	68
 
 /* ---- Daily-only power features: applied while gaming_mode=0, inert while
  * gaming (the gaming band never reads them). Any 0 disables at build. ---- */
