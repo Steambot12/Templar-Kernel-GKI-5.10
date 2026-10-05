@@ -31,6 +31,10 @@
 #include <linux/moduleparam.h>
 #include <linux/wakeup_reason.h>
 
+#ifdef CONFIG_POWERSUSPEND
+#include <linux/powersuspend.h>
+#endif
+
 #include "power.h"
 
 const char * const pm_labels[] = {
@@ -594,11 +598,25 @@ static int enter_state(suspend_state_t state)
 	trace_suspend_resume(TPS("suspend_enter"), state, false);
 	pm_pr_dbg("Suspending system (%s)\n", mem_sleep_labels[state]);
 	pm_restrict_gfp_mask();
+#ifdef CONFIG_POWERSUSPEND
+	/*
+	 * Engage the early-suspend handlers for every system-sleep entry
+	 * (mem and S2idle alike -- S2idle is the default on shallow devices,
+	 * one enter_state() per screen-off session). The setter is idempotent,
+	 * so a concurrent vendor panel/autosleep trigger agrees with this
+	 * rather than conflicts. Releasing on every exit is safe: a short
+	 * wakeup re-engages on the next entry.
+	 */
+	set_power_suspend_state(POWER_SUSPEND_ACTIVE);
+#endif
 	error = suspend_devices_and_enter(state);
 	pm_restore_gfp_mask();
 
  Finish:
 	events_check_enabled = false;
+#ifdef CONFIG_POWERSUSPEND
+	set_power_suspend_state(POWER_SUSPEND_INACTIVE);
+#endif
 	pm_pr_dbg("Finishing wakeup.\n");
 	suspend_finish();
  Unlock:
