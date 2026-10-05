@@ -89,14 +89,8 @@ static int mode;  // Yank555.lu : Current powersave mode  (kernel / userspace / 
 
 void register_power_suspend(struct power_suspend *handler)
 {
-	struct list_head *pos;
-
 	mutex_lock(&power_suspend_lock);
-	list_for_each(pos, &power_suspend_handlers) {
-		struct power_suspend *p;
-		p = list_entry(pos, struct power_suspend, link);
-	}
-	list_add_tail(&handler->link, pos);
+	list_add_tail(&handler->link, &power_suspend_handlers);
 	mutex_unlock(&power_suspend_lock);
 }
 EXPORT_SYMBOL(register_power_suspend);
