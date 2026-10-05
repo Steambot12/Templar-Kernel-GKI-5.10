@@ -3413,6 +3413,9 @@ void sched_fork_bore(struct task_struct *p, struct task_struct *parent) {
 	p->se.burst_time = 0;
 	p->se.curr_burst_penalty = 0;
 	p->se.child_burst_last_cached = 0;
+	/* fork memcpy of task_struct inherits this; a fresh task is not
+	 * sleeping in futex_wait_queue_me(). */
+	p->futex_waiting = false;
 
 	if (task_burst_inheritable(p))
 		inherit_burst(p, parent);

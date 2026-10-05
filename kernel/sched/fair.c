@@ -4913,14 +4913,15 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 
 	/*
 	 * EEVDF: new tasks start with half a slice for gentler entry.
-	 * BORE 6.8.0: wakeups enter with half a slice as well -- a woken
-	 * task does not need a full granularity before its first
-	 * preemption check, which sharpens interactive response.
+	 * BORE 6.8.0: wakeups also enter with half a slice, except futex
+	 * waiters which keep the full window -- their deadline bounds the
+	 * wakeup latency of the whole waiter chain (binder, GPU fences).
 	 */
 	if (sched_feat(PLACE_DEADLINE_INITIAL) && initial)
 		vslice /= 2;
 #ifdef CONFIG_SCHED_BORE
-	else if (likely(sched_bore))
+	else if (likely(sched_bore) &&
+		 !(entity_is_task(se) && task_of(se)->futex_waiting))
 		vslice /= 2;
 #endif /* CONFIG_SCHED_BORE */
 
@@ -8014,14 +8015,19 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	BUG_ON(!pse);
 
 	/*
-	 * EEVDF wakeup preemption:
-	 *
-	 * An eligible wakee with an earlier virtual deadline preempts the
-	 * current entity. Ineligible wakees must wait until their lag permits
-	 * execution, preserving EEVDF fairness and avoiding wakeup ping-pong.
+	 * EEVDF wakeup preemption: an eligible wakee preempts only when its
+	 * deadline advantage over the current entity exceeds one wakeup
+	 * granularity (virtual, of the wakee). Without the guard, two
+	 * interacting tasks with near-equal vruntimes preempt each other on
+	 * every wakeup -- a ping-pong that keeps light pairs (binder,
+	 * RenderThread) from settling and raises screen-off power. CFS had
+	 * this guard via wakeup_preempt_entity(); upstream EEVDF has it via
+	 * do_preempt_short/protect_slice, which depends on DELAY_DEQUEUE
+	 * infrastructure this 5.10 backport does not carry.
 	 */
 	if (entity_eligible(cfs_rq_of(pse), pse) &&
-	    (s64)(pse->deadline - se->deadline) < 0) {
+	    (s64)(se->deadline - pse->deadline) >
+	    (s64)calc_delta_fair(sysctl_sched_wakeup_granularity, pse)) {
 		if (!next_buddy_marked)
 			set_next_buddy(pse);
 		goto preempt;
