@@ -78,6 +78,13 @@ struct sched_domain_shared {
 	int		has_idle_cores;
 
 	ANDROID_VENDOR_DATA(1);
+
+	/*
+	 * Appended at the end to preserve the offsets of every field above
+	 * (including ANDROID_VENDOR_DATA). SIS_UTIL scan-depth hint, written
+	 * on periodic load balancing, read by select_idle_cpu().
+	 */
+	int		nr_idle_scan;
 };
 
 struct sched_domain {

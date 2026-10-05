@@ -83,7 +83,16 @@ SCHED_FEAT(TTWU_QUEUE, true)
  * When doing wakeups, attempt to limit superfluous scans of the LLC domain.
  */
 SCHED_FEAT(SIS_AVG_CPU, false)
-SCHED_FEAT(SIS_PROP, true)
+SCHED_FEAT(SIS_PROP, false)
+
+/*
+ * Bound the LLC idle-CPU scan by the domain's aggregated utilization
+ * instead of the avg_scan_cost heuristic. Default OFF: on this tree the
+ * reader (select_idle_cpu()) is unreachable, so the hint is never
+ * consumed and the only cost is a shared-cache-line write per LLC load
+ * balance. Still valid on symmetric islands; runtime-toggleable.
+ */
+SCHED_FEAT(SIS_UTIL, false)
 
 /*
  * Issue a WARN when we do multiple update_rq_clock() calls
