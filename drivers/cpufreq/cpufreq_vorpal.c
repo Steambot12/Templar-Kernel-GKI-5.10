@@ -100,10 +100,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * gaming_mode=1, inert while gaming_mode=0. Set one to 0 to disable it at
  * build. Floors/caps are the regression-prone levers -- tune one at a time. ---- */
 #define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* gaming eval cadence */
-#define RFX_G_HISPEED_PCT_DEFAULT		70	/* F1 hispeed render floor */
+#define RFX_G_HISPEED_PCT_DEFAULT		62	/* F1 hispeed render floor */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
-#define RFX_G_HISPEED_HOLD_US_DEFAULT		30000	/* F1 hold after last go-demand */
-#define RFX_G_TOUCH_PCT_DEFAULT			68	/* F2 input render floor */
+#define RFX_G_HISPEED_HOLD_US_DEFAULT		10000	/* F1 hold after last go-demand */
+#define RFX_G_TOUCH_PCT_DEFAULT			60	/* F2 input render floor */
 #define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
 #define RFX_G_THERM_CAP_MC_DEFAULT		80000	/* F3 pre-emptive cap start mC */
 #define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		70	/* F3 floor of the graduated cap */
