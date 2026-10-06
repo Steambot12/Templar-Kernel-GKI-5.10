@@ -277,12 +277,13 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* Frame-risk re-arm of the warmup window: one crossing arms one 40ms boost;
  * demand must fall under CLEAR before another can arm. CLEAR must stay below
- * TRIGGER (60) or the latch parks and never re-arms. 80ms spans a scope-open /
- * weapon-switch animation. Gaming demand runs 84-88% on the render tier,
- * above ARM: the re-arm re-extends the warmup window on almost every eval,
- * and the 80ms boost kept it near-constant -- 40ms spans one burst while
- * letting the EMA decay between them. */
-#define RFX_G_RISK_ARM_PCT		70
+ * TRIGGER (60) or the latch parks and never re-arms. ARM sits at the
+ * saturation band the render tier parks in mid-game: below ARM it re-armed on
+ * nearly every 250us eval (Qualcomm trace: 85-87% of samples at >=85% with
+ * fmax 2.9GHz un-throttled) and the warmup floor became a standing state;
+ * at ARM the boost fires only on a genuine scene-change burst, where one
+ * 40ms lift spans the spike without riding it. */
+#define RFX_G_RISK_ARM_PCT		85
 #define RFX_G_RISK_CLEAR_PCT		50
 #define RFX_G_RISK_BOOST_NS		(40 * NSEC_PER_MSEC)
 
