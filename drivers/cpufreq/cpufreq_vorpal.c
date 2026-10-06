@@ -109,7 +109,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		70	/* F3 floor of the graduated cap */
 #define RFX_G_MIN_SAMPLE_US_DEFAULT		4000	/* F5 min dwell before a drop */
 #define RFX_G_DOWN_FAST_PCT_DEFAULT		2	/* F6 fast-phase shed rate */
-#define RFX_G_DOWN_FAST_MS_DEFAULT		40	/* F6 fast-phase length */
+#define RFX_G_DOWN_FAST_MS_DEFAULT		80	/* F6 fast-phase length */
 #define RFX_G_ENERGY_AWARE_DEFAULT		1	/* F4 round-down on descent */
 
 /* ---- Daily shaping, percent of effective ceiling. Caps only: the util EMA
@@ -251,9 +251,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * a PENDING window only; it starts on the first demand crossing TRIGGER, never
  * under the cooling latch, one-shot per gaming_mode entry. Extends above
  * EXTEND_PCT up to MAX_NS, releases early below RELEASE_PCT; the 60ms ramp decay
- * pulls the floor back during lulls so it never becomes a standing lift. */
-#define RFX_GAMING_WARMUP_NS		(1000 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_MAX_NS	(6000 * NSEC_PER_MSEC)
+ * pulls the floor back during lulls so it never becomes a standing lift.
+ * Lifetime is spawn-scale: a longer entry window or cap rides the 80% floor
+ * through sustained play (render demand holds 84-88%), which is a standing
+ * floor, not a timed lift. */
+#define RFX_GAMING_WARMUP_NS		(400 * NSEC_PER_MSEC)
+#define RFX_GAMING_WARMUP_MAX_NS	(2000 * NSEC_PER_MSEC)
 /* 60 skewed = 48% real: low enough that inter-frame bursts re-arm the deferred
  * window before the clock drops out of the render band (65 let troughs lapse the
  * floor to baseline every lull -- the jank source). */
@@ -272,13 +275,16 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * quiet stretches, so it is not measured from the burst that consumed the arm. */
 #define RFX_GAMING_REARM_QUIET_NS	(3000 * NSEC_PER_MSEC)
 
-/* Frame-risk re-arm of the warmup window: one crossing arms one 80ms boost;
+/* Frame-risk re-arm of the warmup window: one crossing arms one 40ms boost;
  * demand must fall under CLEAR before another can arm. CLEAR must stay below
  * TRIGGER (60) or the latch parks and never re-arms. 80ms spans a scope-open /
- * weapon-switch animation (20ms released mid-burst -> an FPS dip). */
+ * weapon-switch animation. Gaming demand runs 84-88% on the render tier,
+ * above ARM: the re-arm re-extends the warmup window on almost every eval,
+ * and the 80ms boost kept it near-constant -- 40ms spans one burst while
+ * letting the EMA decay between them. */
 #define RFX_G_RISK_ARM_PCT		70
 #define RFX_G_RISK_CLEAR_PCT		50
-#define RFX_G_RISK_BOOST_NS		(80 * NSEC_PER_MSEC)
+#define RFX_G_RISK_BOOST_NS		(40 * NSEC_PER_MSEC)
 
 /* Gaming demand gate -- the only demand threshold in the gaming band. Below GATE
  * a cluster is idle: floor releases, no lift may arm; rejoins above GATE_EXIT.
@@ -675,7 +681,7 @@ static void rfx_warmup_arm(struct rfx_policy *p, unsigned int demand_pct,
 /*
  * Frame-risk re-arm. After the warmup window lapses the render clusters run
  * on the bare baseline floor with no transient response left. One crossing
- * above ARM arms one 20ms boost; demand must fall under CLEAR (or the
+ * above ARM arms one 40ms boost; demand must fall under CLEAR (or the
  * window lapse) before another arms. Already at or above the floor buys
  * nothing -- a lift there only pins the clock.
  */
