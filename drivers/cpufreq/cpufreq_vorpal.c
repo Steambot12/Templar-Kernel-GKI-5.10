@@ -143,10 +143,17 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Adaptive idle eval: poll slower while parked at fmin (never below tunable).
  * 35000us = 35ms reduces eval overhead during idle, saving power. */
 #define RFX_D_IDLE_EVAL_US		35000
-/* Light-load eval: below this committed OPP the cadence stretches to
+/* Light-load eval: below this committed OPP the cadence stretches toward
  * RFX_D_IDLE_EVAL_US. Eval+commit traffic at light load was the measured
- * daily drain; above this OPP the tunable rate is untouched. */
+ * daily drain, so the stretch stays; its floor drops to 15ms instead of the
+ * parked 35ms. The 3ms<->35ms step at 25% OPP let a burst sit up to 4
+ * frames @120Hz whenever the clock stood just under the boundary; a 15ms
+ * light cadence caps that at ~2 frames while parked fmin keeps the full
+ * 35ms, so the idle savings are intact. The stretch targets eval-only
+ * traffic: commits are what burn the drain, and the light path never adds
+ * one (upcommits still pay the normal tunable rate). */
 #define RFX_D_LIGHT_EVAL_OPP_PCT	25
+#define RFX_D_LIGHT_EVAL_US		15000
 /* F5 daily: min dwell since the last up-commit before a drop (anti down-flap). */
 #define RFX_D_LITTLE_MIN_SAMPLE_US	4000
 #define RFX_D_BIG_MIN_SAMPLE_US		2000
@@ -156,18 +163,23 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_ENERGY_AWARE		1
 #define RFX_D_ENERGY_AWARE_MIN_PCT	25
 /* Daily thermal pre-cap: slide fceil -> MIN_PCT across START..FULL_MC (warmth).
- * Lower thresholds for earlier thermal intervention = less thermal head buildup
- * = lower sustained power draw under load. */
+ * 38 mC = 38C sits at the bottom of the natural 40C browse/IG plateau, so the
+ * pre-cap is active across the whole plateau: the closer the die gets to
+ * FULL (44C) the more voltage is shed. 38000 kept: it relieves a hot die
+ * while the vendor HAL / thermal_pressure are the real controllers. */
 #define RFX_D_THERM_CAP_MC		38000
 #define RFX_D_THERM_CAP_FULL_MC		44000
 #define RFX_D_THERM_CAP_MIN_PCT		55
 /* Park latch: enter fmin below ~3% (max_cap>>5), hold until EXIT_PCT for EXIT_EVALS.
- * 2 evals: ~70ms worst-case exit from fmin (park eval + two idle-cadence evals)
- * -- inside one UI interaction's frame budget, so the first touch does not
- * pay the full V/f climb out of fmin. 3 was measured-battery-safe but cost
- * up to 12 frames at 120Hz on the first stroke after a lull. */
-#define RFX_D_PARK_EXIT_PCT		12
-#define RFX_D_PARK_EXIT_EVALS		2
+ * 16%/1 eval: 12% held a parked cluster through light bursts -- the cold-climb
+ * hitch of the first frame after a lull. At 16% a parked cluster releases in
+ * one eval (~35ms idle cadence), so the next frame starts from a warm OPP.
+ * 2 evals (~70ms) was the measured-battery-safe value that traded up to
+ * 12 frames at 120Hz on the first stroke after a lull; 1 keeps the fmin
+ * dwell short without re-opening the park bounce: entry sits at ~3%, so the
+ * 3->16 exit gap is wide enough that idle jitter cannot re-enter mid-burst. */
+#define RFX_D_PARK_EXIT_PCT		16
+#define RFX_D_PARK_EXIT_EVALS		1
 
 /* ---- Util EMA: rise instant, decay time-normalised, so the time constant is
  * independent of eval rate. Period = interval removing 1/DIVISOR of the
@@ -1498,19 +1510,19 @@ static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
 			(s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC;
 		return;
 	}
-	/* Light load: stretch the cadence down to IDLE_EVAL as the committed
+	/* Light load: stretch the cadence down to LIGHT_EVAL_US as the committed
 	 * OPP falls below LIGHT_EVAL_OPP_PCT. Above it the tunable owns the
-	 * rate untouched. */
-	if (RFX_D_IDLE_EVAL_US && p->next_freq <
+	 * rate untouched. Parked fmin handled above keeps the full idle stretch. */
+	if (RFX_D_LIGHT_EVAL_US && p->next_freq <
 	    rfx_pct(p->policy->cpuinfo.max_freq, RFX_D_LIGHT_EVAL_OPP_PCT)) {
 		unsigned int opp_pct = (unsigned int)((u64)p->next_freq * 100 /
 					p->policy->cpuinfo.max_freq);
-		s64 stretch = (s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC -
+		s64 stretch = (s64)RFX_D_LIGHT_EVAL_US * NSEC_PER_USEC -
 			      base;
 
 		base += stretch * (100 - opp_pct) /
 			(100 - RFX_D_LIGHT_EVAL_OPP_PCT);
-		base = min_t(s64, base, (s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC);
+		base = min_t(s64, base, (s64)RFX_D_LIGHT_EVAL_US * NSEC_PER_USEC);
 	}
 	p->freq_update_delay_ns = base;
 }
