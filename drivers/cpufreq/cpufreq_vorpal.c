@@ -90,7 +90,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_WARMUP_FLOOR_PCT		80	/* render tier only, timed lift */
 /* Little never renders: V/f knee + a small lift so an idle cluster does
  * not bake the die before the first burst. Lowered for more idle time. */
-#define RFX_G_LITTLE_FLOOR_PCT		34
+#define RFX_G_LITTLE_FLOOR_PCT		30
 
 /* Max downward slew, pct of ceiling per 2ms. Bounds how deep a short lull digs
  * the clock; the EMA owns descent shape. Tuned with the EMA -- never loosen both. */
@@ -100,10 +100,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * gaming_mode=1, inert while gaming_mode=0. Set one to 0 to disable it at
  * build. Floors/caps are the regression-prone levers -- tune one at a time. ---- */
 #define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* gaming eval cadence */
-#define RFX_G_HISPEED_PCT_DEFAULT		62	/* F1 hispeed render floor */
+#define RFX_G_HISPEED_PCT_DEFAULT		56	/* F1 hispeed render floor (MTK: was 62, standing power) */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
-#define RFX_G_HISPEED_HOLD_US_DEFAULT		10000	/* F1 hold after last go-demand */
-#define RFX_G_TOUCH_PCT_DEFAULT			60	/* F2 input render floor */
+#define RFX_G_HISPEED_HOLD_US_DEFAULT		6000	/* F1 hold after last go-demand */
+#define RFX_G_TOUCH_PCT_DEFAULT			54	/* F2 input render floor */
 #define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
 #define RFX_G_THERM_CAP_MC_DEFAULT		80000	/* F3 pre-emptive cap start mC */
 #define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		70	/* F3 floor of the graduated cap */
@@ -316,7 +316,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* Floor for a gated (idle) cluster: at the V/f knee -- from fmin the OPP
  * transition plus rate gate turn a cold climb into a visible hitch. */
-#define RFX_G_IDLE_FLOOR_PCT		32
+#define RFX_G_IDLE_FLOOR_PCT		28
 
 /* Cluster cool-down band, hysteretic: below ENTER the platform limiter is
  * taking capacity, floors drop for relief, return at EXIT. 80 entry sits above
@@ -333,7 +333,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_COOL_TEMP_CLEAR_MC	(RFX_G_COOL_TEMP_WARM_MC - 6000)
 
 /* Relief floor once the platform is taking capacity. */
-#define RFX_G_COOL_STEADY_FLOOR_PCT	42
+#define RFX_G_COOL_STEADY_FLOOR_PCT	36
 
 /* Depth at which relief is fully applied: between ENTER and DEEP floors slide
  * down proportionally so the clock walks with the ceiling. DEEP stays 10 points
