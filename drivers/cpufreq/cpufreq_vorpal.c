@@ -81,13 +81,20 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* Gaming floors, percent of effective ceiling (no caps: demand tracks up to
  * fceil). Floors are the resting-power dial; a floor on a render tier raises
- * valley heat, drops fceil, and costs frames. 42/44 tuned for power efficiency
- * with maintained gaming performance. */
-#define RFX_G_PRIME_FLOOR_PCT		42	/* spill tier, resting power */
-#define RFX_G_BIG_FLOOR_PCT		44	/* render tier (2-tier: top) */
+ * valley heat, drops fceil, and costs frames. 42/44 -> 40/38: the doubled
+ * EMA tau already smooths inter-frame troughs, so the floors only bound
+ * true lulls -- trimming them gives the lulls back toward idle without
+ * re-opening the inter-frame collapse, pulling 6W+ sessions toward the
+ * 4-5W target. */
+#define RFX_G_PRIME_FLOOR_PCT		38	/* spill tier, standing power */
+#define RFX_G_BIG_FLOOR_PCT		40	/* render tier (2-tier: top) */
 /* Render tier's warmup floor; the cool walk tapers it off linearly across the
- * latch band (COOL_DEEP to COOL_EXIT) under thermal pressure. */
-#define RFX_G_WARMUP_FLOOR_PCT		80	/* render tier only, timed lift */
+ * latch band (COOL_DEEP to COOL_EXIT) under thermal pressure. 80 -> 76: the
+ * render tier parks in the 84-88% demand band, so the lift pinned a full OPP
+ * above the scene more than it cushioned it; 76 lands at the band floor,
+ * keeping the spawn window cheap while the 50ms EMA carries the inter-frame
+ * shape. */
+#define RFX_G_WARMUP_FLOOR_PCT		76	/* render tier only, timed lift */
 /* Little never renders: V/f knee + a small lift so an idle cluster does
  * not bake the die before the first burst. Lowered for more idle time. */
 #define RFX_G_LITTLE_FLOOR_PCT		30
@@ -100,13 +107,13 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * gaming_mode=1, inert while gaming_mode=0. Set one to 0 to disable it at
  * build. Floors/caps are the regression-prone levers -- tune one at a time. ---- */
 #define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* gaming eval cadence */
-#define RFX_G_HISPEED_PCT_DEFAULT		56	/* F1 hispeed render floor (MTK: was 62, standing power) */
+#define RFX_G_HISPEED_PCT_DEFAULT		48	/* F1 hispeed render floor (was 56: on 120Hz/RT-biased SoCs >=85 crossings are ~30% of samples, so the 6s hold made 56 a near-standing floor; 48 cushions the post-spike valleys one OPP lower) */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
-#define RFX_G_HISPEED_HOLD_US_DEFAULT		6000	/* F1 hold after last go-demand */
+#define RFX_G_HISPEED_HOLD_US_DEFAULT		4000	/* F1 hold after last go-demand (was 6000: shorter dwell, the demand track owns the next spike) */
 #define RFX_G_TOUCH_PCT_DEFAULT			54	/* F2 input render floor */
 #define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
-#define RFX_G_THERM_CAP_MC_DEFAULT		80000	/* F3 pre-emptive cap start mC */
-#define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		70	/* F3 floor of the graduated cap */
+#define RFX_G_THERM_CAP_MC_DEFAULT		85000	/* F3 pre-emptive cap start mC (was 80000: 80C sat at the platform-throttle floor on MTK parts, so the governor cap compounded the vendor walk on every hot session; 85C engages later and sheds less) */
+#define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		78	/* F3 floor of the graduated cap (was 70: 70 dropped one OPP under the steady relief floor, stepping the clock at each F3 entry; 78 keeps the relief walk continuous) */
 #define RFX_G_MIN_SAMPLE_US_DEFAULT		4000	/* F5 min dwell before a drop */
 #define RFX_G_DOWN_FAST_PCT_DEFAULT		2	/* F6 fast-phase shed rate */
 #define RFX_G_DOWN_FAST_MS_DEFAULT		80	/* F6 fast-phase length */
@@ -301,17 +308,17 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * quiet stretches, so it is not measured from the burst that consumed the arm. */
 #define RFX_GAMING_REARM_QUIET_NS	(3000 * NSEC_PER_MSEC)
 
-/* Frame-risk re-arm of the warmup window: one crossing arms one 40ms boost;
+/* Frame-risk re-arm of the warmup window: one crossing arms one 120ms boost;
  * demand must fall under CLEAR before another can arm. CLEAR must stay below
  * TRIGGER (60) or the latch parks and never re-arms. ARM sits at the
  * saturation band the render tier parks in mid-game: below ARM it re-armed on
  * nearly every 250us eval (Qualcomm trace: 85-87% of samples at >=85% with
  * fmax 2.9GHz un-throttled) and the warmup floor became a standing state;
- * at ARM the boost fires only on a genuine scene-change burst, where one
- * 40ms lift spans the spike without riding it. */
+ * at ARM the boost fires only on a genuine scene-change burst, where the
+ * window spans the spike without riding it. */
 #define RFX_G_RISK_ARM_PCT		85
 #define RFX_G_RISK_CLEAR_PCT		50
-#define RFX_G_RISK_BOOST_NS		(40 * NSEC_PER_MSEC)
+#define RFX_G_RISK_BOOST_NS		(120 * NSEC_PER_MSEC)	/* one boost covers a scene-change burst (openscope: spike + heavy frames, <150ms); 40ms lapsed mid-burst and the tail ran underclocked -- the measured openscope FPS dip */
 
 /* Gaming demand gate -- the only demand threshold in the gaming band. Below GATE
  * a cluster is idle: floor releases, no lift may arm; rejoins above GATE_EXIT.
@@ -708,7 +715,7 @@ static void rfx_warmup_arm(struct rfx_policy *p, unsigned int demand_pct,
 /*
  * Frame-risk re-arm. After the warmup window lapses the render clusters run
  * on the bare baseline floor with no transient response left. One crossing
- * above ARM arms one 40ms boost; demand must fall under CLEAR (or the
+ * above ARM arms one boost window; demand must fall under CLEAR (or the
  * window lapse) before another arms. Already at or above the floor buys
  * nothing -- a lift there only pins the clock.
  */
