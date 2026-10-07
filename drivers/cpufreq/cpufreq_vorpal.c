@@ -194,9 +194,14 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * independent of eval rate. Period = interval removing 1/DIVISOR of the
  * remaining error. ---- */
 #define RFX_EMA_DECAY_PERIOD_NS		250000	/* one gaming eval */
-/* Gaming decay: tau ~25ms, must span more than one frame gap or the inter-frame
- * trough collapses the render floor every frame. */
-#define RFX_EMA_GAMING_DIVISOR		100
+/* Gaming decay: tau ~50ms, must span multiple frame gaps at 120fps (8.3ms)
+ * or the inter-frame trough collapses the render floor every frame. At 25ms
+ * (divisor 100) the EMA walked down 36 demand points in ~40ms, collapsing
+ * the clock from fmax to 2-core OPPs mid-scene (measured on Qualcomm 8 Gen 3,
+ * frame drop at 4180.937-4180.989). 50ms spans ~6 frame periods: fast enough
+ * to track genuine scene changes within one frame budget, slow enough that
+ * inter-frame PELT jitter cannot walk the clock off the render tier. */
+#define RFX_EMA_GAMING_DIVISOR		200
 	/* Decay step cap. 40 (10ms, two frame gaps): a gap only discards excess
 	 * decay past a 120fps frame period, so normal inter-frame gaps step out
 	 * instead of jumping 120->60. 32 (one frame gap) collapsed the floor. */
