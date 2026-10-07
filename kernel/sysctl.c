@@ -136,20 +136,25 @@ static const int cap_last_cap = CAP_LAST_CAP;
 
 #ifdef CONFIG_SCHED_BORE
 extern u8   sched_bore;
-extern u8   sched_burst_exclude_kthreads;
-extern u8   sched_burst_smoothness_long;
-extern u8   sched_burst_smoothness_short;
-extern u8   sched_burst_fork_atavistic;
+extern u8   sched_burst_inherit_type;
+extern u8   sched_burst_protect_slice_lv;
+extern u8   sched_burst_smoothness;
 extern u8   sched_burst_penalty_offset;
 extern uint sched_burst_penalty_scale;
-extern uint sched_burst_penalty_max;
 extern uint sched_burst_cache_lifetime;
+extern uint sched_credit_cap_us;
 extern int sched_bore_update_handler(struct ctl_table *table, int write,
 		void __user *buffer, size_t *lenp, loff_t *ppos);
-static int __maybe_unused sixty_four     = 64;
+extern int sched_burst_inherit_type_update_handler(struct ctl_table *table,
+		int write, void __user *buffer, size_t *lenp, loff_t *ppos);
+extern int sched_burst_protect_slice_lv_update_handler(struct ctl_table *table,
+		int write, void __user *buffer, size_t *lenp, loff_t *ppos);
+extern int sched_credit_cap_us_update_handler(struct ctl_table *table,
+		int write, void __user *buffer, size_t *lenp, loff_t *ppos);
+static int __maybe_unused three        = 3;
+static int __maybe_unused sixty_four   = 64;
 static int __maybe_unused maxval_12_bits = 4095;
-static int __maybe_unused burst_pen_min  = 4;
-static int __maybe_unused burst_pen_max  = 156;
+static int __maybe_unused maxval_1_million = 1000000;
 #endif // CONFIG_SCHED_BORE
 
 /*
@@ -1773,43 +1778,25 @@ static struct ctl_table kern_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 	{
-		.procname	= "sched_burst_exclude_kthreads",
-		.data		= &sched_burst_exclude_kthreads,
+		/* 7.0.0 fork-time burst inheritance: 0 = off,
+		 * 1 = direct parent, 2 = ancestor-hub lineage. */
+		.procname	= "sched_burst_inherit_type",
+		.data		= &sched_burst_inherit_type,
 		.maxlen		= sizeof(u8),
 		.mode		= 0644,
-		.proc_handler = proc_dou8vec_minmax,
+		.proc_handler = sched_burst_inherit_type_update_handler,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE,
+		.extra2		= SYSCTL_TWO,
 	},
 	{
-		.procname	= "sched_burst_smoothness_long",
-		.data		= &sched_burst_smoothness_long,
+		/* 7.0.0: 0-3, 3 is the strongest decay smoothing. */
+		.procname	= "sched_burst_smoothness",
+		.data		= &sched_burst_smoothness,
 		.maxlen		= sizeof(u8),
 		.mode		= 0644,
 		.proc_handler = proc_dou8vec_minmax,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE,
-	},
-	{
-		.procname	= "sched_burst_smoothness_short",
-		.data		= &sched_burst_smoothness_short,
-		.maxlen		= sizeof(u8),
-		.mode		= 0644,
-		.proc_handler = proc_dou8vec_minmax,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE,
-	},
-	{
-		.procname	= "sched_burst_fork_atavistic",
-		.data		= &sched_burst_fork_atavistic,
-		.maxlen		= sizeof(u8),
-		.mode		= 0644,
-		.proc_handler = proc_dou8vec_minmax,
-		.extra1		= SYSCTL_ZERO,
-		/* Pinned off: the topological walk recurses over unbounded
-		 * children lists under read_lock(&tasklist_lock). See the
-		 * BORE knob comment in kernel/sched/fair.c. */
-		.extra2		= SYSCTL_ZERO,
+		.extra2		= &three,
 	},
 	{
 		.procname	= "sched_burst_penalty_offset",
@@ -1830,20 +1817,37 @@ static struct ctl_table kern_table[] = {
 		.extra2		= &maxval_12_bits,
 	},
 	{
-		.procname	= "sched_burst_penalty_max",
-		.data		= &sched_burst_penalty_max,
-		.maxlen		= sizeof(uint),
-		.mode		= 0644,
-		.proc_handler = proc_douintvec_minmax,
-		.extra1		= &burst_pen_min,
-		.extra2		= &burst_pen_max,
-	},
-	{
+		/*
+		 * BORE 7.0.0: retained for the cached-inheritance path.
+		 * This tree's live-penalty inheritance does not read it,
+		 * so it is inert and kept for user-space compatibility.
+		 */
 		.procname	= "sched_burst_cache_lifetime",
 		.data		= &sched_burst_cache_lifetime,
 		.maxlen		= sizeof(uint),
 		.mode		= 0644,
 		.proc_handler = proc_douintvec,
+	},
+	{
+		/* 7.0.0: 0 off, 1 conditional slice protection,
+		 * 2 + prefer-heavier on ties. */
+		.procname	= "sched_burst_protect_slice_lv",
+		.data		= &sched_burst_protect_slice_lv,
+		.maxlen		= sizeof(u8),
+		.mode		= 0644,
+		.proc_handler = sched_burst_protect_slice_lv_update_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= &three,
+	},
+	{
+		/* 7.0.0: wakeup sleep-credit cap in microseconds (0 = off). */
+		.procname	= "sched_credit_cap_us",
+		.data		= &sched_credit_cap_us,
+		.maxlen		= sizeof(uint),
+		.mode		= 0644,
+		.proc_handler = sched_credit_cap_us_update_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= &maxval_1_million,
 	},
 #endif // CONFIG_SCHED_BORE
 	{

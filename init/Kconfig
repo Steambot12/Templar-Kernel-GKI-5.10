@@ -1291,6 +1291,11 @@ config SCHED_BORE
 	  With a little impact to scheduling fairness, it may improve
 	  responsiveness especially under heavy background workload.
 
+	  7.0.0 adds a sleep credit (sched_credit_cap_us) that shortens the
+	  deadline of a freshly woken task by its capped sleep time, and
+	  slice-protection overrides (sched_burst_protect_slice_lv,
+	  sched_burst_inherit_type, sched_burst_smoothness).
+
 	  If unsure, say Y here.
 
 config SCHED_AUTOGROUP

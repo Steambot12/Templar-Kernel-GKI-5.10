@@ -128,7 +128,12 @@ static void __unhash_process(struct task_struct *p, bool group_dead)
 		detach_pid(p, PIDTYPE_SID);
 
 		list_del_rcu(&p->tasks);
+#ifdef CONFIG_SCHED_BORE
+		/* 7.0.0: sibling list is walked RCU-side, remove RCU-side. */
+		list_del_rcu(&p->sibling);
+#else
 		list_del_init(&p->sibling);
+#endif /* CONFIG_SCHED_BORE */
 		__this_cpu_dec(process_counts);
 	}
 	list_del_rcu(&p->thread_group);
