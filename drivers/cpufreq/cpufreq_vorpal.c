@@ -129,14 +129,23 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_LITTLE_LIFT_PCT		62
 #define RFX_D_LITTLE_DROP_PCT		48
 /* Big/Prime daily caps + shared sustained latch. Base 56% trims the
- * standing idle-tier draw; the latch lifts to 68% under sustained demand
- * so bursts (app launch, scroll) finish without chasing fmax. */
+ * standing idle-tier draw; the latch lifts under sustained demand so
+ * bursts (app launch, scroll) finish without chasing fmax.
+ *
+ * On Qualcomm 120Hz, RT util from SurfaceFlinger/vsync kthreads rides
+ * near-constantly in cpu_util_rt(), inflating the demand_pct baseline by
+ * ~$5-8 (of 100). The 25% DVFS headroom then pushes sustained util into
+ * the 48-62 band, so the 68% sustained cap flaps on near-idle load.
+ * Dropping the latch to 62% caps the max fceil commit at ~3.8 GHz
+ * (vs 4.0 GHz at 68%) on a 2.1 GHz base / 4 GHz turbo prime, saving
+ * ~$28 mW/CPU under RT bias while keeping burst headroom for real
+ * foreground work. Lift/drop skew preserved: on ~51% real, off ~42%. */
 #define RFX_D_BIG_CAP_PCT		56
 #define RFX_D_PRIME_CAP_PCT		56
-#define RFX_D_BIG_LIFT_PCT		68
-#define RFX_D_BIG_DROP_PCT		50
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	68
-#define RFX_D_PRIME_SUSTAINED_CAP_PCT	68
+#define RFX_D_BIG_LIFT_PCT		62
+#define RFX_D_BIG_DROP_PCT		46
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	62
+#define RFX_D_PRIME_SUSTAINED_CAP_PCT	62
 
 /* ---- Daily-only power features: applied while gaming_mode=0, inert while
  * gaming (the gaming band never reads them). Any 0 disables at build. ---- */
