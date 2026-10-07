@@ -77,7 +77,7 @@ CONFIG_SETEND_EMULATION=y
 CONFIG_RANDOMIZE_BASE=y
 # CONFIG_RANDOMIZE_MODULE_REGION_FULL is not set
 # CONFIG_STACKPROTECTOR_PER_TASK is not set
-CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none noirqdebug loglevel=3 nohz=on mem_sleep_default=shallow transparent_hugepage=always cgroup_enable=memory workqueue.power_efficient=1 cpuidle.governor=nap vm.swappiness=5 watermark_scale_factor=125 vm.dirty_ratio=10 vm.dirty_background_ratio=2 vm.dirty_expire_centisecs=500 kernel.panic_on_oom=0 vm.min_free_kbytes=51200"
+CONFIG_CMDLINE="stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cgroup.memory=nokmem noirqdebug audit=0 loglevel=3 rcu_nocbs=all rcutree.rcu_idle_gp_delay=3 timer_migration=1 nohz=on transparent_hugepage=madvise cpuidle.off=0 workqueue.power_efficient=1 sched_util_clamp_min_rt_default=640 cpuidle.governor=nap"
 CONFIG_CMDLINE_EXTEND=y
 # CONFIG_DMI is not set
 CONFIG_HIBERNATION=y
