@@ -87,7 +87,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * re-opening the inter-frame collapse, pulling 6W+ sessions toward the
  * 4-5W target. */
 #define RFX_G_PRIME_FLOOR_PCT		38	/* spill tier, standing power */
-#define RFX_G_BIG_FLOOR_PCT		40	/* render tier (2-tier: top) */
+#define RFX_G_BIG_FLOOR_PCT		44	/* render tier (2-tier: top) -- restored from 40 (QC trace): 40% of fceil rounds down to a still-lower OPP on coarse-OPP tables; 44 holds the band bottom without re-pinning an OPP above the 84-88% park band */
 /* Render tier's warmup floor; the cool walk tapers it off linearly across the
  * latch band (COOL_DEEP to COOL_EXIT) under thermal pressure. 80 -> 76: the
  * render tier parks in the 84-88% demand band, so the lift pinned a full OPP
@@ -107,7 +107,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * gaming_mode=1, inert while gaming_mode=0. Set one to 0 to disable it at
  * build. Floors/caps are the regression-prone levers -- tune one at a time. ---- */
 #define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* gaming eval cadence */
-#define RFX_G_HISPEED_PCT_DEFAULT		48	/* F1 hispeed render floor (was 56: on 120Hz/RT-biased SoCs >=85 crossings are ~30% of samples, so the 6s hold made 56 a near-standing floor; 48 cushions the post-spike valleys one OPP lower) */
+#define RFX_G_HISPEED_PCT_DEFAULT		56	/* F1 hispeed render floor (was 48 on a QC trace: on coarse-OPP SoCs such as MediaTek, 48% of fceil rounds down (F4) two OPPs below the scene band, so inter-frame valleys dropped the render tier; MTK carried 62 for this reason. 56 floors the valley at the band bottom on coarse tables; on fine QC steps it sits ~230MHz above 48, and the power mechanism stays the 4000us hold, not this floor) */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
 #define RFX_G_HISPEED_HOLD_US_DEFAULT		4000	/* F1 hold after last go-demand (was 6000: shorter dwell, the demand track owns the next spike) */
 #define RFX_G_TOUCH_PCT_DEFAULT			54	/* F2 input render floor */
