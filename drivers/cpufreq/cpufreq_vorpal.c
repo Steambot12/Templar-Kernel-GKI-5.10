@@ -108,7 +108,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * build. Floors/caps are the regression-prone levers -- tune one at a time. ---- */
 #define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* gaming eval cadence */
 #define RFX_G_HISPEED_PCT_DEFAULT		56	/* F1 hispeed render floor (was 48 on a QC trace: on coarse-OPP SoCs such as MediaTek, 48% of fceil rounds down (F4) two OPPs below the scene band, so inter-frame valleys dropped the render tier; MTK carried 62 for this reason. 56 floors the valley at the band bottom on coarse tables; on fine QC steps it sits ~230MHz above 48, and the power mechanism stays the 4000us hold, not this floor) */
-#define RFX_G_GO_HISPEED_PCT_DEFAULT		85	/* F1 arm demand (skewed pct) */
+#define RFX_G_GO_HISPEED_PCT_DEFAULT		90	/* F1 arm demand (skewed pct). 90 sits at the TOP of the 84-88 park band: while the render tier parks mid-scene the 56 floor would re-arm its 4ms hold every eval and stand as a floor, the power source of the hot 6W+ gaming sessions. 90 only crosses on a genuine scene-change spike past the parked band, so the boost is rare; 48 (below the park band, QC-tuned) re-fired on every eval. */
 #define RFX_G_HISPEED_HOLD_US_DEFAULT		4000	/* F1 hold after last go-demand (was 6000: shorter dwell, the demand track owns the next spike) */
 #define RFX_G_TOUCH_PCT_DEFAULT			54	/* F2 input render floor */
 #define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
