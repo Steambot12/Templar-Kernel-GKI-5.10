@@ -131,8 +131,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_LITTLE_FLOOR_REARM_PCT	6	/* re-arm only after parking (hysteresis) */
 #define RFX_D_LITTLE_FLOOR_NS		(80 * NSEC_PER_MSEC)	/* window length */
 /* Sustained caps: long foreground work at lower voltage, above the lift gate so
- * the latch cannot flap. Latches skewed 1.25x (on ~60% real, off ~46%). */
-#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	66
+ * the latch cannot flap. Latches skewed 1.25x (on ~60% real, off ~46%).
+ * Little sustained 62% (was 66%): on QC with the RT uclamp floor plus the 25%
+ * DVFS margin, screen-on idle Little demand rests ~35-45% skewed, so the 66%
+ * cap sat one OPP above the load all day; 62% trims the resting draw while
+ * the 62/48 lift/drop skew still carries compositor/IME work. */
+#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	62
 #define RFX_D_LITTLE_LIFT_PCT		62
 #define RFX_D_LITTLE_DROP_PCT		48
 /* Big/Prime daily caps + shared sustained latch. Base 56% trims the
