@@ -48,6 +48,31 @@ static int proc_do_uts_string(struct ctl_table *table, int write,
 	down_read(&uts_sem);
 	memcpy(tmp_data, get_uts(table), sizeof(tmp_data));
 	up_read(&uts_sem);
+
+	if (!write && table->procname && !strcmp(table->procname, "osrelease")) {
+		const char *comm = current->comm;
+
+		if (strstr(comm, "bpfloader") ||
+		    strstr(comm, "netbpfload") ||
+		    strstr(comm, "netd") ||
+		    strstr(comm, "init") ||
+		    strstr(comm, "vintf") ||
+		    strstr(comm, "system_server") ||
+		    strstr(comm, "modprobe") ||
+		    strstr(comm, "ueventd") ||
+		    strstr(comm, "clatd")) {
+			char fake[__NEW_UTS_LEN + 1];
+			const char *dash = strchr(tmp_data, '-');
+
+			if (dash)
+				snprintf(fake, sizeof(fake), "5.10.271%s", dash);
+			else
+				snprintf(fake, sizeof(fake), "5.10.271");
+
+			strlcpy(tmp_data, fake, sizeof(tmp_data));
+		}
+	}
+
 	r = proc_dostring(&uts_table, write, buffer, lenp, ppos);
 
 	if (write) {

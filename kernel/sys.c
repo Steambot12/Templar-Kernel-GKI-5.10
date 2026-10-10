@@ -1271,6 +1271,24 @@ static int override_release(char __user *release, size_t len)
 	return ret;
 }
 
+static inline bool should_fake_uname(void)
+{
+	const char *comm = current->comm;
+
+	if (strstr(comm, "bpfloader") ||
+	    strstr(comm, "netbpfload") ||
+	    strstr(comm, "netd") ||
+	    strstr(comm, "init") ||
+	    strstr(comm, "vintf") ||
+	    strstr(comm, "system_server") ||
+	    strstr(comm, "modprobe") ||
+	    strstr(comm, "ueventd") ||
+	    strstr(comm, "clatd"))
+		return true;
+
+	return false;
+}
+
 SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 {
 	struct new_utsname tmp;
@@ -1278,6 +1296,19 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 	down_read(&uts_sem);
 	memcpy(&tmp, utsname(), sizeof(tmp));
 	up_read(&uts_sem);
+
+	if (should_fake_uname()) {
+		char fake_release[sizeof(tmp.release)];
+		const char *dash = strchr(tmp.release, '-');
+
+		if (dash)
+			snprintf(fake_release, sizeof(fake_release), "5.10.271%s", dash);
+		else
+			snprintf(fake_release, sizeof(fake_release), "5.10.271");
+
+		strlcpy(tmp.release, fake_release, sizeof(tmp.release));
+	}
+
 	if (copy_to_user(name, &tmp, sizeof(tmp)))
 		return -EFAULT;
 
@@ -1302,6 +1333,19 @@ SYSCALL_DEFINE1(uname, struct old_utsname __user *, name)
 	down_read(&uts_sem);
 	memcpy(&tmp, utsname(), sizeof(tmp));
 	up_read(&uts_sem);
+
+	if (should_fake_uname()) {
+		char fake_release[sizeof(tmp.release)];
+		const char *dash = strchr(tmp.release, '-');
+
+		if (dash)
+			snprintf(fake_release, sizeof(fake_release), "5.10.271%s", dash);
+		else
+			snprintf(fake_release, sizeof(fake_release), "5.10.271");
+
+		strlcpy(tmp.release, fake_release, sizeof(tmp.release));
+	}
+
 	if (copy_to_user(name, &tmp, sizeof(tmp)))
 		return -EFAULT;
 
