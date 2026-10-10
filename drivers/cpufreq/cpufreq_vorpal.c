@@ -103,7 +103,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_LITTLE_FLOOR_PCT		32
 #define RFX_D_LITTLE_FLOOR_ARM_PCT	15
 #define RFX_D_LITTLE_FLOOR_REARM_PCT	6
-#define RFX_D_LITTLE_FLOOR_NS		(80 * NSEC_PER_MSEC)
+#define RFX_D_LITTLE_FLOOR_NS		(150 * NSEC_PER_MSEC)
 #define RFX_D_LITTLE_SUSTAINED_CAP_PCT	62
 #define RFX_D_LITTLE_LIFT_PCT		62
 #define RFX_D_LITTLE_DROP_PCT		48
@@ -114,6 +114,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_BIG_DROP_PCT		46
 #define RFX_D_BIG_SUSTAINED_CAP_PCT	62
 #define RFX_D_PRIME_SUSTAINED_CAP_PCT	62
+#define RFX_D_BURST_TRIGGER_PCT		78	/* App launch / heavy UI burst threshold */
+#define RFX_D_BURST_CAP_PCT		80	/* High transient cap to eliminate launch jitter */
 
 /* Daily power and idle features */
 #define RFX_D_IDLE_EVAL_US		35000	/* Idle evaluation cadence while parked */
@@ -123,12 +125,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_BIG_MIN_SAMPLE_US		2000
 #define RFX_D_ENERGY_AWARE		1
 #define RFX_D_ENERGY_AWARE_MIN_PCT	25
-#define RFX_D_THERM_CAP_MC		38000
-#define RFX_D_THERM_CAP_FULL_MC		44000
-#define RFX_D_THERM_CAP_MIN_PCT		55
+#define RFX_D_THERM_CAP_MC		43000
+#define RFX_D_THERM_CAP_FULL_MC		49000
+#define RFX_D_THERM_CAP_MIN_PCT		60
 #define RFX_D_PARK_EXIT_PCT		16
 #define RFX_D_PARK_EXIT_EVALS		1
-#define RFX_D_TOUCH_WINDOW_MS		150	/* Interactive touch window for smooth scrolling */
+#define RFX_D_TOUCH_WINDOW_MS		350	/* Interactive touch window for smooth scrolling */
 
 /* ---- Util EMA: rise instant, decay time-normalised, so the time constant is
  * independent of eval rate. Period = interval removing 1/DIVISOR of the
@@ -1232,14 +1234,16 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				p->big_cap_lifted = true;
 			else if (demand_pct <= RFX_D_BIG_DROP_PCT)
 				p->big_cap_lifted = false;
-			if (p->big_cap_lifted || touch)
+			if (demand_pct >= RFX_D_BURST_TRIGGER_PCT)
+				cap = rfx_pct(fceil, RFX_D_BURST_CAP_PCT);
+			else if (p->big_cap_lifted || touch)
 				cap = rfx_pct(fceil, prime ?
 					RFX_D_PRIME_SUSTAINED_CAP_PCT :
 					RFX_D_BIG_SUSTAINED_CAP_PCT);
 
 			/* Interactive touch floor for Big/Prime to eliminate scroll jitter */
 			if (touch) {
-				unsigned int touch_fl = rfx_pct(fceil, prime ? 28 : 38);
+				unsigned int touch_fl = rfx_pct(fceil, prime ? 32 : 42);
 
 				if (freq < touch_fl)
 					freq = touch_fl;
@@ -1379,8 +1383,8 @@ static inline void rfx_ignore_dl_rate_limit(struct rfx_cpu *rfx_c)
 /* Rate limiting                                                         */
 /* ===================================================================== */
 
-/* Set the active down-rate-limit for this update (long while gaming). */
-static inline void rfx_set_down_delay(struct rfx_policy *p, bool gaming)
+/* Set the active down-rate-limit for this update (long while gaming, stabilized on touch in daily). */
+static inline void rfx_set_down_delay(struct rfx_policy *p, bool gaming, u64 time)
 {
 	if (gaming) {
 		p->down_rate_delay_ns = (s64)RFX_GAMING_DOWN_US * NSEC_PER_USEC;
@@ -1389,12 +1393,19 @@ static inline void rfx_set_down_delay(struct rfx_policy *p, bool gaming)
 		p->min_sample_ns =
 			(s64)RFX_G_MIN_SAMPLE_US_DEFAULT * NSEC_PER_USEC;
 	} else {
-		p->down_rate_delay_ns =
-			(s64)p->tunables->down_rate_limit_us * NSEC_PER_USEC;
-		/* F5 daily: small dwell since last up-commit (anti down-flap). */
-		p->min_sample_ns = (s64)(p->is_little ?
-			RFX_D_LITTLE_MIN_SAMPLE_US :
-			RFX_D_BIG_MIN_SAMPLE_US) * NSEC_PER_USEC;
+		bool touch = rfx_touch_active(time, (u64)RFX_D_TOUCH_WINDOW_MS * NSEC_PER_MSEC);
+
+		if (touch && !p->is_little) {
+			p->down_rate_delay_ns = (s64)8000 * NSEC_PER_USEC;
+			p->min_sample_ns = (s64)4000 * NSEC_PER_USEC;
+		} else {
+			p->down_rate_delay_ns =
+				(s64)p->tunables->down_rate_limit_us * NSEC_PER_USEC;
+			/* F5 daily: small dwell since last up-commit (anti down-flap). */
+			p->min_sample_ns = (s64)(p->is_little ?
+				RFX_D_LITTLE_MIN_SAMPLE_US :
+				RFX_D_BIG_MIN_SAMPLE_US) * NSEC_PER_USEC;
+		}
 	}
 }
 
@@ -1542,7 +1553,7 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	p->filt_util = rfx_ema(p->filt_util, max_util, time, &p->last_ema_ns,
 			       gaming);
 
-	rfx_set_down_delay(p, gaming);
+	rfx_set_down_delay(p, gaming, time);
 	rfx_pol_up_delay(p, gaming);
 
 	/*
@@ -2676,6 +2687,9 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_D_LITTLE_SUSTAINED_CAP_PCT > 100);
 	BUILD_BUG_ON(RFX_D_BIG_SUSTAINED_CAP_PCT > 100);
 	BUILD_BUG_ON(RFX_D_PRIME_SUSTAINED_CAP_PCT > 100);
+	BUILD_BUG_ON(RFX_D_BIG_SUSTAINED_CAP_PCT > RFX_D_BURST_CAP_PCT);
+	BUILD_BUG_ON(RFX_D_BURST_CAP_PCT > 100);
+	BUILD_BUG_ON(RFX_D_BURST_TRIGGER_PCT > 100);
 	BUILD_BUG_ON(RFX_D_ENERGY_AWARE > 1);
 	BUILD_BUG_ON(RFX_D_ENERGY_AWARE_MIN_PCT > 100);
 	BUILD_BUG_ON(RFX_D_THERM_CAP_MIN_PCT > 100);
