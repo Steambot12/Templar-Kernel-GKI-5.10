@@ -7959,6 +7959,19 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	}
 
 	/*
+	 * BACKPORT (Linux 6.12 EAS fast-path):
+	 * If prev_cpu has at most one running task and comfortably fits the
+	 * waking task's capacity requirement, bypass the expensive multi-domain
+	 * compute_energy() traversal and settle on prev_cpu immediately.
+	 */
+	if (cpu_rq(prev_cpu)->nr_running <= 1 &&
+	    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
+	    task_fits_cpu(p, prev_cpu)) {
+		rcu_read_unlock();
+		return prev_cpu;
+	}
+
+	/*
 	 * Energy-aware wake-up happens on the lowest sched_domain starting
 	 * from sd_asym_cpucapacity spanning over this_cpu and prev_cpu.
 	 */
@@ -8083,13 +8096,26 @@ unlock:
 
 	/*
 	 * Pick the best CPU if prev_cpu cannot be used, or if it saves at
-	 * least 6% of the energy used by prev_cpu.
+	 * least the required energy margin.
+	 *
+	 * BACKPORT (Linux 6.12 dynamic energy margin):
+	 * Scale the migration threshold by task utilization so lightweight
+	 * tasks (UI events, touch, background threads) do not oscillate between
+	 * CPU clusters over tiny marginal energy deltas.
 	 */
 	if (prev_delta == ULONG_MAX)
 		return best_energy_cpu;
 
-	if ((prev_delta - best_delta) > ((prev_delta + base_energy) >> 4))
-		return best_energy_cpu;
+	{
+		unsigned long margin = (prev_delta + base_energy) >> 4;
+		unsigned long task_util = task_util_est(p);
+
+		if (task_util < 128)
+			margin += (margin >> 1); /* +50% margin for small tasks to prevent thrashing */
+
+		if ((prev_delta - best_delta) > margin)
+			return best_energy_cpu;
+	}
 
 	return prev_cpu;
 
