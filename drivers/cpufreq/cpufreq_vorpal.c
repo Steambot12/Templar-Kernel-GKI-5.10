@@ -58,13 +58,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Tunable defaults (KMI-safe: plain #defines).                          */
 /* ===================================================================== */
 
-/* Cluster identification by arch capacity. */
+/* Cluster identification by arch capacity */
 #define RFX_LITTLE_CAP_THRESHOLD	614
 #define RFX_PRIME_CAP_THRESHOLD		1000
 
-/* Daily eval rate limits (us): slow idle cadence; the sub-ms up-rate gate
- * still lets an interaction climb on the next eval. Idle battery is owned by
- * the adaptive park rate (RFX_D_IDLE_EVAL_US), not these. */
+/* Daily evaluation rate limits (us) */
 #define RFX_LITTLE_RATE_US		3000
 #define RFX_LITTLE_UP_US		200
 #define RFX_LITTLE_DOWN_US		3000
@@ -73,84 +71,43 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_BIG_UP_US			0
 #define RFX_BIG_DOWN_US			2500
 
-/* Gaming eval rate. Measured-stable; do not raise without an FPS measurement. */
+/* Gaming evaluation rate and down-rate gate */
 #define RFX_FAST_RATE_US		250
-
-/* Gaming down-rate gate. Only ever shorten: widening it ratchets the descent. */
 #define RFX_GAMING_DOWN_US		3000
 
-/* Gaming floors, percent of effective ceiling (no caps: demand tracks up to
- * fceil). Floors are the resting-power dial; a floor on a render tier raises
- * valley heat, drops fceil, and costs frames. 42/44 -> 40/38: the doubled
- * EMA tau already smooths inter-frame troughs, so the floors only bound
- * true lulls -- trimming them gives the lulls back toward idle without
- * re-opening the inter-frame collapse, pulling 6W+ sessions toward the
- * 4-5W target. */
-#define RFX_G_PRIME_FLOOR_PCT		38	/* spill tier, standing power */
-#define RFX_G_BIG_FLOOR_PCT		44	/* render tier (2-tier: top) -- restored from 40 (QC trace): 40% of fceil rounds down to a still-lower OPP on coarse-OPP tables; 44 holds the band bottom without re-pinning an OPP above the 84-88% park band */
-/* Render tier's warmup floor; the cool walk tapers it off linearly across the
- * latch band (COOL_DEEP to COOL_EXIT) under thermal pressure. 80 -> 76: the
- * render tier parks in the 84-88% demand band, so the lift pinned a full OPP
- * above the scene more than it cushioned it; 76 lands at the band floor,
- * keeping the spawn window cheap while the 50ms EMA carries the inter-frame
- * shape. */
-#define RFX_G_WARMUP_FLOOR_PCT		76	/* render tier only, timed lift */
-/* Little never renders: V/f knee + a small lift so an idle cluster does
- * not bake the die before the first burst. Lowered for more idle time. */
-#define RFX_G_LITTLE_FLOOR_PCT		30
+/* Gaming floors (percent of effective ceiling fceil) */
+#define RFX_G_PRIME_FLOOR_PCT		52	/* Prime core baseline floor */
+#define RFX_G_BIG_FLOOR_PCT		58	/* Big core render floor */
+#define RFX_G_WARMUP_FLOOR_PCT		82	/* Initial match & spawn warmup floor */
+#define RFX_G_LITTLE_FLOOR_PCT		32	/* Little cluster baseline floor */
 
-/* Max downward slew, pct of ceiling per 2ms. Bounds how deep a short lull digs
- * the clock; the EMA owns descent shape. Tuned with the EMA -- never loosen both. */
+/* Max downward slew rate (percent of ceiling per 2ms) */
 #define RFX_GAMING_DOWN_PCT_PER_2MS	1
 
-/* ---- Gaming feature constants. Built-in (no sysfs): applied while
- * gaming_mode=1, inert while gaming_mode=0. Set one to 0 to disable it at
- * build. Floors/caps are the regression-prone levers -- tune one at a time. ---- */
-#define RFX_G_EVAL_US_DEFAULT			RFX_FAST_RATE_US /* gaming eval cadence */
-#define RFX_G_HISPEED_PCT_DEFAULT		56	/* F1 hispeed render floor (was 48 on a QC trace: on coarse-OPP SoCs such as MediaTek, 48% of fceil rounds down (F4) two OPPs below the scene band, so inter-frame valleys dropped the render tier; MTK carried 62 for this reason. 56 floors the valley at the band bottom on coarse tables; on fine QC steps it sits ~230MHz above 48, and the power mechanism stays the 4000us hold, not this floor) */
-#define RFX_G_GO_HISPEED_PCT_DEFAULT		90	/* F1 arm demand (skewed pct). 90 sits at the TOP of the 84-88 park band: while the render tier parks mid-scene the 56 floor would re-arm its 4ms hold every eval and stand as a floor, the power source of the hot 6W+ gaming sessions. 90 only crosses on a genuine scene-change spike past the parked band, so the boost is rare; 48 (below the park band, QC-tuned) re-fired on every eval. */
-#define RFX_G_HISPEED_HOLD_US_DEFAULT		4000	/* F1 hold after last go-demand (was 6000: shorter dwell, the demand track owns the next spike) */
-#define RFX_G_TOUCH_PCT_DEFAULT			54	/* F2 input render floor */
-#define RFX_G_TOUCH_MS_DEFAULT			100	/* F2 input window */
-#define RFX_G_THERM_CAP_MC_DEFAULT		85000	/* F3 pre-emptive cap start mC (was 80000: 80C sat at the platform-throttle floor on MTK parts, so the governor cap compounded the vendor walk on every hot session; 85C engages later and sheds less) */
-#define RFX_G_THERM_CAP_MIN_PCT_DEFAULT		78	/* F3 floor of the graduated cap (was 70: 70 dropped one OPP under the steady relief floor, stepping the clock at each F3 entry; 78 keeps the relief walk continuous) */
-#define RFX_G_MIN_SAMPLE_US_DEFAULT		4000	/* F5 min dwell before a drop */
-#define RFX_G_DOWN_FAST_PCT_DEFAULT		2	/* F6 fast-phase shed rate */
-#define RFX_G_DOWN_FAST_MS_DEFAULT		80	/* F6 fast-phase length */
-#define RFX_G_ENERGY_AWARE_DEFAULT		1	/* F4 round-down on descent */
+/* Gaming feature constants */
+#define RFX_G_EVAL_US_DEFAULT		RFX_FAST_RATE_US
+#define RFX_G_HISPEED_PCT_DEFAULT	72	/* Hispeed floor under burst load */
+#define RFX_G_GO_HISPEED_PCT_DEFAULT	75	/* Demand threshold for hispeed */
+#define RFX_G_HISPEED_HOLD_US_DEFAULT	8000	/* Hold dwell for hispeed */
+#define RFX_G_TOUCH_PCT_DEFAULT		75	/* Touch & open-scope render floor */
+#define RFX_G_TOUCH_MS_DEFAULT		250	/* Input boost window (covers ADS scope animation) */
+#define RFX_G_THERM_CAP_MC_DEFAULT	85000	/* Pre-emptive thermal cap threshold (mC) */
+#define RFX_G_THERM_CAP_MIN_PCT_DEFAULT	78	/* Minimum floor for thermal cap */
+#define RFX_G_MIN_SAMPLE_US_DEFAULT	4000	/* Minimum dwell before drop */
+#define RFX_G_DOWN_FAST_PCT_DEFAULT	2	/* Fast-phase descent rate */
+#define RFX_G_DOWN_FAST_MS_DEFAULT	80	/* Fast-phase descent window */
+#define RFX_G_ENERGY_AWARE_DEFAULT	1	/* Round down on descent */
 
-/* ---- Daily shaping, percent of effective ceiling. Caps only: the util EMA
- * plus PELT already carry any rise. ---- */
-/* Little daily cap (compositor + IME). 60% keeps swipe/notification latency
- * down; a tighter cap made control-center pulls hitch on the Little tier. */
+/* Daily shaping (percent of effective ceiling fceil) */
 #define RFX_D_LITTLE_CAP_PCT		60
-/* Little knee floor -- a TIMED window on the wake edge, not a standing floor,
- * to carry the cold OPP climb past its transition hitch. Only Little, daily. */
 #define RFX_D_LITTLE_FLOOR_PCT		32
-#define RFX_D_LITTLE_FLOOR_ARM_PCT	15	/* arm on demand crossing up */
-#define RFX_D_LITTLE_FLOOR_REARM_PCT	6	/* re-arm only after parking (hysteresis) */
-#define RFX_D_LITTLE_FLOOR_NS		(80 * NSEC_PER_MSEC)	/* window length */
-/* Sustained caps: long foreground work at lower voltage, above the lift gate so
- * the latch cannot flap. Latches skewed 1.25x (on ~60% real, off ~46%).
- * Little sustained 62% (was 66%): on QC with the RT uclamp floor plus the 25%
- * DVFS margin, screen-on idle Little demand rests ~35-45% skewed, so the 66%
- * cap sat one OPP above the load all day; 62% trims the resting draw while
- * the 62/48 lift/drop skew still carries compositor/IME work. */
+#define RFX_D_LITTLE_FLOOR_ARM_PCT	15
+#define RFX_D_LITTLE_FLOOR_REARM_PCT	6
+#define RFX_D_LITTLE_FLOOR_NS		(80 * NSEC_PER_MSEC)
 #define RFX_D_LITTLE_SUSTAINED_CAP_PCT	62
 #define RFX_D_LITTLE_LIFT_PCT		62
 #define RFX_D_LITTLE_DROP_PCT		48
-/* Big/Prime daily caps + shared sustained latch. Base 56% trims the
- * standing idle-tier draw; the latch lifts under sustained demand so
- * bursts (app launch, scroll) finish without chasing fmax.
- *
- * On Qualcomm 120Hz, RT util from SurfaceFlinger/vsync kthreads rides
- * near-constantly in cpu_util_rt(), inflating the demand_pct baseline by
- * ~$5-8 (of 100). The 25% DVFS headroom then pushes sustained util into
- * the 48-62 band, so the 68% sustained cap flaps on near-idle load.
- * Dropping the latch to 62% caps the max fceil commit at ~3.8 GHz
- * (vs 4.0 GHz at 68%) on a 2.1 GHz base / 4 GHz turbo prime, saving
- * ~$28 mW/CPU under RT bias while keeping burst headroom for real
- * foreground work. Lift/drop skew preserved: on ~51% real, off ~42%. */
+
 #define RFX_D_BIG_CAP_PCT		56
 #define RFX_D_PRIME_CAP_PCT		56
 #define RFX_D_BIG_LIFT_PCT		62
@@ -158,48 +115,20 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_BIG_SUSTAINED_CAP_PCT	62
 #define RFX_D_PRIME_SUSTAINED_CAP_PCT	62
 
-/* ---- Daily-only power features: applied while gaming_mode=0, inert while
- * gaming (the gaming band never reads them). Any 0 disables at build. ---- */
-/* Adaptive idle eval: poll slower while parked at fmin (never below tunable).
- * 35000us = 35ms reduces eval overhead during idle, saving power. */
-#define RFX_D_IDLE_EVAL_US		35000
-/* Light-load eval: below this committed OPP the cadence stretches toward
- * RFX_D_IDLE_EVAL_US. Eval+commit traffic at light load was the measured
- * daily drain, so the stretch stays; its floor drops to 15ms instead of the
- * parked 35ms. The 3ms<->35ms step at 25% OPP let a burst sit up to 4
- * frames @120Hz whenever the clock stood just under the boundary; a 15ms
- * light cadence caps that at ~2 frames while parked fmin keeps the full
- * 35ms, so the idle savings are intact. The stretch targets eval-only
- * traffic: commits are what burn the drain, and the light path never adds
- * one (upcommits still pay the normal tunable rate). */
-#define RFX_D_LIGHT_EVAL_OPP_PCT	25
-#define RFX_D_LIGHT_EVAL_US		15000
-/* F5 daily: min dwell since the last up-commit before a drop (anti down-flap). */
+/* Daily power and idle features */
+#define RFX_D_IDLE_EVAL_US		35000	/* Idle evaluation cadence while parked */
+#define RFX_D_LIGHT_EVAL_OPP_PCT	25	/* Light load threshold for stretched cadence */
+#define RFX_D_LIGHT_EVAL_US		15000	/* Stretched cadence under light load */
 #define RFX_D_LITTLE_MIN_SAMPLE_US	4000
 #define RFX_D_BIG_MIN_SAMPLE_US		2000
-/* F4 daily: round down on descent above MIN_PCT (rises still round up, so the
- * fmin park stays fast). 25 (was 30): wider round-down band shaves more
- * voltage across the low-mid range -- the standing all-day drain. Daily only. */
 #define RFX_D_ENERGY_AWARE		1
 #define RFX_D_ENERGY_AWARE_MIN_PCT	25
-/* Daily thermal pre-cap: slide fceil -> MIN_PCT across START..FULL_MC (warmth).
- * 38 mC = 38C sits at the bottom of the natural 40C browse/IG plateau, so the
- * pre-cap is active across the whole plateau: the closer the die gets to
- * FULL (44C) the more voltage is shed. 38000 kept: it relieves a hot die
- * while the vendor HAL / thermal_pressure are the real controllers. */
 #define RFX_D_THERM_CAP_MC		38000
 #define RFX_D_THERM_CAP_FULL_MC		44000
 #define RFX_D_THERM_CAP_MIN_PCT		55
-/* Park latch: enter fmin below ~3% (max_cap>>5), hold until EXIT_PCT for EXIT_EVALS.
- * 16%/1 eval: 12% held a parked cluster through light bursts -- the cold-climb
- * hitch of the first frame after a lull. At 16% a parked cluster releases in
- * one eval (~35ms idle cadence), so the next frame starts from a warm OPP.
- * 2 evals (~70ms) was the measured-battery-safe value that traded up to
- * 12 frames at 120Hz on the first stroke after a lull; 1 keeps the fmin
- * dwell short without re-opening the park bounce: entry sits at ~3%, so the
- * 3->16 exit gap is wide enough that idle jitter cannot re-enter mid-burst. */
 #define RFX_D_PARK_EXIT_PCT		16
 #define RFX_D_PARK_EXIT_EVALS		1
+#define RFX_D_TOUCH_WINDOW_MS		150	/* Interactive touch window for smooth scrolling */
 
 /* ---- Util EMA: rise instant, decay time-normalised, so the time constant is
  * independent of eval rate. Period = interval removing 1/DIVISOR of the
@@ -276,53 +205,25 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * (>=8%) remain instant. */
 #define RFX_CEIL_FALL_DWELL_NS		(15 * NSEC_PER_MSEC)
 #define RFX_CEIL_FALL_BYPASS_PCT	8
-
-/* Warmup ramp: instant rise, linear decay back to the baseline floor. The
- * session-entry window decays over the short ramp; a re-armed window over the
- * medium one -- long enough to carry a burst transition, short enough that a
- * session of them is not a standing lift. */
-#define RFX_WARMUP_RAMP_DOWN_MS	60
+/* Warmup ramp parameters */
+#define RFX_WARMUP_RAMP_DOWN_MS		60
 #define RFX_WARMUP_REARM_RAMP_DOWN_MS	300
 
-/* Gaming warmup lifts the render floors for spawn + asset load. The write arms
- * a PENDING window only; it starts on the first demand crossing TRIGGER, never
- * under the cooling latch, one-shot per gaming_mode entry. Extends above
- * EXTEND_PCT up to MAX_NS, releases early below RELEASE_PCT; the 60ms ramp decay
- * pulls the floor back during lulls so it never becomes a standing lift.
- * Lifetime is spawn-scale: a longer entry window or cap rides the 80% floor
- * through sustained play (render demand holds 84-88%), which is a standing
- * floor, not a timed lift. */
-#define RFX_GAMING_WARMUP_NS		(400 * NSEC_PER_MSEC)
-#define RFX_GAMING_WARMUP_MAX_NS	(2000 * NSEC_PER_MSEC)
-/* 60 skewed = 48% real: low enough that inter-frame bursts re-arm the deferred
- * window before the clock drops out of the render band (65 let troughs lapse the
- * floor to baseline every lull -- the jank source). */
+/* Gaming warmup window: lifts render floors for initial match load & shaders */
+#define RFX_GAMING_WARMUP_NS		(4000 * NSEC_PER_MSEC)	/* Extended to 4s for match start */
+#define RFX_GAMING_WARMUP_MAX_NS	(10000 * NSEC_PER_MSEC)	/* Maximum extended warmup */
 #define RFX_GAMING_WARMUP_TRIGGER_PCT	60
-/* 85 skewed = spawn + asset-load band; keeps the window alive through spawn
- * without extending on a true idle lull (90 lapsed mid-load -> the freeze). */
 #define RFX_GAMING_WARMUP_EXTEND_PCT	85
 #define RFX_GAMING_WARMUP_RELEASE_PCT	40
 #define RFX_GAMING_WARMUP_RELEASE_NS	(100 * NSEC_PER_MSEC)
-/* Hard-cancel: 2 consecutive evals >= this drop the warmup floor instantly
- * (skip the cool-walk taper). Above a single asset-load burst so one spike does
- * not cancel; a sustained peg does. */
-#define RFX_GAMING_WARMUP_HARD_CANCEL_PCT	92
-#define RFX_GAMING_WARMUP_HARD_CANCEL_EVALS	2
-/* Quiet run that re-arms the deferred warmup. Must span the spawn + asset-load
- * quiet stretches, so it is not measured from the burst that consumed the arm. */
+#define RFX_GAMING_WARMUP_HARD_CANCEL_PCT	95
+#define RFX_GAMING_WARMUP_HARD_CANCEL_EVALS	10	/* Require 10 consecutive evals */
 #define RFX_GAMING_REARM_QUIET_NS	(3000 * NSEC_PER_MSEC)
 
-/* Frame-risk re-arm of the warmup window: one crossing arms one 120ms boost;
- * demand must fall under CLEAR before another can arm. CLEAR must stay below
- * TRIGGER (60) or the latch parks and never re-arms. ARM sits at the
- * saturation band the render tier parks in mid-game: below ARM it re-armed on
- * nearly every 250us eval (Qualcomm trace: 85-87% of samples at >=85% with
- * fmax 2.9GHz un-throttled) and the warmup floor became a standing state;
- * at ARM the boost fires only on a genuine scene-change burst, where the
- * window spans the spike without riding it. */
-#define RFX_G_RISK_ARM_PCT		85
+/* Frame-risk boost for abrupt scene bursts (open scope, explosions) */
+#define RFX_G_RISK_ARM_PCT		75
 #define RFX_G_RISK_CLEAR_PCT		50
-#define RFX_G_RISK_BOOST_NS		(120 * NSEC_PER_MSEC)	/* one boost covers a scene-change burst (openscope: spike + heavy frames, <150ms); 40ms lapsed mid-burst and the tail ran underclocked -- the measured openscope FPS dip */
+#define RFX_G_RISK_BOOST_NS		(250 * NSEC_PER_MSEC)	/* 250ms window covers full ADS transition */
 
 /* Gaming demand gate -- the only demand threshold in the gaming band. Below GATE
  * a cluster is idle: floor releases, no lift may arm; rejoins above GATE_EXIT.
@@ -350,25 +251,17 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_COOL_ENTER_PCT		80
 #define RFX_G_COOL_EXIT_PCT		85
 
-/* Temperature-based early cooldown entry: the limiter lags, so the latch also
- * engages when the die crosses WARM. WARM 84 sits above this SoC's 45-53C
- * sustained plateau (82 rode fceil down through the whole plateau instead of
- * letting LMH own the throttle); a truly hot die still trips early. 6C clear. */
+/* Temperature-based cooldown entry: trips when temperature crosses WARM threshold */
 #define RFX_G_COOL_TEMP_WARM_MC		84000
 #define RFX_G_COOL_TEMP_CLEAR_MC	(RFX_G_COOL_TEMP_WARM_MC - 6000)
 
-/* Relief floor once the platform is taking capacity. */
+/* Relief floor once platform thermal throttling is active */
 #define RFX_G_COOL_STEADY_FLOOR_PCT	36
 
-/* Depth at which relief is fully applied: between ENTER and DEEP floors slide
- * down proportionally so the clock walks with the ceiling. DEEP stays 10 points
- * below EXIT to keep the cap-walk band wide (68 completed the walk almost
- * instantly -> terminal FPS dip as the limiter outran the walk). */
+/* Threshold at which thermal relief is fully applied */
 #define RFX_G_COOL_DEEP_PCT		60
 
-/* Render-band thermal cap: once the limiter takes capacity the render tier sheds
- * top OPPs or it burns watts at fmax pinned flat. Slides in linearly across the
- * latch band (DEEP full, EXIT none). Render band only. */
+/* Render-band thermal cap during active throttling */
 #define RFX_G_COOL_CAP_PCT		88
 
 #define IOWAIT_BOOST_MIN		(SCHED_CAPACITY_SCALE / 8)
@@ -387,9 +280,15 @@ static inline bool rfx_gaming_enabled(void)
 	return atomic_read(&rfx_gaming) != 0;
 }
 
-/* Last input-event timestamp (sched_clock ns), stamped by the input handler
- * while gaming. Consumed only by the F2 touch-boost floor; inert otherwise. */
+/* Last input-event timestamp (sched_clock ns), stamped by the input handler */
 static atomic64_t rfx_input_ts = ATOMIC64_INIT(0);
+
+static inline bool rfx_touch_active(u64 time, u64 window_ns)
+{
+	u64 ts = (u64)atomic64_read(&rfx_input_ts);
+
+	return (ts != 0 && time >= ts && (time - ts) < window_ns);
+}
 
 
 /* Emergency thermal cap percent (100 = inactive). Latched with hysteresis. */
@@ -1058,11 +957,11 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * heat and offload, not frames. */
 		rfx_warmup_rearm_quiet(p, demand_pct, time);
 		rfx_warmup_arm(p, demand_pct, time);
-		if (!little && !prime)
+		if (!little)
 			rfx_risk_rearm(p, demand_pct,
 				       rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT),
 				       time);
-		hold = rfx_descend_hold(p, demand_pct, !little && !prime,
+		hold = rfx_descend_hold(p, demand_pct, !little,
 					p->thermal_cooling, time);
 
 		/* Little never renders, so a warmup floor there is heat plus
@@ -1079,9 +978,10 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * release band, and lapsing there causes the start-of-match dip. */
 		if (warmup_active) {
 			/* Hard-cancel before extend: a sustained peg cancels the
-			 * window now; extending it would ride the 80% floor under a
-			 * live limiter and burn extra valley heat. */
-			if (demand_pct >= RFX_GAMING_WARMUP_HARD_CANCEL_PCT) {
+			 * window; skip during initial session entry so match start
+			 * asset loading does not kill the warmup floor. */
+			if (!p->gaming_warmup_entry &&
+			    demand_pct >= RFX_GAMING_WARMUP_HARD_CANCEL_PCT) {
 				if (++p->sat_consecutive >=
 					 RFX_GAMING_WARMUP_HARD_CANCEL_EVALS)
 					p->gaming_warmup_end_ns = time;
@@ -1115,21 +1015,17 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			warmup_active = time < p->gaming_warmup_end_ns;
 		}
 
-		/* Baseline floor per role; warmup_fl is the same value on Little
-		 * so the lift below is a no-op there. */
+		/* Baseline floor per role */
 		if (prime)
 			fl = rfx_pct(fceil, RFX_G_PRIME_FLOOR_PCT);
-		else if (!little) {	/* Big: render tier, demand-tracked */
+		else if (!little)
 			fl = rfx_pct(fceil, RFX_G_BIG_FLOOR_PCT);
-		} else			/* Little: compositor / audio / input */
+		else
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
-		/* Warmup floor lives where the render tier lives: on a 3-tier
-		 * part the top tier is spill and takes no lift (holding 80%
-		 * there walks the limiter into its sawtooth); on a 2-tier part
-		 * the top tier is render and keeps the lift. Little never
-		 * renders. Same render-band restriction as the risk re-arm. */
-		warmup_fl = (!little && !prime) ?
-				rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT) : fl;
+
+		/* Warmup floor: applied to Big and Prime performance tiers */
+		warmup_fl = !little ?
+				rfx_pct(fceil, prime ? 68 : RFX_G_WARMUP_FLOOR_PCT) : fl;
 
 		/* Relief depth: proportional in fceil_pct across the whole
 		 * latch band (0 at EXIT, full at DEEP), maxed with the
@@ -1272,12 +1168,9 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (freq < fl)
 			freq = fl;
 
-		/* F1 hispeed floor + F2 touch boost: extra render-band floors.
-		 * Skipped under the cooling latch so they never fight the
-		 * thermal walk, and past the idle gate (touch anticipates the
-		 * next burst). rfx_pct(fceil, <=100) can never exceed the
-		 * ceiling. */
-		if (!little && !prime && !p->thermal_cooling) {
+		/* Hispeed floor & touch boost: active for all render/performance tiers.
+		 * Skipped under thermal cooling to avoid fighting thermal limits. */
+		if (!little && !p->thermal_cooling) {
 			unsigned int boost_fl = 0;
 
 			if (RFX_G_HISPEED_PCT_DEFAULT) {
@@ -1291,29 +1184,21 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 							   RFX_G_HISPEED_PCT_DEFAULT);
 			}
 #if RFX_G_TOUCH_PCT_DEFAULT && RFX_G_TOUCH_MS_DEFAULT
-			{
-				u64 ts = (u64)atomic64_read(&rfx_input_ts);
-
-				if (ts && rfx_elapsed(time, ts) <
-				      (u64)RFX_G_TOUCH_MS_DEFAULT * NSEC_PER_MSEC)
-					boost_fl = max(boost_fl,
-						rfx_pct(fceil, RFX_G_TOUCH_PCT_DEFAULT));
-			}
+			if (rfx_touch_active(time, (u64)RFX_G_TOUCH_MS_DEFAULT * NSEC_PER_MSEC))
+				boost_fl = max(boost_fl,
+					       rfx_pct(fceil, RFX_G_TOUCH_PCT_DEFAULT));
 #endif
 			if (freq < boost_fl)
 				freq = boost_fl;
 		}
 	} else {
 		unsigned int cap, demand_pct;
+		bool touch = rfx_touch_active(time, (u64)RFX_D_TOUCH_WINDOW_MS * NSEC_PER_MSEC);
 
-		/* Raw demand, before headroom: post-headroom util is stepped by
-		 * tier, so a crossing jumps the value with no load change. Same
-		 * 1.25x skew as the gaming band. */
+		/* Raw demand before headroom */
 		demand_pct = (unsigned int)(raw_util * 100 / max_cap);
 		p->dbg_demand_pct = demand_pct;		/* F9 */
 
-		/* One cap per tier, one demand latch to lift it. No floors:
-		 * demand plus the EMA already hold the clock where the work is. */
 		if (little) {
 			cap = rfx_pct(fceil, RFX_D_LITTLE_CAP_PCT);
 
@@ -1321,15 +1206,15 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				p->little_cap_lifted = true;
 			else if (demand_pct <= RFX_D_LITTLE_DROP_PCT)
 				p->little_cap_lifted = false;
-			if (p->little_cap_lifted)
+			if (p->little_cap_lifted || touch)
 				cap = rfx_pct(fceil,
 					      RFX_D_LITTLE_SUSTAINED_CAP_PCT);
 
-			/* Timed knee floor: arm a short window on the rising
-			 * demand edge (idle -> interaction) so the wake carries the
-			 * knee OPP past the cold-climb hitch, then decays to fmin. */
-			if (p->little_prev_demand < RFX_D_LITTLE_FLOOR_ARM_PCT &&
-			    demand_pct >= RFX_D_LITTLE_FLOOR_ARM_PCT)
+			/* Little floor: active on demand rise or during touch interaction */
+			if (touch)
+				p->little_floor_end_ns = time + RFX_D_LITTLE_FLOOR_NS;
+			else if (p->little_prev_demand < RFX_D_LITTLE_FLOOR_ARM_PCT &&
+				 demand_pct >= RFX_D_LITTLE_FLOOR_ARM_PCT)
 				p->little_floor_end_ns = time + RFX_D_LITTLE_FLOOR_NS;
 			else if (demand_pct < RFX_D_LITTLE_FLOOR_REARM_PCT)
 				p->little_floor_end_ns = 0;
@@ -1342,18 +1227,26 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			cap = rfx_pct(fceil, prime ? RFX_D_PRIME_CAP_PCT :
 						     RFX_D_BIG_CAP_PCT);
 
-			/* Big/Prime share one latch. */
+			/* Big/Prime share sustained cap latch */
 			if (demand_pct >= RFX_D_BIG_LIFT_PCT)
 				p->big_cap_lifted = true;
 			else if (demand_pct <= RFX_D_BIG_DROP_PCT)
 				p->big_cap_lifted = false;
-			if (p->big_cap_lifted)
+			if (p->big_cap_lifted || touch)
 				cap = rfx_pct(fceil, prime ?
 					RFX_D_PRIME_SUSTAINED_CAP_PCT :
 					RFX_D_BIG_SUSTAINED_CAP_PCT);
+
+			/* Interactive touch floor for Big/Prime to eliminate scroll jitter */
+			if (touch) {
+				unsigned int touch_fl = rfx_pct(fceil, prime ? 28 : 38);
+
+				if (freq < touch_fl)
+					freq = touch_fl;
+			}
 		}
 
-		/* Daily thermal pre-cap (warmth / battery). */
+		/* Daily thermal pre-cap (warmth / battery) */
 		{
 			unsigned int tcap = rfx_daily_therm_cap(fceil,
 						atomic_read(&rfx_temp_mc));
@@ -1518,9 +1411,10 @@ static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming)
 
 /* Eval delay for this update. Set BEFORE rfx_should_update_freq, so it may only
  * depend on state known without util. */
-static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
+static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming, u64 time)
 {
 	s64 base;
+	bool touch;
 
 	if (gaming) {
 		p->freq_update_delay_ns =
@@ -1528,17 +1422,16 @@ static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming)
 		return;
 	}
 	base = (s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
-	/* Adaptive idle: poll slower while parked at fmin, never below tunable.
-	 * Uses last-committed freq only -- known without this eval's util. */
-	if (RFX_D_IDLE_EVAL_US && p->next_freq == p->policy->cpuinfo.min_freq) {
+	touch = rfx_touch_active(time, (u64)RFX_D_TOUCH_WINDOW_MS * NSEC_PER_MSEC);
+
+	/* Adaptive idle: poll slower while parked at fmin when screen is untouched */
+	if (RFX_D_IDLE_EVAL_US && p->next_freq == p->policy->cpuinfo.min_freq && !touch) {
 		p->freq_update_delay_ns =
 			(s64)RFX_D_IDLE_EVAL_US * NSEC_PER_USEC;
 		return;
 	}
-	/* Light load: stretch the cadence down to LIGHT_EVAL_US as the committed
-	 * OPP falls below LIGHT_EVAL_OPP_PCT. Above it the tunable owns the
-	 * rate untouched. Parked fmin handled above keeps the full idle stretch. */
-	if (RFX_D_LIGHT_EVAL_US && p->next_freq <
+	/* Light load: stretch the cadence when untouched */
+	if (RFX_D_LIGHT_EVAL_US && !touch && p->next_freq <
 	    rfx_pct(p->policy->cpuinfo.max_freq, RFX_D_LIGHT_EVAL_OPP_PCT)) {
 		unsigned int opp_pct = (unsigned int)((u64)p->next_freq * 100 /
 					p->policy->cpuinfo.max_freq);
@@ -1661,8 +1554,12 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	 */
 	if (!gaming) {
 		unsigned int fmin = p->policy->cpuinfo.min_freq;
+		bool touch = rfx_touch_active(time, (u64)RFX_D_TOUCH_WINDOW_MS * NSEC_PER_MSEC);
 
-		if (p->filt_util < (max_cap >> 5)) {
+		if (touch) {
+			p->parked = false;
+			p->park_exit_count = RFX_D_PARK_EXIT_EVALS;
+		} else if (p->filt_util < (max_cap >> 5)) {
 			p->parked = true;
 			p->park_exit_count = 0;
 		} else if (p->parked) {
@@ -1708,7 +1605,7 @@ static void rfx_update(struct update_util_data *hook, u64 time,
 		rfx_iowait_boost(rfx_c, time, flags);
 	rfx_c->last_update = time;
 	rfx_ignore_dl_rate_limit(rfx_c);
-	rfx_set_eval_delay(p, gaming);
+	rfx_set_eval_delay(p, gaming, time);
 
 	if (rfx_should_update_freq(p, time)) {
 		p->last_eval_time = time;
@@ -2675,9 +2572,7 @@ static void __init rfx_selfcheck(void)
 }
 
 /* ===================================================================== */
-/* Input handler (Feature 2): stamp the last touch/key time while gaming.   */
-/* sched_clock keeps the stamp on the same time base the governor compares   */
-/* against; the F2 floor consumes it only while gaming_mode=1.               */
+/* Input handler: stamp the last touch/key timestamp.                    */
 /* ===================================================================== */
 
 static bool rfx_input_registered;
@@ -2685,8 +2580,7 @@ static bool rfx_input_registered;
 static void rfx_input_event(struct input_handle *handle, unsigned int type,
 			    unsigned int code, int value)
 {
-	if (rfx_gaming_enabled())
-		atomic64_set(&rfx_input_ts, (s64)sched_clock());
+	atomic64_set(&rfx_input_ts, (s64)sched_clock());
 }
 
 static int rfx_input_connect(struct input_handler *handler,
