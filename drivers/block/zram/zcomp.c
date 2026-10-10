@@ -14,6 +14,11 @@
 
 #include "zcomp.h"
 
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+#include <linux/soc/qcom/qpace.h>
+#include "backend_qpace.h"
+#endif
+
 static const char * const backends[] = {
 	"lzo",
 	"lzo-rle",
@@ -29,13 +34,25 @@ static const char * const backends[] = {
 #if IS_ENABLED(CONFIG_CRYPTO_ZSTD)
 	"zstd",
 #endif
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+	"qpace-lz4",
+#endif
 };
 
 static void zcomp_strm_free(struct zcomp_strm *zstrm)
 {
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+	if (zstrm->qctx) {
+		struct zcomp_ctx ctx = { .context = zstrm->qctx };
+
+		backend_qpace_lz4.destroy_ctx(&ctx);
+		zstrm->qctx = NULL;
+	}
+#endif
 	if (!IS_ERR_OR_NULL(zstrm->tfm))
 		crypto_free_comp(zstrm->tfm);
-	free_pages((unsigned long)zstrm->buffer, 1);
+	if (zstrm->buffer)
+		free_pages((unsigned long)zstrm->buffer, 1);
 	zstrm->tfm = NULL;
 	zstrm->buffer = NULL;
 }
@@ -46,7 +63,34 @@ static void zcomp_strm_free(struct zcomp_strm *zstrm)
  */
 static int zcomp_strm_init(struct zcomp_strm *zstrm, struct zcomp *comp)
 {
-	zstrm->tfm = crypto_alloc_comp(comp->name, 0, 0);
+	const char *comp_name;
+
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+	if (comp->ops) {
+		struct zcomp_ctx ctx;
+		int ret;
+
+		ret = comp->ops->create_ctx(NULL, &ctx);
+		if (!ret) {
+			zstrm->qctx = ctx.context;
+			zstrm->buffer = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO, 1);
+			if (zstrm->buffer) {
+				zstrm->tfm = crypto_alloc_comp("lz4", 0, 0);
+				if (IS_ERR(zstrm->tfm))
+					zstrm->tfm = NULL;
+				return 0;
+			}
+			comp->ops->destroy_ctx(&ctx);
+			zstrm->qctx = NULL;
+		}
+	}
+#endif
+	comp_name = comp->name;
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+	if (!strcmp(comp_name, "qpace-lz4"))
+		comp_name = "lz4";
+#endif
+	zstrm->tfm = crypto_alloc_comp(comp_name, 0, 0);
 	/*
 	 * allocate 2 pages. 1 for compressed data, plus 1 extra for the
 	 * case when compressed size is larger than the original one
@@ -61,6 +105,10 @@ static int zcomp_strm_init(struct zcomp_strm *zstrm, struct zcomp *comp)
 
 bool zcomp_available_algorithm(const char *comp)
 {
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+	if (qpace_is_valid_algorithm(comp))
+		return true;
+#endif
 	/*
 	 * Crypto does not ignore a trailing new line symbol,
 	 * so make sure you don't supply a string containing
@@ -115,6 +163,35 @@ void zcomp_stream_put(struct zcomp *comp)
 int zcomp_compress(struct zcomp_strm *zstrm,
 		const void *src, unsigned int *dst_len)
 {
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+	if (zstrm->qctx) {
+		struct zcomp_params params = {
+			.drv_data = (void *)&qpace_lz4_algorithm,
+		};
+		struct zcomp_ctx ctx = {
+			.context = zstrm->qctx,
+		};
+		struct zcomp_req req = {
+			.src = src,
+			.src_len = PAGE_SIZE,
+			.dst = zstrm->buffer,
+			.dst_len = PAGE_SIZE * 2,
+		};
+		int ret = backend_qpace_lz4.compress(&params, &ctx, &req);
+
+		if (!ret) {
+			*dst_len = req.dst_len;
+			return 0;
+		}
+		if (zstrm->tfm) {
+			*dst_len = PAGE_SIZE * 2;
+			return crypto_comp_compress(zstrm->tfm,
+					src, PAGE_SIZE,
+					zstrm->buffer, dst_len);
+		}
+		return ret;
+	}
+#endif
 	/*
 	 * Our dst memory (zstrm->buffer) is always `2 * PAGE_SIZE' sized
 	 * because sometimes we can endup having a bigger compressed data
@@ -140,6 +217,32 @@ int zcomp_decompress(struct zcomp_strm *zstrm,
 		const void *src, unsigned int src_len, void *dst)
 {
 	unsigned int dst_len = PAGE_SIZE;
+
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+	if (zstrm->qctx) {
+		struct zcomp_params params = {
+			.drv_data = (void *)&qpace_lz4_algorithm,
+		};
+		struct zcomp_ctx ctx = {
+			.context = zstrm->qctx,
+		};
+		struct zcomp_req req = {
+			.src = src,
+			.src_len = src_len,
+			.dst = dst,
+			.dst_len = PAGE_SIZE,
+		};
+		int ret = backend_qpace_lz4.decompress(&params, &ctx, &req);
+
+		if (!ret)
+			return 0;
+		if (zstrm->tfm)
+			return crypto_comp_decompress(zstrm->tfm,
+					src, src_len,
+					dst, &dst_len);
+		return ret;
+	}
+#endif
 
 	return crypto_comp_decompress(zstrm->tfm,
 			src, src_len,
@@ -193,6 +296,10 @@ void zcomp_destroy(struct zcomp *comp)
 {
 	cpuhp_state_remove_instance(CPUHP_ZCOMP_PREPARE, &comp->node);
 	free_percpu(comp->stream);
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+	if (comp->ops)
+		qpace_put();
+#endif
 	kfree(comp);
 }
 
@@ -222,8 +329,27 @@ struct zcomp *zcomp_create(const char *compress)
 		return ERR_PTR(-ENOMEM);
 
 	comp->name = compress;
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+	if (!strcmp(compress, "qpace-lz4")) {
+		if (qpace_is_dev_available()) {
+			error = qpace_get();
+			if (!error) {
+				comp->ops = &backend_qpace_lz4;
+			} else {
+				pr_warn("zram: QPaCE hw get failed (%d), falling back to software lz4\n",
+					error);
+			}
+		} else {
+			pr_info("zram: QPaCE hardware unavailable, using software lz4 fallback\n");
+		}
+	}
+#endif
 	error = zcomp_init(comp);
 	if (error) {
+#if IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+		if (comp->ops)
+			qpace_put();
+#endif
 		kfree(comp);
 		return ERR_PTR(error);
 	}
