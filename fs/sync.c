@@ -291,6 +291,17 @@ int sync_file_range(struct file *file, loff_t offset, loff_t nbytes,
 
 	mapping = file->f_mapping;
 	ret = 0;
+
+	/*
+	 * BACKPORT (Linux 6.12):
+	 * Fast path: if the address space has no dirty pages and no in-flight
+	 * writeback, skip scanning and waiting. Greatly reduces unnecessary VFS
+	 * locking overhead for frequent defensive sync_file_range calls.
+	 */
+	if (!mapping_tagged(mapping, PAGECACHE_TAG_DIRTY) &&
+	    !mapping_tagged(mapping, PAGECACHE_TAG_WRITEBACK))
+		goto out;
+
 	if (flags & SYNC_FILE_RANGE_WAIT_BEFORE) {
 		ret = file_fdatawait_range(file, offset, endbyte);
 		if (ret < 0)
