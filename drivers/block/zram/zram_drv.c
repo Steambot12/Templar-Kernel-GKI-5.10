@@ -40,9 +40,17 @@
 static DEFINE_IDR(zram_index_idr);
 /* idr index must be protected */
 static DEFINE_MUTEX(zram_index_mutex);
-
 static int zram_major;
-static const char *default_compressor = IS_ENABLED(CONFIG_CRYPTO_LZ4) ? "lz4" : "lzo-rle";
+
+#ifdef CONFIG_ZRAM_DEF_COMP
+static const char *default_compressor = CONFIG_ZRAM_DEF_COMP;
+#elif IS_ENABLED(CONFIG_ZRAM_BACKEND_QPACE)
+static const char *default_compressor = "qpace-lz4";
+#elif IS_ENABLED(CONFIG_CRYPTO_LZ4)
+static const char *default_compressor = "lz4";
+#else
+static const char *default_compressor = "lzo-rle";
+#endif
 
 /* Module params (documentation at end) */
 static unsigned int num_devices = 1;
