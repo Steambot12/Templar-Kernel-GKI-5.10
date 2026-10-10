@@ -7389,6 +7389,14 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 	if (!this_sd)
 		return -1;
 
+	/*
+	 * BACKPORT (Linux 6.12 SIS bounding):
+	 * If the root domain is overutilized, LLC is saturated and scanning
+	 * is virtually guaranteed to fail finding an idle CPU. Skip search.
+	 */
+	if (READ_ONCE(this_rq()->rd->overutilized))
+		return -1;
+
 	if (sched_feat(SIS_PROP)) {
 		u64 avg_cost, avg_idle, span_avg;
 
@@ -7407,6 +7415,8 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 			nr = div_u64(span_avg, avg_cost);
 		else
 			nr = 4;
+
+		nr = min_t(int, nr, sd->span_weight);
 
 		time = cpu_clock(this);
 	}
