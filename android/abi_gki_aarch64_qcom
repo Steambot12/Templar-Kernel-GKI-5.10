@@ -1885,6 +1885,14 @@
   qcom_smem_state_unregister
   qcom_smem_state_update_bits
   qdisc_reset
+  qpace_get
+  qpace_get_dma_dev
+  qpace_is_dev_available
+  qpace_is_valid_algorithm
+  qpace_lz4_algorithm
+  qpace_put
+  qpace_urgent_compress
+  qpace_urgent_decompress
   queue_delayed_work_on
   queue_work_on
   radix_tree_delete
