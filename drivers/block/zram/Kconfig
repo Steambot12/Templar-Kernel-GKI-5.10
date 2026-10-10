@@ -53,3 +53,51 @@ config ZRAM_MULTI_COMP
 
 	  See Documentation/admin-guide/blockdev/zram.rst for more information.
 
+config ZRAM_BACKEND_QPACE
+	bool "QPaCE compression support"
+	depends on ZRAM
+	depends on QCOM_PAGE_COMPRESSION_ENGINE = y || \
+		(ZRAM = m && QCOM_PAGE_COMPRESSION_ENGINE = m)
+	help
+	  Enable Qualcomm Page Compression Engine (QPaCE) hardware
+	  acceleration as a zram backend. When selected, zram offloads
+	  synchronous compress and decompress operations to the QPaCE
+	  urgent command path, reducing CPU overhead.
+
+choice
+	prompt "Default zram compressor"
+	default ZRAM_DEF_COMP_QPACE if ZRAM_BACKEND_QPACE
+	default ZRAM_DEF_COMP_LZ4 if CRYPTO_LZ4
+	default ZRAM_DEF_COMP_LZORLE
+	depends on ZRAM
+
+config ZRAM_DEF_COMP_QPACE
+	bool "qpace-lz4"
+	depends on ZRAM_BACKEND_QPACE
+
+config ZRAM_DEF_COMP_LZORLE
+	bool "lzo-rle"
+
+config ZRAM_DEF_COMP_LZ4
+	bool "lz4"
+	depends on CRYPTO_LZ4
+
+config ZRAM_DEF_COMP_LZO
+	bool "lzo"
+	depends on CRYPTO_LZO
+
+config ZRAM_DEF_COMP_ZSTD
+	bool "zstd"
+	depends on CRYPTO_ZSTD
+
+endchoice
+
+config ZRAM_DEF_COMP
+	string
+	default "qpace-lz4" if ZRAM_DEF_COMP_QPACE
+	default "lzo-rle" if ZRAM_DEF_COMP_LZORLE
+	default "lz4" if ZRAM_DEF_COMP_LZ4
+	default "lzo" if ZRAM_DEF_COMP_LZO
+	default "zstd" if ZRAM_DEF_COMP_ZSTD
+	default "lzo-rle"
+
