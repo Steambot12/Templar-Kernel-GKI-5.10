@@ -6945,6 +6945,18 @@ static __latent_entropy void net_rx_action(struct softirq_action *h)
 		struct napi_struct *n;
 
 		if (list_empty(&list)) {
+			/*
+			 * BACKPORT (Linux 6.12):
+			 * If work remains on the repoll list and budget/time allowance
+			 * has not been exhausted, recycle repoll into list immediately
+			 * instead of punting to another softirq cycle. This reduces
+			 * packet delivery latency and jitter for network/gaming traffic.
+			 */
+			if (!list_empty(&repoll) && budget > 0 &&
+			    !time_after_eq(jiffies, time_limit)) {
+				list_splice_init(&repoll, &list);
+				continue;
+			}
 			if (!sd_has_rps_ipi_waiting(sd) && list_empty(&repoll))
 				goto out;
 			break;
