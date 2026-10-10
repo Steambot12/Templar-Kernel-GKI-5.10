@@ -1376,6 +1376,12 @@ static inline int same_magic(const char *amagic, const char *bmagic,
 	if (has_crcs) {
 		amagic += strcspn(amagic, " ");
 		bmagic += strcspn(bmagic, " ");
+	} else {
+		/* Allow vendor modules to match across 5.10 and 6.12 versions */
+		const char *a_rest = amagic + strcspn(amagic, " ");
+		const char *b_rest = bmagic + strcspn(bmagic, " ");
+		if (strcmp(a_rest, b_rest) == 0)
+			return 1;
 	}
 	return strcmp(amagic, bmagic) == 0;
 }
@@ -1397,6 +1403,10 @@ static inline int check_modstruct_version(const struct load_info *info,
 static inline int same_magic(const char *amagic, const char *bmagic,
 			     bool has_crcs)
 {
+	const char *a_rest = amagic + strcspn(amagic, " ");
+	const char *b_rest = bmagic + strcspn(bmagic, " ");
+	if (strcmp(a_rest, b_rest) == 0)
+		return 1;
 	return strcmp(amagic, bmagic) == 0;
 }
 #endif /* CONFIG_MODVERSIONS */

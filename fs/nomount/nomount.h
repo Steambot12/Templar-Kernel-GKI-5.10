@@ -14,6 +14,11 @@
 #include <linux/version.h>
 #include <linux/compat.h>
 
+#ifdef LINUX_VERSION_CODE
+#undef LINUX_VERSION_CODE
+#define LINUX_VERSION_CODE KERNEL_VERSION(5, 10, 271)
+#endif
+
 #define NOMOUNT_BASE_VERSION "21"
 #ifdef NOMOUNT_COMMIT_COUNT
     #define NOMOUNT_VERSION NOMOUNT_BASE_VERSION "-" NOMOUNT_COMMIT_COUNT
