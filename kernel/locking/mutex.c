@@ -585,9 +585,10 @@ bool mutex_spin_on_owner(struct mutex *lock, struct task_struct *owner,
 		 * Bound optimistic spinning loop iterations. On asymmetric
 		 * big.LITTLE architectures, indefinite spinning while the owner
 		 * executes on a lower-frequency core burns excessive power and
-		 * causes thermal throttling. Yield to slowpath if threshold reached.
+		 * causes thermal throttling. Yield to slowpath if threshold reached
+		 * or if reschedule is requested.
 		 */
-		if (++cnt > 1024) {
+		if (++cnt > 1024 || need_resched()) {
 			ret = false;
 			break;
 		}
