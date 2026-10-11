@@ -7960,11 +7960,11 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 
 	/*
 	 * BACKPORT (Linux 6.12 EAS fast-path):
-	 * If prev_cpu has at most one running task and comfortably fits the
+	 * If prev_cpu is idle (or has 0 running tasks) and comfortably fits the
 	 * waking task's capacity requirement, bypass the expensive multi-domain
 	 * compute_energy() traversal and settle on prev_cpu immediately.
 	 */
-	if (cpu_rq(prev_cpu)->nr_running <= 1 &&
+	if ((available_idle_cpu(prev_cpu) || cpu_rq(prev_cpu)->nr_running == 0) &&
 	    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
 	    task_fits_cpu(p, prev_cpu)) {
 		rcu_read_unlock();
