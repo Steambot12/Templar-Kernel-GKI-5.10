@@ -296,10 +296,12 @@ static inline void flush_tlb_page(struct vm_area_struct *vma,
 }
 
 /*
- * This is meant to avoid soft lock-ups on large TLB flushing ranges and not
- * necessarily a performance improvement.
+ * BACKPORT (Linux 6.12):
+ * On mobile ARM64 architectures, issuing hundreds of individual TLBI
+ * operations stalls the inter-core interconnect bus. Cap threshold to 64
+ * pages so larger unmaps perform a single fast ASID flush via flush_tlb_mm().
  */
-#define MAX_TLBI_OPS	PTRS_PER_PTE
+#define MAX_TLBI_OPS	64
 
 static inline void __flush_tlb_range(struct vm_area_struct *vma,
 				     unsigned long start, unsigned long end,
