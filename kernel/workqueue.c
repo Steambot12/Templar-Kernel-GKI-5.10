@@ -1402,14 +1402,41 @@ static int wq_select_unbound_cpu(int cpu)
 		 */
 		if (wq_power_efficient) {
 			int target;
+			int fallback = -1;
 
 			if (cpumask_test_cpu(cpu, wq_unbound_cpumask) &&
 			    arch_scale_cpu_capacity(cpu) <= 614)
 				return cpu;
 
+			/* Fast-path: find an idle LITTLE CPU */
 			for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
-				if (arch_scale_cpu_capacity(target) <= 614)
-					return target;
+				if (arch_scale_cpu_capacity(target) <= 614) {
+					if (available_idle_cpu(target))
+						return target;
+					if (fallback < 0)
+						fallback = target;
+				}
+			}
+
+			/* Fallback: distribute evenly among online LITTLE CPUs to avoid CPU 0 hot-spotting */
+			if (fallback >= 0) {
+				static atomic_t wq_little_cursor = ATOMIC_INIT(0);
+				int count = 0, idx, pick = 0;
+
+				for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
+					if (arch_scale_cpu_capacity(target) <= 614)
+						count++;
+				}
+				if (count > 1) {
+					idx = (unsigned int)atomic_inc_return(&wq_little_cursor) % count;
+					for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
+						if (arch_scale_cpu_capacity(target) <= 614) {
+							if (pick++ == idx)
+								return target;
+						}
+					}
+				}
+				return fallback;
 			}
 		}
 
