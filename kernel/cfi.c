@@ -27,10 +27,12 @@
 
 static inline void handle_cfi_failure(void *ptr)
 {
+#ifndef CONFIG_CFI_FORCE_SKIP_CHECK
 	if (IS_ENABLED(CONFIG_CFI_PERMISSIVE))
 		WARN_RATELIMIT(1, "CFI failure (target: %pS):\n", ptr);
 	else
 		panic("CFI failure (target: %pS)\n", ptr);
+#endif
 }
 
 #ifdef CONFIG_MODULES
@@ -318,24 +320,29 @@ out:
 
 void cfi_slowpath_handler(uint64_t id, void *ptr, void *diag)
 {
+#ifndef CONFIG_CFI_FORCE_SKIP_CHECK
 	cfi_check_fn fn = find_check_fn((unsigned long)ptr);
 
 	if (!IS_ENABLED(CONFIG_CFI_PERMISSIVE))
 		diag = NULL;
 
 	if (likely(fn)) {
-#ifndef CONFIG_CFI_FORCE_SKIP_CHECK
 		fn(id, ptr, diag);
-#endif
-	} else /* Don't allow unchecked modules */
+	} else if (!IS_ENABLED(CONFIG_CFI_PERMISSIVE)) {
+		/* Don't allow unchecked modules in enforcing mode */
 		handle_cfi_failure(ptr);
+	}
+#endif
 }
 
 #else /* !CONFIG_MODULES */
 
 void cfi_slowpath_handler(uint64_t id, void *ptr, void *diag)
 {
-	handle_cfi_failure(ptr); /* No modules */
+#ifndef CONFIG_CFI_FORCE_SKIP_CHECK
+	if (!IS_ENABLED(CONFIG_CFI_PERMISSIVE))
+		handle_cfi_failure(ptr); /* No modules */
+#endif
 }
 
 #endif /* CONFIG_MODULES */
@@ -347,6 +354,22 @@ void cfi_failure_handler(void *data, void *ptr, void *vtable)
 	handle_cfi_failure(ptr);
 }
 EXPORT_SYMBOL(cfi_failure_handler);
+
+#ifdef CONFIG_CFI_PERMISSIVE
+void __cfi_slowpath(uint64_t id, void *ptr, void *diag);
+void __cfi_slowpath(uint64_t id, void *ptr, void *diag)
+{
+	__cfi_slowpath_diag(id, ptr, diag);
+}
+EXPORT_SYMBOL(__cfi_slowpath);
+
+void __ubsan_handle_cfi_check_fail_abort(void *data, void *ptr, void *vtable);
+void __ubsan_handle_cfi_check_fail_abort(void *data, void *ptr, void *vtable)
+{
+	handle_cfi_failure(ptr);
+}
+EXPORT_SYMBOL(__ubsan_handle_cfi_check_fail_abort);
+#endif
 
 void __cfi_check_fail(void *data, void *ptr)
 {
