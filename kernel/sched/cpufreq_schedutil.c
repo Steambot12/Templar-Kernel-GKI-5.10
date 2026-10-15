@@ -465,13 +465,33 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #endif /* CONFIG_NO_HZ_COMMON */
 
 /*
- * Make sugov_should_update_freq() ignore the rate limit when DL
- * has increased the utilization.
+ * BACKPORT (Linux 6.12):
+ * Make sugov_should_update_freq() ignore the rate limit when DL/RT,
+ * iowait boost, or latency-sensitive/boosted tasks request higher
+ * CPU capacity. Prevents frame drops and UI jitter by allowing
+ * immediate frequency ramp-up.
  */
-static inline void ignore_dl_rate_limit(struct sugov_cpu *sg_cpu, struct sugov_policy *sg_policy)
+static inline void ignore_rate_limit_latency_sensitive(struct sugov_cpu *sg_cpu,
+						       struct sugov_policy *sg_policy,
+						       unsigned int flags)
 {
-	if (cpu_bw_dl(cpu_rq(sg_cpu->cpu)) > sg_cpu->bw_dl)
+	struct rq *rq = cpu_rq(sg_cpu->cpu);
+
+	if (cpu_bw_dl(rq) > sg_cpu->bw_dl) {
 		WRITE_ONCE(sg_policy->limits_changed, true);
+		return;
+	}
+
+	if ((flags & SCHED_CPUFREQ_IOWAIT) || (rq->rt.rt_nr_running > 0)) {
+		WRITE_ONCE(sg_policy->limits_changed, true);
+		return;
+	}
+
+	if (uclamp_is_used() && rq->curr &&
+	    (uclamp_latency_sensitive(rq->curr) || uclamp_boosted(rq->curr))) {
+		WRITE_ONCE(sg_policy->limits_changed, true);
+		return;
+	}
 }
 
 static void sugov_update_single(struct update_util_data *hook, u64 time,
@@ -485,7 +505,7 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	sugov_iowait_boost(sg_cpu, time, flags);
 	sg_cpu->last_update = time;
 
-	ignore_dl_rate_limit(sg_cpu, sg_policy);
+	ignore_rate_limit_latency_sensitive(sg_cpu, sg_policy, flags);
 
 	if (!sugov_should_update_freq(sg_policy, time))
 		return;
@@ -556,7 +576,7 @@ sugov_update_shared(struct update_util_data *hook, u64 time, unsigned int flags)
 	sugov_iowait_boost(sg_cpu, time, flags);
 	sg_cpu->last_update = time;
 
-	ignore_dl_rate_limit(sg_cpu, sg_policy);
+	ignore_rate_limit_latency_sensitive(sg_cpu, sg_policy, flags);
 
 	if (sugov_should_update_freq(sg_policy, time)) {
 		next_f = sugov_next_freq_shared(sg_cpu, time);

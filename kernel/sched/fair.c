@@ -7408,6 +7408,8 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 		else
 			nr = 4;
 
+		nr = min_t(int, nr, sd->span_weight);
+
 		time = cpu_clock(this);
 	}
 
@@ -7613,6 +7615,14 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 
 	sd = rcu_dereference(per_cpu(sd_llc, target));
 	if (!sd)
+		return target;
+
+	/*
+	 * BACKPORT (v6.12 fast-path): If target is already an available idle CPU,
+	 * return it immediately to avoid expensive LLC domain scanning and
+	 * reduce task wakeup dispatch latency.
+	 */
+	if (available_idle_cpu(target))
 		return target;
 
 	i = select_idle_core(p, sd, target);
@@ -7941,6 +7951,22 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	}
 
 	/*
+	 * BACKPORT (Linux 6.12 EAS fast-path):
+	 * If prev_cpu is active, truly idle, not undergoing thermal capacity
+	 * inversion, and comfortably fits the waking task's capacity requirement,
+	 * bypass the compute_energy() traversal and settle on prev_cpu immediately.
+	 * Strictly requires cpu_active() to prevent placing wakees on offline or
+	 * hotplugged cores during system suspend/resume.
+	 */
+	if (cpu_active(prev_cpu) && available_idle_cpu(prev_cpu) &&
+	    !cpu_in_capacity_inversion(prev_cpu) &&
+	    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
+	    task_fits_cpu(p, prev_cpu)) {
+		rcu_read_unlock();
+		return prev_cpu;
+	}
+
+	/*
 	 * Energy-aware wake-up happens on the lowest sched_domain starting
 	 * from sd_asym_cpucapacity spanning over this_cpu and prev_cpu.
 	 */
@@ -7964,9 +7990,16 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 		unsigned long base_energy_pd;
 		int max_spare_cap_cpu = -1;
 
-		/* Compute the 'base' energy of the pd, without @p */
-		base_energy_pd = compute_energy(p, -1, pd);
-		base_energy += base_energy_pd;
+		/*
+		 * BACKPORT (Linux 6.12):
+		 * Compute the 'base' energy of the pd only when evaluating energy.
+		 * Latency-sensitive tasks pick idle or max spare capacity CPUs
+		 * directly and do not evaluate energy deltas.
+		 */
+		if (!latency_sensitive) {
+			base_energy_pd = compute_energy(p, -1, pd);
+			base_energy += base_energy_pd;
+		}
 
 		for_each_cpu_and(cpu, perf_domain_span(pd), sched_domain_span(sd)) {
 			if (!cpumask_test_cpu(cpu, p->cpus_ptr))
@@ -8065,13 +8098,26 @@ unlock:
 
 	/*
 	 * Pick the best CPU if prev_cpu cannot be used, or if it saves at
-	 * least 6% of the energy used by prev_cpu.
+	 * least the required energy margin.
+	 *
+	 * BACKPORT (Linux 6.12 dynamic energy margin):
+	 * Scale the migration threshold by task utilization so lightweight
+	 * tasks (UI events, touch, background threads) do not oscillate between
+	 * CPU clusters over tiny marginal energy deltas.
 	 */
 	if (prev_delta == ULONG_MAX)
 		return best_energy_cpu;
 
-	if ((prev_delta - best_delta) > ((prev_delta + base_energy) >> 4))
-		return best_energy_cpu;
+	{
+		unsigned long margin = (prev_delta + base_energy) >> 4;
+		unsigned long task_util = task_util_est(p);
+
+		if (task_util < 128)
+			margin += (margin >> 1); /* +50% margin for small tasks to prevent thrashing */
+
+		if ((prev_delta - best_delta) > margin)
+			return best_energy_cpu;
+	}
 
 	return prev_cpu;
 
