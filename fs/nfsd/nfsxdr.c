@@ -9,32 +9,20 @@
 #include "xdr.h"
 #include "auth.h"
 
-/*
- * Sun convention: a sattr time-useconds field of one full second (an
- * otherwise out-of-range value) means "set this time to the current
- * server time." It's needed to make permissions checks for the "touch"
- * program across NFSv2 mounts work correctly. See description of
- * sattr in section 6.1 of "NFS Illustrated" by Brent Callaghan,
- * Addison-Wesley, ISBN 0-201-32750-5
- */
-#define NFS2_SATTR_SET_TO_SERVER_TIME	(1000000)
+#define NFSDDBG_FACILITY NFSDDBG_XDR
 
 /*
  * Mapping of S_IF* types to NFS file types
  */
-static u32	nfs_ftypes[] = {
-	NFNON,  NFCHR,  NFCHR, NFBAD,
-	NFDIR,  NFBAD,  NFBLK, NFBAD,
-	NFREG,  NFBAD,  NFLNK, NFBAD,
-	NFSOCK, NFBAD,  NFLNK, NFBAD,
+static u32 nfs_ftypes[] = {
+	NFNON, NFCHR, NFCHR, NFBAD, NFDIR,  NFBAD, NFBLK, NFBAD,
+	NFREG, NFBAD, NFLNK, NFBAD, NFSOCK, NFBAD, NFLNK, NFBAD,
 };
-
 
 /*
  * XDR functions for basic NFS types
  */
-static __be32 *
-decode_fh(__be32 *p, struct svc_fh *fhp)
+static __be32 *decode_fh(__be32 *p, struct svc_fh *fhp)
 {
 	fh_init(fhp, NFS_FHSIZE);
 	memcpy(&fhp->fh_handle.fh_base, p, NFS_FHSIZE);
@@ -51,24 +39,23 @@ __be32 *nfs2svc_decode_fh(__be32 *p, struct svc_fh *fhp)
 	return decode_fh(p, fhp);
 }
 
-static __be32 *
-encode_fh(__be32 *p, struct svc_fh *fhp)
+static __be32 *encode_fh(__be32 *p, struct svc_fh *fhp)
 {
 	memcpy(p, &fhp->fh_handle.fh_base, NFS_FHSIZE);
-	return p + (NFS_FHSIZE>> 2);
+	return p + (NFS_FHSIZE >> 2);
 }
 
 /*
  * Decode a file name and make sure that the path contains
  * no slashes or null bytes.
  */
-static __be32 *
-decode_filename(__be32 *p, char **namp, unsigned int *lenp)
+static __be32 *decode_filename(__be32 *p, char **namp, unsigned int *lenp)
 {
-	char		*name;
-	unsigned int	i;
+	char *name;
+	unsigned int i;
 
-	if ((p = xdr_decode_string_inplace(p, namp, lenp, NFS_MAXNAMLEN)) != NULL) {
+	if ((p = xdr_decode_string_inplace(p, namp, lenp, NFS_MAXNAMLEN)) !=
+	    NULL) {
 		for (i = 0, name = *namp; i < *lenp; i++, name++) {
 			if (*name == '\0' || *name == '/')
 				return NULL;
@@ -78,10 +65,10 @@ decode_filename(__be32 *p, char **namp, unsigned int *lenp)
 	return p;
 }
 
-static __be32 *
-decode_sattr(__be32 *p, struct iattr *iap, struct user_namespace *userns)
+static __be32 *decode_sattr(__be32 *p, struct iattr *iap,
+			    struct user_namespace *userns)
 {
-	u32	tmp, tmp1;
+	u32 tmp, tmp1;
 
 	iap->ia_valid = 0;
 
@@ -107,44 +94,39 @@ decode_sattr(__be32 *p, struct iattr *iap, struct user_namespace *userns)
 		iap->ia_valid |= ATTR_SIZE;
 		iap->ia_size = tmp;
 	}
-
-	tmp1 = be32_to_cpup(p++);
-	tmp2 = be32_to_cpup(p++);
-	if (tmp1 != (u32)-1 && tmp2 != (u32)-1) {
-		/*
-		 * Range test here to prevent the multiplication from
-		 * wrapping to a valid (but incorrect) value on 32-bit
-		 * platforms.
-		 */
-		if (tmp2 > NFS2_SATTR_SET_TO_SERVER_TIME)
-			return false;
+	tmp = ntohl(*p++);
+	tmp1 = ntohl(*p++);
+	if (tmp != (u32)-1 && tmp1 != (u32)-1) {
 		iap->ia_valid |= ATTR_ATIME | ATTR_ATIME_SET;
-		iap->ia_atime.tv_sec = tmp1;
-		iap->ia_atime.tv_nsec = tmp2 * NSEC_PER_USEC;
-		if (tmp2 == NFS2_SATTR_SET_TO_SERVER_TIME)
-			iap->ia_valid &= ~ATTR_ATIME_SET;
+		iap->ia_atime.tv_sec = tmp;
+		iap->ia_atime.tv_nsec = tmp1 * 1000;
 	}
-
-	tmp1 = be32_to_cpup(p++);
-	tmp2 = be32_to_cpup(p++);
-	if (tmp1 != (u32)-1 && tmp2 != (u32)-1) {
-		if (tmp2 > NFS2_SATTR_SET_TO_SERVER_TIME)
-			return false;
+	tmp = ntohl(*p++);
+	tmp1 = ntohl(*p++);
+	if (tmp != (u32)-1 && tmp1 != (u32)-1) {
 		iap->ia_valid |= ATTR_MTIME | ATTR_MTIME_SET;
-		iap->ia_mtime.tv_sec = tmp1;
-		iap->ia_mtime.tv_nsec = tmp2 * NSEC_PER_USEC;
-		if (tmp2 == NFS2_SATTR_SET_TO_SERVER_TIME)
-			iap->ia_valid &= ~(ATTR_ATIME_SET|ATTR_MTIME_SET);
+		iap->ia_mtime.tv_sec = tmp;
+		iap->ia_mtime.tv_nsec = tmp1 * 1000;
+		/*
+		 * Passing the invalid value useconds=1000000 for mtime
+		 * is a Sun convention for "set both mtime and atime to
+		 * current server time".  It's needed to make permissions
+		 * checks for the "touch" program across v2 mounts to
+		 * Solaris and Irix boxes work correctly. See description of
+		 * sattr in section 6.1 of "NFS Illustrated" by
+		 * Brent Callaghan, Addison-Wesley, ISBN 0-201-32750-5
+		 */
+		if (tmp1 == 1000000)
+			iap->ia_valid &= ~(ATTR_ATIME_SET | ATTR_MTIME_SET);
 	}
 	return p;
 }
 
-static __be32 *
-encode_fattr(struct svc_rqst *rqstp, __be32 *p, struct svc_fh *fhp,
-	     struct kstat *stat)
+static __be32 *encode_fattr(struct svc_rqst *rqstp, __be32 *p,
+			    struct svc_fh *fhp, struct kstat *stat)
 {
 	struct user_namespace *userns = nfsd_user_namespace(rqstp);
-	struct dentry	*dentry = fhp->fh_dentry;
+	struct dentry *dentry = fhp->fh_dentry;
 	int type;
 	struct timespec64 time;
 	u32 f;
@@ -152,53 +134,54 @@ encode_fattr(struct svc_rqst *rqstp, __be32 *p, struct svc_fh *fhp,
 	type = (stat->mode & S_IFMT);
 
 	*p++ = htonl(nfs_ftypes[type >> 12]);
-	*p++ = htonl((u32) stat->mode);
-	*p++ = htonl((u32) stat->nlink);
-	*p++ = htonl((u32) from_kuid_munged(userns, stat->uid));
-	*p++ = htonl((u32) from_kgid_munged(userns, stat->gid));
+	*p++ = htonl((u32)stat->mode);
+	*p++ = htonl((u32)stat->nlink);
+	*p++ = htonl((u32)from_kuid_munged(userns, stat->uid));
+	*p++ = htonl((u32)from_kgid_munged(userns, stat->gid));
 
 	if (S_ISLNK(type) && stat->size > NFS_MAXPATHLEN) {
 		*p++ = htonl(NFS_MAXPATHLEN);
 	} else {
-		*p++ = htonl((u32) stat->size);
+		*p++ = htonl((u32)stat->size);
 	}
-	*p++ = htonl((u32) stat->blksize);
+	*p++ = htonl((u32)stat->blksize);
 	if (S_ISCHR(type) || S_ISBLK(type))
 		*p++ = htonl(new_encode_dev(stat->rdev));
 	else
 		*p++ = htonl(0xffffffff);
-	*p++ = htonl((u32) stat->blocks);
+	*p++ = htonl((u32)stat->blocks);
 	switch (fsid_source(fhp)) {
 	default:
 	case FSIDSOURCE_DEV:
 		*p++ = htonl(new_encode_dev(stat->dev));
 		break;
 	case FSIDSOURCE_FSID:
-		*p++ = htonl((u32) fhp->fh_export->ex_fsid);
+		*p++ = htonl((u32)fhp->fh_export->ex_fsid);
 		break;
 	case FSIDSOURCE_UUID:
-		f = ((u32*)fhp->fh_export->ex_uuid)[0];
-		f ^= ((u32*)fhp->fh_export->ex_uuid)[1];
-		f ^= ((u32*)fhp->fh_export->ex_uuid)[2];
-		f ^= ((u32*)fhp->fh_export->ex_uuid)[3];
+		f = ((u32 *)fhp->fh_export->ex_uuid)[0];
+		f ^= ((u32 *)fhp->fh_export->ex_uuid)[1];
+		f ^= ((u32 *)fhp->fh_export->ex_uuid)[2];
+		f ^= ((u32 *)fhp->fh_export->ex_uuid)[3];
 		*p++ = htonl(f);
 		break;
 	}
-	*p++ = htonl((u32) stat->ino);
-	*p++ = htonl((u32) stat->atime.tv_sec);
+	*p++ = htonl((u32)stat->ino);
+	*p++ = htonl((u32)stat->atime.tv_sec);
 	*p++ = htonl(stat->atime.tv_nsec ? stat->atime.tv_nsec / 1000 : 0);
 	time = stat->mtime;
-	lease_get_mtime(d_inode(dentry), &time); 
-	*p++ = htonl((u32) time.tv_sec);
-	*p++ = htonl(time.tv_nsec ? time.tv_nsec / 1000 : 0); 
-	*p++ = htonl((u32) stat->ctime.tv_sec);
+	lease_get_mtime(d_inode(dentry), &time);
+	*p++ = htonl((u32)time.tv_sec);
+	*p++ = htonl(time.tv_nsec ? time.tv_nsec / 1000 : 0);
+	*p++ = htonl((u32)stat->ctime.tv_sec);
 	*p++ = htonl(stat->ctime.tv_nsec ? stat->ctime.tv_nsec / 1000 : 0);
 
 	return p;
 }
 
 /* Helper function for NFSv2 ACL code */
-__be32 *nfs2svc_encode_fattr(struct svc_rqst *rqstp, __be32 *p, struct svc_fh *fhp, struct kstat *stat)
+__be32 *nfs2svc_encode_fattr(struct svc_rqst *rqstp, __be32 *p,
+			     struct svc_fh *fhp, struct kstat *stat)
 {
 	return encode_fattr(rqstp, p, fhp, stat);
 }
@@ -206,14 +189,12 @@ __be32 *nfs2svc_encode_fattr(struct svc_rqst *rqstp, __be32 *p, struct svc_fh *f
 /*
  * XDR decode functions
  */
-int
-nfssvc_decode_void(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_void(struct svc_rqst *rqstp, __be32 *p)
 {
 	return xdr_argsize_check(rqstp, p);
 }
 
-int
-nfssvc_decode_fhandle(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_fhandle(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_fhandle *args = rqstp->rq_argp;
 
@@ -223,8 +204,7 @@ nfssvc_decode_fhandle(struct svc_rqst *rqstp, __be32 *p)
 	return xdr_argsize_check(rqstp, p);
 }
 
-int
-nfssvc_decode_sattrargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_sattrargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_sattrargs *args = rqstp->rq_argp;
 
@@ -236,20 +216,18 @@ nfssvc_decode_sattrargs(struct svc_rqst *rqstp, __be32 *p)
 	return xdr_argsize_check(rqstp, p);
 }
 
-int
-nfssvc_decode_diropargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_diropargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_diropargs *args = rqstp->rq_argp;
 
-	if (!(p = decode_fh(p, &args->fh))
-	 || !(p = decode_filename(p, &args->name, &args->len)))
+	if (!(p = decode_fh(p, &args->fh)) ||
+	    !(p = decode_filename(p, &args->name, &args->len)))
 		return 0;
 
 	return xdr_argsize_check(rqstp, p);
 }
 
-int
-nfssvc_decode_readargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_readargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_readargs *args = rqstp->rq_argp;
 	unsigned int len;
@@ -258,8 +236,8 @@ nfssvc_decode_readargs(struct svc_rqst *rqstp, __be32 *p)
 	if (!p)
 		return 0;
 
-	args->offset    = ntohl(*p++);
-	len = args->count     = ntohl(*p++);
+	args->offset = ntohl(*p++);
+	len = args->count = ntohl(*p++);
 	p++; /* totalcount - unused */
 
 	len = min_t(unsigned int, len, NFSSVC_MAXBLKSIZE_V2);
@@ -267,7 +245,7 @@ nfssvc_decode_readargs(struct svc_rqst *rqstp, __be32 *p)
 	/* set up somewhere to store response.
 	 * We take pages, put them on reslist and include in iovec
 	 */
-	v=0;
+	v = 0;
 	while (len > 0) {
 		struct page *p = *(rqstp->rq_next_page++);
 
@@ -280,8 +258,7 @@ nfssvc_decode_readargs(struct svc_rqst *rqstp, __be32 *p)
 	return xdr_argsize_check(rqstp, p);
 }
 
-int
-nfssvc_decode_writeargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_writeargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_writeargs *args = rqstp->rq_argp;
 	unsigned int len, hdr, dlen;
@@ -291,9 +268,9 @@ nfssvc_decode_writeargs(struct svc_rqst *rqstp, __be32 *p)
 	if (!p)
 		return 0;
 
-	p++;				/* beginoffset */
-	args->offset = ntohl(*p++);	/* offset */
-	p++;				/* totalcount */
+	p++; /* beginoffset */
+	args->offset = ntohl(*p++); /* offset */
+	p++; /* totalcount */
 	len = args->len = ntohl(*p++);
 	/*
 	 * The protocol specifies a maximum of 8192 bytes.
@@ -305,7 +282,7 @@ nfssvc_decode_writeargs(struct svc_rqst *rqstp, __be32 *p)
 	 * Check to make sure that we got the right number of
 	 * bytes.
 	 */
-	hdr = (void*)p - head->iov_base;
+	hdr = (void *)p - head->iov_base;
 	if (hdr > head->iov_len)
 		return 0;
 	dlen = head->iov_len + rqstp->rq_arg.page_len - hdr;
@@ -318,7 +295,7 @@ nfssvc_decode_writeargs(struct svc_rqst *rqstp, __be32 *p)
 	 * data buffer can be padded so dlen might be larger
 	 * than required.  It must never be smaller.
 	 */
-	if (dlen < XDR_QUADLEN(len)*4)
+	if (dlen < XDR_QUADLEN(len) * 4)
 		return 0;
 
 	args->first.iov_base = (void *)p;
@@ -326,35 +303,32 @@ nfssvc_decode_writeargs(struct svc_rqst *rqstp, __be32 *p)
 	return 1;
 }
 
-int
-nfssvc_decode_createargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_createargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_createargs *args = rqstp->rq_argp;
 
-	if (   !(p = decode_fh(p, &args->fh))
-	    || !(p = decode_filename(p, &args->name, &args->len)))
+	if (!(p = decode_fh(p, &args->fh)) ||
+	    !(p = decode_filename(p, &args->name, &args->len)))
 		return 0;
 	p = decode_sattr(p, &args->attrs, nfsd_user_namespace(rqstp));
 
 	return xdr_argsize_check(rqstp, p);
 }
 
-int
-nfssvc_decode_renameargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_renameargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_renameargs *args = rqstp->rq_argp;
 
-	if (!(p = decode_fh(p, &args->ffh))
-	 || !(p = decode_filename(p, &args->fname, &args->flen))
-	 || !(p = decode_fh(p, &args->tfh))
-	 || !(p = decode_filename(p, &args->tname, &args->tlen)))
+	if (!(p = decode_fh(p, &args->ffh)) ||
+	    !(p = decode_filename(p, &args->fname, &args->flen)) ||
+	    !(p = decode_fh(p, &args->tfh)) ||
+	    !(p = decode_filename(p, &args->tname, &args->tlen)))
 		return 0;
 
 	return xdr_argsize_check(rqstp, p);
 }
 
-int
-nfssvc_decode_readlinkargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_readlinkargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_readlinkargs *args = rqstp->rq_argp;
 
@@ -366,28 +340,26 @@ nfssvc_decode_readlinkargs(struct svc_rqst *rqstp, __be32 *p)
 	return xdr_argsize_check(rqstp, p);
 }
 
-int
-nfssvc_decode_linkargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_linkargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_linkargs *args = rqstp->rq_argp;
 
-	if (!(p = decode_fh(p, &args->ffh))
-	 || !(p = decode_fh(p, &args->tfh))
-	 || !(p = decode_filename(p, &args->tname, &args->tlen)))
+	if (!(p = decode_fh(p, &args->ffh)) ||
+	    !(p = decode_fh(p, &args->tfh)) ||
+	    !(p = decode_filename(p, &args->tname, &args->tlen)))
 		return 0;
 
 	return xdr_argsize_check(rqstp, p);
 }
 
-int
-nfssvc_decode_symlinkargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_symlinkargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_symlinkargs *args = rqstp->rq_argp;
 	char *base = (char *)p;
 	size_t xdrlen;
 
-	if (   !(p = decode_fh(p, &args->ffh))
-	    || !(p = decode_filename(p, &args->fname, &args->flen)))
+	if (!(p = decode_fh(p, &args->ffh)) ||
+	    !(p = decode_filename(p, &args->fname, &args->flen)))
 		return 0;
 
 	args->tlen = ntohl(*p++);
@@ -418,8 +390,7 @@ nfssvc_decode_symlinkargs(struct svc_rqst *rqstp, __be32 *p)
 	return 1;
 }
 
-int
-nfssvc_decode_readdirargs(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_decode_readdirargs(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_readdirargs *args = rqstp->rq_argp;
 
@@ -427,8 +398,8 @@ nfssvc_decode_readdirargs(struct svc_rqst *rqstp, __be32 *p)
 	if (!p)
 		return 0;
 	args->cookie = ntohl(*p++);
-	args->count  = ntohl(*p++);
-	args->count  = min_t(u32, args->count, PAGE_SIZE);
+	args->count = ntohl(*p++);
+	args->count = min_t(u32, args->count, PAGE_SIZE);
 	args->buffer = page_address(*(rqstp->rq_next_page++));
 
 	return xdr_argsize_check(rqstp, p);
@@ -437,14 +408,12 @@ nfssvc_decode_readdirargs(struct svc_rqst *rqstp, __be32 *p)
 /*
  * XDR encode functions
  */
-int
-nfssvc_encode_void(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_encode_void(struct svc_rqst *rqstp, __be32 *p)
 {
 	return xdr_ressize_check(rqstp, p);
 }
 
-int
-nfssvc_encode_stat(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_encode_stat(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_stat *resp = rqstp->rq_resp;
 
@@ -452,8 +421,7 @@ nfssvc_encode_stat(struct svc_rqst *rqstp, __be32 *p)
 	return xdr_ressize_check(rqstp, p);
 }
 
-int
-nfssvc_encode_attrstat(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_encode_attrstat(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_attrstat *resp = rqstp->rq_resp;
 
@@ -465,8 +433,7 @@ out:
 	return xdr_ressize_check(rqstp, p);
 }
 
-int
-nfssvc_encode_diropres(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_encode_diropres(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_diropres *resp = rqstp->rq_resp;
 
@@ -479,8 +446,7 @@ out:
 	return xdr_ressize_check(rqstp, p);
 }
 
-int
-nfssvc_encode_readlinkres(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_encode_readlinkres(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_readlinkres *resp = rqstp->rq_resp;
 
@@ -495,13 +461,12 @@ nfssvc_encode_readlinkres(struct svc_rqst *rqstp, __be32 *p)
 		/* need to pad the tail */
 		rqstp->rq_res.tail[0].iov_base = p;
 		*p = 0;
-		rqstp->rq_res.tail[0].iov_len = 4 - (resp->len&3);
+		rqstp->rq_res.tail[0].iov_len = 4 - (resp->len & 3);
 	}
 	return 1;
 }
 
-int
-nfssvc_encode_readres(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_encode_readres(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_readres *resp = rqstp->rq_resp;
 
@@ -519,13 +484,12 @@ nfssvc_encode_readres(struct svc_rqst *rqstp, __be32 *p)
 		/* need to pad the tail */
 		rqstp->rq_res.tail[0].iov_base = p;
 		*p = 0;
-		rqstp->rq_res.tail[0].iov_len = 4 - (resp->count&3);
+		rqstp->rq_res.tail[0].iov_len = 4 - (resp->count & 3);
 	}
 	return 1;
 }
 
-int
-nfssvc_encode_readdirres(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_encode_readdirres(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_readdirres *resp = rqstp->rq_resp;
 
@@ -535,24 +499,23 @@ nfssvc_encode_readdirres(struct svc_rqst *rqstp, __be32 *p)
 
 	xdr_ressize_check(rqstp, p);
 	p = resp->buffer;
-	*p++ = 0;			/* no more entries */
+	*p++ = 0; /* no more entries */
 	*p++ = htonl((resp->common.err == nfserr_eof));
-	rqstp->rq_res.page_len = (((unsigned long)p-1) & ~PAGE_MASK)+1;
+	rqstp->rq_res.page_len = (((unsigned long)p - 1) & ~PAGE_MASK) + 1;
 
 	return 1;
 }
 
-int
-nfssvc_encode_statfsres(struct svc_rqst *rqstp, __be32 *p)
+int nfssvc_encode_statfsres(struct svc_rqst *rqstp, __be32 *p)
 {
 	struct nfsd_statfsres *resp = rqstp->rq_resp;
-	struct kstatfs	*stat = &resp->stats;
+	struct kstatfs *stat = &resp->stats;
 
 	*p++ = resp->status;
 	if (resp->status != nfs_ok)
 		return xdr_ressize_check(rqstp, p);
 
-	*p++ = htonl(NFSSVC_MAXBLKSIZE_V2);	/* max transfer size */
+	*p++ = htonl(NFSSVC_MAXBLKSIZE_V2); /* max transfer size */
 	*p++ = htonl(stat->f_bsize);
 	*p++ = htonl(stat->f_blocks);
 	*p++ = htonl(stat->f_bfree);
@@ -560,21 +523,21 @@ nfssvc_encode_statfsres(struct svc_rqst *rqstp, __be32 *p)
 	return xdr_ressize_check(rqstp, p);
 }
 
-int
-nfssvc_encode_entry(void *ccdv, const char *name,
-		    int namlen, loff_t offset, u64 ino, unsigned int d_type)
+int nfssvc_encode_entry(void *ccdv, const char *name, int namlen, loff_t offset,
+			u64 ino, unsigned int d_type)
 {
 	struct readdir_cd *ccd = ccdv;
-	struct nfsd_readdirres *cd = container_of(ccd, struct nfsd_readdirres, common);
-	__be32	*p = cd->buffer;
-	int	buflen, slen;
+	struct nfsd_readdirres *cd =
+		container_of(ccd, struct nfsd_readdirres, common);
+	__be32 *p = cd->buffer;
+	int buflen, slen;
 
 	/*
 	dprintk("nfsd: entry(%.*s off %ld ino %ld)\n",
 			namlen, name, offset, ino);
 	 */
 
-	if (offset > ~((u32) 0)) {
+	if (offset > ~((u32)0)) {
 		cd->common.err = nfserr_fbig;
 		return -EINVAL;
 	}
@@ -589,15 +552,15 @@ nfssvc_encode_entry(void *ccdv, const char *name,
 		cd->common.err = nfserr_toosmall;
 		return -EINVAL;
 	}
-	if (ino > ~((u32) 0)) {
+	if (ino > ~((u32)0)) {
 		cd->common.err = nfserr_fbig;
 		return -EINVAL;
 	}
-	*p++ = xdr_one;				/* mark entry present */
-	*p++ = htonl((u32) ino);		/* file id */
-	p    = xdr_encode_array(p, name, namlen);/* name length & name */
-	cd->offset = p;			/* remember pointer */
-	*p++ = htonl(~0U);		/* offset of next entry */
+	*p++ = xdr_one; /* mark entry present */
+	*p++ = htonl((u32)ino); /* file id */
+	p = xdr_encode_array(p, name, namlen); /* name length & name */
+	cd->offset = p; /* remember pointer */
+	*p++ = htonl(~0U); /* offset of next entry */
 
 	cd->buflen = buflen;
 	cd->buffer = p;
