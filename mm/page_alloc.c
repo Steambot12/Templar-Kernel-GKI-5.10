@@ -2615,6 +2615,15 @@ static inline bool boost_watermark(struct zone *zone)
 
 	max_boost = max(pageblock_nr_pages, max_boost);
 
+	/*
+	 * BACKPORT (Linux 6.12):
+	 * Clamp watermark boost ceiling to prevent runaway reclaim thrashing.
+	 * Excessive watermark boosts during rapid Android burst allocations
+	 * (e.g. camera capture, game map loading) unnecessarily spin kswapd
+	 * and cause direct-reclaim UI stutter. Bound it to at most 1/8th of managed pages.
+	 */
+	max_boost = min(max_boost, zone_managed_pages(zone) >> 3);
+
 	zone->watermark_boost = min(zone->watermark_boost + pageblock_nr_pages,
 		max_boost);
 
