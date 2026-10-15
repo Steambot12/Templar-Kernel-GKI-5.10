@@ -760,6 +760,18 @@ rwsem_spin_on_owner(struct rw_semaphore *sem, unsigned long nonspinnable)
 			break;
 		}
 
+		/*
+		 * BACKPORT (Linux 6.12):
+		 * Bound optimistic spinning loop iterations. On asymmetric
+		 * big.LITTLE architectures, indefinite spinning while the owner
+		 * executes on a lower-frequency core burns excessive power and
+		 * causes thermal throttling. Yield to slowpath if threshold reached.
+		 */
+		if (++cnt > 1024) {
+			state = OWNER_NONSPINNABLE;
+			break;
+		}
+
 		cpu_relax();
 	}
 	rcu_read_unlock();
