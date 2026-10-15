@@ -1922,6 +1922,20 @@ void balance_dirty_pages_ratelimited(struct address_space *mapping)
 	if (wb->dirty_exceeded)
 		ratelimit = min(ratelimit, 32 >> (PAGE_SHIFT - 10));
 
+	/*
+	 * BACKPORT (Linux 6.12):
+	 * Fast-path: if current task has not exceeded its dirtied pause limit,
+	 * this CPU has not exceeded ratelimit_pages, and there are no accumulated
+	 * throttle leaks from exited tasks, return immediately without disabling
+	 * preemption or acquiring per-CPU pointers.
+	 */
+	if (likely(current->nr_dirtied < ratelimit &&
+		   this_cpu_read(bdp_ratelimits) < ratelimit_pages &&
+		   this_cpu_read(dirty_throttle_leaks) <= 0)) {
+		wb_put(wb);
+		return;
+	}
+
 	preempt_disable();
 	/*
 	 * This prevents one CPU to accumulate too many dirtied pages without

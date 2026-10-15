@@ -414,6 +414,14 @@ int dma_fence_signal_timestamp(struct dma_fence *fence, ktime_t timestamp)
 	if (!fence)
 		return -EINVAL;
 
+	/*
+	 * BACKPORT (Linux 6.12):
+	 * Lockless check: if already signaled, return immediately without
+	 * acquiring the spinlock and disabling interrupts.
+	 */
+	if (test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags))
+		return -EINVAL;
+
 	spin_lock_irqsave(fence->lock, flags);
 	ret = dma_fence_signal_timestamp_locked(fence, timestamp);
 	spin_unlock_irqrestore(fence->lock, flags);
@@ -464,6 +472,17 @@ int dma_fence_signal(struct dma_fence *fence)
 	bool tmp;
 
 	if (!fence)
+		return -EINVAL;
+
+	/*
+	 * BACKPORT (Linux 6.12):
+	 * Lockless check: if already signaled, return immediately without
+	 * acquiring the spinlock, disabling interrupts, and polluting caches.
+	 * In Vulkan/OpenGL gaming, multiple threads and GPU interrupts race to
+	 * signal or wait on fences, and avoiding spinlock contention on signaled
+	 * fences dramatically reduces frame-time jitter.
+	 */
+	if (test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags))
 		return -EINVAL;
 
 	tmp = dma_fence_begin_signalling();
