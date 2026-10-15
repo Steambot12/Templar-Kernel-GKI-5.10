@@ -80,7 +80,7 @@ struct bbr {
 
 static const int bbr_bw_rtts		= CYCLE_LEN + 2;
 static const u32 bbr_min_rtt_win_sec	= 10;
-static const u32 bbr_probe_rtt_mode_ms	= 150;
+static const u32 bbr_probe_rtt_mode_ms	= 40;
 static const int bbr_min_tso_rate	= 1200000;
 static const int bbr_high_gain		= BBR_UNIT * 2885 / 1000 + 1;
 static const int bbr_drain_gain		= BBR_UNIT * 1000 / 2885;
@@ -215,8 +215,11 @@ static u64 bbr_rate_bytes_per_sec(struct sock *sk, u64 rate, int gain)
 	rate *= tcp_mss_to_mtu(sk, tcp_sk(sk)->mss_cache);
 	rate *= gain;
 	rate >>= BBR_SCALE;
-	rate *= USEC_PER_SEC / 100 * (100 - bbr_pacing_margin_percent);
-	return rate >> BW_SCALE;
+	rate *= USEC_PER_SEC;
+	rate >>= BW_SCALE;
+	if (bbr_pacing_margin_percent)
+		rate -= (rate * bbr_pacing_margin_percent) / 100;
+	return rate;
 }
 
 static u32 bbr_bw_to_pacing_rate(struct sock *sk, u32 bw, int gain)
@@ -375,9 +378,10 @@ static bool bbr_set_cwnd_to_recover_or_restore(
 
 	if (bbr->packet_conservation) {
 		*new_cwnd = max(cwnd, tcp_packets_in_flight(tp) + acked);
+		*new_cwnd = max_t(u32, *new_cwnd, bbr_cwnd_min_target);
 		return true;
 	}
-	*new_cwnd = cwnd;
+	*new_cwnd = max_t(u32, cwnd, bbr_cwnd_min_target);
 	return false;
 }
 
@@ -549,7 +553,7 @@ static void bbr_lt_bw_sampling(struct sock *sk, const struct rate_sample *rs)
 		return;
 
 	t = tcp_stamp_us_delta(tp->delivered_mstamp,
-			       bbr->lt_last_stamp * USEC_PER_MSEC);
+			       (u64)bbr->lt_last_stamp * USEC_PER_MSEC);
 	if (t < USEC_PER_MSEC)
 		return;
 	bw = (u64)delivered * BW_UNIT;
