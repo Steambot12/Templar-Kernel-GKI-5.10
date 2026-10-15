@@ -659,10 +659,18 @@ pipe_poll(struct file *filp, poll_table *wait)
 	 * But because this is racy, the code has to add the
 	 * entry to the poll table _first_ ..
 	 */
-	if (filp->f_mode & FMODE_READ)
-		poll_wait(filp, &pipe->rd_wait, wait);
-	if (filp->f_mode & FMODE_WRITE)
-		poll_wait(filp, &pipe->wr_wait, wait);
+	/*
+	 * BACKPORT (Linux 6.12):
+	 * If the caller does not wait (such as non-blocking epoll iterations),
+	 * bypass calling poll_wait() on the read and write waitqueues.
+	 * Eliminates redundant waitqueue registration overhead.
+	 */
+	if (!poll_does_not_wait(wait)) {
+		if (filp->f_mode & FMODE_READ)
+			poll_wait(filp, &pipe->rd_wait, wait);
+		if (filp->f_mode & FMODE_WRITE)
+			poll_wait(filp, &pipe->wr_wait, wait);
+	}
 
 	/*
 	 * .. and only then can you do the racy tests. That way,
