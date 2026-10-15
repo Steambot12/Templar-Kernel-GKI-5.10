@@ -2296,7 +2296,18 @@ seqretry:
 		if (d_unhashed(dentry))
 			continue;
 
-		if (unlikely(parent->d_flags & DCACHE_OP_COMPARE)) {
+		/*
+		 * BACKPORT (Linux 6.12):
+		 * Fast path: check 64-bit hash_len before checking compare flags.
+		 * Vast majority of dentries use standard comparison. Checking
+		 * hash_len early avoids flag branch and d_op lookup for mismatches.
+		 */
+		if (likely(!(parent->d_flags & DCACHE_OP_COMPARE))) {
+			if (dentry->d_name.hash_len != hashlen)
+				continue;
+			if (dentry_cmp(dentry, str, hashlen_len(hashlen)) != 0)
+				continue;
+		} else {
 			int tlen;
 			const char *tname;
 			if (dentry->d_name.hash != hashlen_hash(hashlen))
@@ -2310,11 +2321,6 @@ seqretry:
 			}
 			if (parent->d_op->d_compare(dentry,
 						    tlen, tname, name) != 0)
-				continue;
-		} else {
-			if (dentry->d_name.hash_len != hashlen)
-				continue;
-			if (dentry_cmp(dentry, str, hashlen_len(hashlen)) != 0)
 				continue;
 		}
 		*seqp = seq;
