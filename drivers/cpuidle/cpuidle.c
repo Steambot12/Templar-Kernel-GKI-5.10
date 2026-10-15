@@ -407,6 +407,21 @@ u64 cpuidle_poll_time(struct cpuidle_driver *drv,
 		break;
 	}
 
+	/*
+	 * BACKPORT (v6.12 power-saving): Cap idle polling time to avoid
+	 * busy-spinning CPU cores during idle transitions and accelerate
+	 * entry into deep low-power hardware C-states (WFI /
+	 * power-collapse).
+	 *
+	 * Templatized to 100us: a 50us poll ceiling forced near-continuous
+	 * POLL polling on high-timer-rate mobile stacks (every tick-scale
+	 * idle spent 50us+ spinning before the governor's poll-limit fast
+	 * path re-armed it), which kept cores out of deep sleep and showed
+	 * up as screen-off drain in daily mode.
+	 */
+	if (limit_ns > 100000ULL)
+		limit_ns = 100000ULL;
+
 	dev->poll_limit_ns = limit_ns;
 
 	return dev->poll_limit_ns;
