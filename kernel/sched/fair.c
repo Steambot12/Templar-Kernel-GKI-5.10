@@ -7957,13 +7957,35 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	 * bypass the compute_energy() traversal and settle on prev_cpu immediately.
 	 * Strictly requires cpu_active() to prevent placing wakees on offline or
 	 * hotplugged cores during system suspend/resume.
+	 *
+	 * Energy optimization: Only short-circuit if prev_cpu is in the energy-efficient
+	 * (Little) performance domain, or if the task exceeds the Little domain's
+	 * capacity. This ensures small/light tasks that previously touched Big/Prime
+	 * cores are evaluated by EAS and packed onto Little cores rather than keeping
+	 * Big/Prime cores awake and burning active power.
 	 */
 	if (cpu_active(prev_cpu) && available_idle_cpu(prev_cpu) &&
 	    !cpu_in_capacity_inversion(prev_cpu) &&
 	    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
 	    task_fits_cpu(p, prev_cpu)) {
-		rcu_read_unlock();
-		return prev_cpu;
+		struct perf_domain *min_pd = pd;
+		struct perf_domain *it_pd;
+		unsigned long min_cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(pd)));
+
+		for (it_pd = pd->next; it_pd; it_pd = it_pd->next) {
+			unsigned long cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(it_pd)));
+
+			if (cap < min_cap) {
+				min_cap = cap;
+				min_pd = it_pd;
+			}
+		}
+
+		if (cpumask_test_cpu(prev_cpu, perf_domain_span(min_pd)) ||
+		    !task_fits_cpu(p, cpumask_first(perf_domain_span(min_pd)))) {
+			rcu_read_unlock();
+			return prev_cpu;
+		}
 	}
 
 	/*
