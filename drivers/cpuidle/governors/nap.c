@@ -50,7 +50,13 @@
 #define NAP_DEFAULT_LR_MILLTHS		1	/* 0.001 */
 #define NAP_DEFAULT_INTERVAL		4	/* learn every 4 reflects */
 #define NAP_DEFAULT_CLAMP_MILLTHS	1000	/* 1.0 */
-#define NAP_DEFAULT_CONF_MILLTHS	500	/* 0.5 */
+/* 0.5 (upstream seed) picked the shallowest feasible state: on
+ * high-timer-rate mobile every idle sits inside the tick period, so the
+ * deepest surviving state barely cleared the bar and the CPU re-paid the
+ * WFI exit latency on each burst. 0.7 biases toward the deepest state that
+ * still survives the confidence bar -- fewer wasted exits, lower screen-off
+ * drain -- while the poll-limit fast path keeps short idles responsive. */
+#define NAP_DEFAULT_CONF_MILLTHS	700	/* 0.7 */
 
 /*
  * POLL short-circuit: dev->poll_limit_ns floor and margin.  Both 1 us, the

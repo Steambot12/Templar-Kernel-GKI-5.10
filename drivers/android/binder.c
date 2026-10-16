@@ -834,14 +834,6 @@ static struct binder_node *binder_get_node(struct binder_proc *proc,
 {
 	struct binder_node *node;
 
-	/*
-	 * BACKPORT (Linux 6.12):
-	 * Fast-path check: avoid inner_proc_lock acquisition if the process
-	 * has no registered binder nodes in its tree.
-	 */
-	if (!READ_ONCE(proc->nodes.rb_node))
-		return NULL;
-
 	binder_inner_proc_lock(proc);
 	node = binder_get_node_ilocked(proc, ptr);
 	binder_inner_proc_unlock(proc);
@@ -5458,29 +5450,20 @@ static __poll_t binder_poll(struct file *filp,
 	struct binder_proc *proc = filp->private_data;
 	struct binder_thread *thread = NULL;
 	bool wait_for_proc_work;
-	bool has_work;
 
 	thread = binder_get_thread(proc);
 	if (!thread)
 		return EPOLLERR;
 
-	poll_wait(filp, &thread->wait, wait);
-
-	/*
-	 * BACKPORT (Linux 6.12):
-	 * Coalesce inner_proc_lock acquisition in binder_poll(). Instead of
-	 * acquiring inner_proc_lock twice in rapid succession (once for
-	 * available_for_proc_work and once inside binder_has_work()), perform
-	 * the state update and work check under a single critical section.
-	 * Drastically cuts spinlock contention on Android UI and render looper threads.
-	 */
 	binder_inner_proc_lock(thread->proc);
 	thread->looper |= BINDER_LOOPER_STATE_POLL;
 	wait_for_proc_work = binder_available_for_proc_work_ilocked(thread);
-	has_work = binder_has_work_ilocked(thread, wait_for_proc_work);
+
 	binder_inner_proc_unlock(thread->proc);
 
-	if (has_work)
+	poll_wait(filp, &thread->wait, wait);
+
+	if (binder_has_work(thread, wait_for_proc_work))
 		return EPOLLIN;
 
 	return 0;

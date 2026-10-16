@@ -1184,25 +1184,15 @@ static bool suitable_migration_source(struct compact_control *cc,
 	if (pageblock_skip_persistent(page))
 		return false;
 
-	if (cc->ignore_block_suitable)
+	if ((cc->mode != MIGRATE_ASYNC) || !cc->direct_compaction)
 		return true;
 
 	block_mt = get_pageblock_migratetype(page);
 
-	/*
-	 * BACKPORT (Linux 6.12):
-	 * Fast-skip pageblocks that are unmovable. Scanning unmovable blocks
-	 * during compaction for movable allocations is futile and induces
-	 * severe CPU stalls scanning slab and kernel pages that cannot be migrated.
-	 */
-	if (cc->migratetype == MIGRATE_MOVABLE) {
-		if (!is_migrate_movable(block_mt))
-			return false;
-	} else if (block_mt != cc->migratetype) {
-		return false;
-	}
-
-	return true;
+	if (cc->migratetype == MIGRATE_MOVABLE)
+		return is_migrate_movable(block_mt);
+	else
+		return block_mt == cc->migratetype;
 }
 
 /* Returns true if the page is within a block suitable for migration to */
