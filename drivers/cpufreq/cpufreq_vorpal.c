@@ -112,8 +112,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_PRIME_CAP_PCT		46
 #define RFX_D_BIG_LIFT_PCT		60
 #define RFX_D_BIG_DROP_PCT		45
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	64
-#define RFX_D_PRIME_SUSTAINED_CAP_PCT	52
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	58
+#define RFX_D_PRIME_SUSTAINED_CAP_PCT	48
 #define RFX_D_BURST_TRIGGER_PCT		85	/* App launch burst threshold (~75% real load) */
 #define RFX_D_BURST_CAP_PCT		72	/* Transient burst cap for instant app launch */
 #define RFX_D_TOUCH_FLOOR_MIN_DEMAND	16	/* Load-conditional touch floor activation */
@@ -191,7 +191,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * stall); 80% cap where LMH is absent avoids the old 70% benchmark stall. */
 /* Longer poll interval in idle for power saving (10s = less wakeups). */
 #define RFX_THERMAL_POLL_GAMING_MS	50
-#define RFX_THERMAL_POLL_IDLE_MS	10000	/* deferrable: free in deep sleep */
+#define RFX_THERMAL_POLL_IDLE_MS	30000	/* deferrable: free in deep sleep */
 #define RFX_THERMAL_POLL_WARM_MS	2000
 #define RFX_TEMP_WARM_MC		70000
 #define RFX_TEMP_EMERGENCY_MC		110000	/* above a normal soak; LMH acts far below */
