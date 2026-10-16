@@ -87,7 +87,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Gaming feature constants */
 #define RFX_G_EVAL_US_DEFAULT		RFX_FAST_RATE_US
 #define RFX_G_HISPEED_PCT_DEFAULT	72	/* Hispeed floor under burst load */
-#define RFX_G_GO_HISPEED_PCT_DEFAULT	75	/* Demand threshold for hispeed */
+/* 90 sits at the TOP of the 84-88% skewed-demand park band (demand reads
+ * ~1.25x real due to EMA DVFS margin skew), so the hispeed floor only
+ * re-arms on genuine sustained demand -- rare, not a standing OPP pin.
+ * v2.2-2 moved this to 75 inside the band and re-created the F1 re-arm
+ * loop that caused QC heat; floor/hold stay, arm rarity is the dial. */
+#define RFX_G_GO_HISPEED_PCT_DEFAULT	90	/* Demand threshold for hispeed */
 #define RFX_G_HISPEED_HOLD_US_DEFAULT	8000	/* Hold dwell for hispeed */
 #define RFX_G_TOUCH_PCT_DEFAULT		75	/* Touch & open-scope render floor */
 #define RFX_G_TOUCH_MS_DEFAULT		250	/* Input boost window (covers ADS scope animation) */
@@ -225,7 +230,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_GAMING_REARM_QUIET_NS	(3000 * NSEC_PER_MSEC)
 
 /* Frame-risk boost for abrupt scene bursts (open scope, explosions) */
-#define RFX_G_RISK_ARM_PCT		75
+#define RFX_G_RISK_ARM_PCT		85	/* Restored to pre-v2.2-2 value; arming at 75 re-pinned OPPs on every eval inside the 84-88 skewed park band */
 #define RFX_G_RISK_CLEAR_PCT		50
 #define RFX_G_RISK_BOOST_NS		(250 * NSEC_PER_MSEC)	/* 250ms window covers full ADS transition */
 
