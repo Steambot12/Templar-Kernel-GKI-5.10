@@ -898,9 +898,16 @@ static void insert_request_post_stability(struct blk_mq_hw_ctx *hctx,
 		return;
 	}
 
-	/* Tier-1: Barrier handling for REQ_OP_FLUSH */
+	/* Tier-1: Barrier handling for REQ_OP_FLUSH.
+	 * Read requests do not alter storage state and are latency-critical for
+	 * interactive UI and real-time game asset streaming (weapon scope,
+	 * character models, audio, textures). Exempt non-flush read requests from
+	 * the barrier queue so they are dispatched immediately without waiting for
+	 * writeback flush drain, preventing frame freezes and stutter.
+	 */
 	rq_is_flush = (rq->cmd_flags & REQ_OP_MASK) == REQ_OP_FLUSH;
-	if (eval_adios_state(ad, ADIOS_STATE_BP) || rq_is_flush) {
+	if ((eval_adios_state(ad, ADIOS_STATE_BP) || rq_is_flush) &&
+	    (optype != ADIOS_READ || rq_is_flush)) {
 		scoped_guard(spinlock_irqsave, &ad->barrier_lock) {
 			if (rq_is_flush)
 				set_adios_state(ad, ADIOS_STATE_BP, 0, true);
