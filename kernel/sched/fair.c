@@ -7400,6 +7400,14 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 	if (!this_sd)
 		return -1;
 
+	/*
+	 * BACKPORT (Linux 6.12 SIS bounding):
+	 * If the root domain is overutilized, LLC is saturated and scanning
+	 * is virtually guaranteed to fail finding an idle CPU. Skip search.
+	 */
+	if (READ_ONCE(this_rq()->rd->overutilized))
+		return -1;
+
 	if (sched_feat(SIS_PROP)) {
 		u64 avg_cost, avg_idle, span_avg;
 
@@ -7937,7 +7945,7 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	unsigned long cpu_cap, util, base_energy = 0;
 	bool boosted, latency_sensitive = false;
 	unsigned int min_exit_lat = UINT_MAX;
-	int cpu, best_energy_cpu = prev_cpu;
+	int cpu, best_energy_cpu = prev_cpu, prev_cand = -1;
 	struct cpuidle_state *idle;
 	struct sched_domain *sd;
 	struct perf_domain *pd;
@@ -7968,35 +7976,13 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	 * bypass the compute_energy() traversal and settle on prev_cpu immediately.
 	 * Strictly requires cpu_active() to prevent placing wakees on offline or
 	 * hotplugged cores during system suspend/resume.
-	 *
-	 * Energy optimization: Only short-circuit if prev_cpu is in the energy-efficient
-	 * (Little) performance domain, or if the task exceeds the Little domain's
-	 * capacity. This ensures small/light tasks that previously touched Big/Prime
-	 * cores are evaluated by EAS and packed onto Little cores rather than keeping
-	 * Big/Prime cores awake and burning active power.
 	 */
 	if (cpu_active(prev_cpu) && available_idle_cpu(prev_cpu) &&
 	    !cpu_in_capacity_inversion(prev_cpu) &&
 	    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
 	    task_fits_cpu(p, prev_cpu)) {
-		struct perf_domain *min_pd = pd;
-		struct perf_domain *it_pd;
-		unsigned long min_cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(pd)));
-
-		for (it_pd = pd->next; it_pd; it_pd = it_pd->next) {
-			unsigned long cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(it_pd)));
-
-			if (cap < min_cap) {
-				min_cap = cap;
-				min_pd = it_pd;
-			}
-		}
-
-		if (cpumask_test_cpu(prev_cpu, perf_domain_span(min_pd)) ||
-		    !task_fits_cpu(p, cpumask_first(perf_domain_span(min_pd)))) {
-			rcu_read_unlock();
-			return prev_cpu;
-		}
+		rcu_read_unlock();
+		return prev_cpu;
 	}
 
 	/*
@@ -8113,6 +8099,9 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 		}
 
 		/* Evaluate the energy impact of using this CPU. */
+		if (cpumask_test_cpu(prev_cpu, perf_domain_span(pd)))
+			prev_cand = max_spare_cap_cpu;
+
 		if (!latency_sensitive && max_spare_cap_cpu >= 0 &&
 						max_spare_cap_cpu != prev_cpu) {
 			cur_delta = compute_energy(p, max_spare_cap_cpu, pd);
@@ -8144,6 +8133,29 @@ unlock:
 	{
 		unsigned long margin = (prev_delta + base_energy) >> 4;
 		unsigned long task_util = task_util_est(p);
+
+		/*
+		 * BACKPORT (Linux 6.12 EAS cluster retention):
+		 * In heterogeneous DynamIQ architectures (e.g. big.LITTLE / 4+3+1),
+		 * static Energy Model tables calculate substantially lower dynamic
+		 * power on Little cores compared to Big/Prime cores. Consequently,
+		 * EAS will systematically demote active compute tasks (render threads,
+		 * worker threads, parallel benchmarks) from Big/Prime to Little cores
+		 * whenever prev_cpu is momentarily busy, even if an idle sibling core
+		 * in the Big cluster is available.
+		 *
+		 * Prevent throughput and latency regressions: if best_energy_cpu
+		 * is in a lower-capacity performance domain than prev_cpu,
+		 * do not demote active tasks (task_util >= 140 or boosted).
+		 * Retain execution within prev_cpu's cluster via prev_cand
+		 * or prev_cpu.
+		 */
+		if (capacity_orig_of(best_energy_cpu) < capacity_orig_of(prev_cpu) &&
+		    (task_util >= 140 || boosted)) {
+			if (prev_cand >= 0)
+				return prev_cand;
+			return prev_cpu;
+		}
 
 		if (task_util < 128)
 			margin += (margin >> 1); /* +50% margin for small tasks to prevent thrashing */
