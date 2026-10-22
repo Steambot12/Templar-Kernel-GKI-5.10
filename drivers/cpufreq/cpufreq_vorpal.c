@@ -57,20 +57,20 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 #define RFX_LITTLE_RATE_US		4000
 #define RFX_LITTLE_UP_US		200
-#define RFX_LITTLE_DOWN_US		4000
+#define RFX_LITTLE_DOWN_US		3000
 
 #define RFX_BIG_RATE_US			3000
 #define RFX_BIG_UP_US			500
-#define RFX_BIG_DOWN_US			3500
+#define RFX_BIG_DOWN_US			2500
 
 #define RFX_FAST_RATE_US		250
 #define RFX_GAMING_DOWN_US		10000
 
-#define RFX_G_PRIME_FLOOR_PCT		68
-#define RFX_G_BIG_FLOOR_PCT		54
-#define RFX_G_WARMUP_FLOOR_PCT		70
-#define RFX_G_LITTLE_FLOOR_PCT		42
-#define RFX_G_PRIME_TOUCH_PCT		68
+#define RFX_G_PRIME_FLOOR_PCT		75
+#define RFX_G_BIG_FLOOR_PCT		66
+#define RFX_G_WARMUP_FLOOR_PCT		80
+#define RFX_G_LITTLE_FLOOR_PCT		50
+#define RFX_G_PRIME_TOUCH_PCT		85
 #define RFX_G_PRIME_CAP_PCT		100
 #define RFX_G_PRIME_TURBO_CAP_PCT	100
 #define RFX_G_PRIME_COOL_CAP_PCT	100
@@ -78,11 +78,11 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_GAMING_DOWN_PCT_PER_2MS	1
 
 #define RFX_G_EVAL_US_DEFAULT		250
-#define RFX_G_HISPEED_PCT_DEFAULT	68
+#define RFX_G_HISPEED_PCT_DEFAULT	80
 
-#define RFX_G_GO_HISPEED_PCT_DEFAULT	56
+#define RFX_G_GO_HISPEED_PCT_DEFAULT	48
 #define RFX_G_HISPEED_HOLD_US_DEFAULT	120000
-#define RFX_G_TOUCH_PCT_DEFAULT		62
+#define RFX_G_TOUCH_PCT_DEFAULT		80
 #define RFX_G_TOUCH_MS_DEFAULT		200
 #define RFX_G_MIN_SAMPLE_US_DEFAULT	20000
 #define RFX_G_DOWN_FAST_PCT_DEFAULT	2
@@ -395,9 +395,16 @@ static inline u64 rfx_elapsed(u64 time, u64 stamp)
 }
 
 static unsigned int rfx_ceil_rise_filter(struct rfx_policy *p,
-					 unsigned int pct, u64 time)
+					 unsigned int pct, u64 time, bool gaming)
 {
 	u64 budget;
+
+	if (gaming) {
+		p->ceil_rise_pct = pct;
+		p->ceil_fall_ns = 0;
+		p->ceil_rise_ref_ns = time;
+		return pct;
+	}
 
 	if (pct <= p->ceil_rise_pct) {
 		if (pct == p->ceil_rise_pct) {
@@ -648,7 +655,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 	if (unlikely(!fmax))
 		return pol->cur;
 
-	fceil = rfx_pct(fmax, rfx_ceil_rise_filter(p, fceil_pct, time));
+	fceil = rfx_pct(fmax, rfx_ceil_rise_filter(p, fceil_pct, time, gaming));
 	fceil = clamp(fceil, fmin, fmax);
 	p->dbg_fceil_pct = fceil_pct;
 
@@ -685,7 +692,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		rfx_warmup_arm(p, demand_pct, time);
 		if (!little)
 			rfx_risk_rearm(p, demand_pct,
-				       rfx_pct(fceil, RFX_G_WARMUP_FLOOR_PCT),
+				       min(rfx_pct(fmax, RFX_G_WARMUP_FLOOR_PCT), fceil),
 				       time);
 		hold = rfx_descend_hold(p, demand_pct, true,
 					p->thermal_cooling, time);
@@ -721,35 +728,16 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		}
 
 		if (prime)
-			fl = rfx_pct(fceil, RFX_G_PRIME_FLOOR_PCT);
+			fl = min(rfx_pct(fmax, RFX_G_PRIME_FLOOR_PCT), fceil);
 		else if (!little)
-			fl = rfx_pct(fceil, RFX_G_BIG_FLOOR_PCT);
+			fl = min(rfx_pct(fmax, RFX_G_BIG_FLOOR_PCT), fceil);
 		else
-			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
+			fl = min(rfx_pct(fmax, RFX_G_LITTLE_FLOOR_PCT), fceil);
 
 		warmup_fl = !little ?
-				rfx_pct(fceil, prime ? 74 : RFX_G_WARMUP_FLOOR_PCT) : fl;
+				min(rfx_pct(fmax, prime ? 85 : RFX_G_WARMUP_FLOOR_PCT), fceil) : fl;
 
 		depth = rfx_cool_depth(fceil_pct);
-
-		if (p->thermal_cooling) {
-			unsigned int steady = rfx_pct(fceil,
-						      RFX_G_COOL_STEADY_FLOOR_PCT);
-
-			if (fl > steady)
-				fl -= (fl - steady) * depth / 100;
-			if (warmup_fl > steady)
-				warmup_fl -= (warmup_fl - steady) * depth / 100;
-		}
-
-		if (!little && depth && RFX_G_COOL_CAP_PCT < 100) {
-			unsigned int walk = fceil -
-				(fceil - rfx_pct(fceil,
-					RFX_G_COOL_CAP_PCT)) * depth / 100;
-
-			if (freq > walk)
-				freq = walk;
-		}
 
 		slew_ns = rfx_elapsed(time, max(p->last_upfreq_time,
 						p->last_downfreq_time));
@@ -799,7 +787,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		}
 
 		if (p->floor_gated && !warmup_active && warmup_ramp_pct == 0)
-			fl = rfx_pct(fceil, RFX_G_IDLE_FLOOR_PCT);
+			fl = min(rfx_pct(fmax, RFX_G_IDLE_FLOOR_PCT), fceil);
 		else if (warmup_ramp_pct > 0 && warmup_fl > fl)
 			fl = fl + (warmup_fl - fl) * warmup_ramp_pct / 100;
 
@@ -807,63 +795,40 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			freq = fl;
 
 		if (little) {
-#if RFX_G_TOUCH_PCT_DEFAULT && RFX_G_TOUCH_MS_DEFAULT
-			if (rfx_touch_active(time, (u64)RFX_G_TOUCH_MS_DEFAULT * NSEC_PER_MSEC)) {
-				unsigned int l_touch = rfx_pct(fceil, 48);
+			if (rfx_touch_active(time, (u64)RFX_G_TOUCH_MS_DEFAULT * NSEC_PER_MSEC) ||
+			    demand_pct >= 48) {
+				unsigned int l_boost = min(rfx_pct(fmax, 60), fceil);
 
-				if (freq < l_touch)
-					freq = l_touch;
+				if (freq < l_boost)
+					freq = l_boost;
 			}
-#endif
 		} else {
 			unsigned int boost_fl = 0;
 
-			if (RFX_G_HISPEED_PCT_DEFAULT) {
-				if (demand_pct >= RFX_G_GO_HISPEED_PCT_DEFAULT)
-					p->hispeed_hold_end_ns = time +
-					  (u64)RFX_G_HISPEED_HOLD_US_DEFAULT *
-					  NSEC_PER_USEC;
-				if (p->hispeed_hold_end_ns &&
-				    time < p->hispeed_hold_end_ns) {
-					unsigned int hs_pct = prime ? 78 : RFX_G_HISPEED_PCT_DEFAULT;
-
-					if (p->thermal_cooling && depth) {
-						unsigned int min_hs = prime ? 72 : 56;
-
-						if (hs_pct > min_hs)
-							hs_pct -= (hs_pct - min_hs) * depth / 100;
-					}
-					boost_fl = rfx_pct(fceil, hs_pct);
-				}
+			if (demand_pct >= RFX_G_GO_HISPEED_PCT_DEFAULT)
+				p->hispeed_hold_end_ns = time +
+				  (u64)RFX_G_HISPEED_HOLD_US_DEFAULT *
+				  NSEC_PER_USEC;
+			if (p->hispeed_hold_end_ns &&
+			    time < p->hispeed_hold_end_ns) {
+				unsigned int hs_pct = prime ? 85 : RFX_G_HISPEED_PCT_DEFAULT;
+				boost_fl = min(rfx_pct(fmax, hs_pct), fceil);
 			}
-#if RFX_G_TOUCH_PCT_DEFAULT && RFX_G_TOUCH_MS_DEFAULT
 
 			if (rfx_touch_active(time, (u64)RFX_G_TOUCH_MS_DEFAULT * NSEC_PER_MSEC)) {
 				unsigned int touch_pct = prime ?
 					RFX_G_PRIME_TOUCH_PCT :
 					RFX_G_TOUCH_PCT_DEFAULT;
-
-				if (p->thermal_cooling && depth) {
-					unsigned int min_touch = prime ? 62 : 52;
-
-					if (touch_pct > min_touch)
-						touch_pct -= (touch_pct - min_touch) * depth / 100;
-				}
 				boost_fl = max(boost_fl,
-					       rfx_pct(fceil, touch_pct));
+					       min(rfx_pct(fmax, touch_pct), fceil));
 			}
-#endif
-			if (demand_pct >= 84 || (demand_pct >= 60 && demand_pct > prev_demand + 14))
+
+			if (demand_pct >= 75 || (demand_pct >= 55 && demand_pct > prev_demand + 12))
 				p->surge_hold_end_ns = time + (u64)128000 * NSEC_PER_USEC;
 			if (p->surge_hold_end_ns && time < p->surge_hold_end_ns) {
-				unsigned int s_fl;
+				unsigned int s_fl = prime ? 98 : 92;
 
-				if (prime)
-					s_fl = (demand_pct >= 84) ? 98 : 82;
-				else
-					s_fl = (demand_pct >= 84) ? 88 : 82;
-
-				boost_fl = max(boost_fl, rfx_pct(fceil, s_fl));
+				boost_fl = max(boost_fl, min(rfx_pct(fmax, s_fl), fceil));
 			}
 
 			if (freq < boost_fl)
@@ -1001,7 +966,7 @@ static void rfx_iowait_boost(struct rfx_cpu *rfx_c, u64 time, unsigned int flags
 
 	if (rfx_c->iowait_boost) {
 
-		cap = rfx_gaming_enabled() ? SCHED_CAPACITY_SCALE : (SCHED_CAPACITY_SCALE / 4);
+		cap = rfx_gaming_enabled() ? SCHED_CAPACITY_SCALE : (SCHED_CAPACITY_SCALE / 8);
 		rfx_c->iowait_boost = min_t(unsigned int,
 					    rfx_c->iowait_boost << 1, cap);
 		return;
@@ -1965,29 +1930,32 @@ static void __init rfx_selfcheck(void)
 	memset(&p, 0, sizeof(p));
 	p.ceil_rise_pct = 100;
 	p.ceil_rise_ref_ns = t;
-	WARN_ON(rfx_ceil_rise_filter(&p, 80, t) != 80);
+	WARN_ON(rfx_ceil_rise_filter(&p, 80, t, false) != 80);
 	WARN_ON(p.ceil_fall_ns);
 
-	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 2 * NSEC_PER_MSEC) != 81);
-	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 4 * NSEC_PER_MSEC) != 82);
+	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 2 * NSEC_PER_MSEC, false) != 81);
+	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 4 * NSEC_PER_MSEC, false) != 82);
 
-	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + NSEC_PER_SEC) != 100);
+	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + NSEC_PER_SEC, false) != 100);
 
-	WARN_ON(rfx_ceil_rise_filter(&p, 60, t + NSEC_PER_SEC + 1) != 60);
+	WARN_ON(rfx_ceil_rise_filter(&p, 60, t + NSEC_PER_SEC + 1, false) != 60);
+
+	/* In gaming mode, rise filter bypasses delay immediately */
+	WARN_ON(rfx_ceil_rise_filter(&p, 95, t + NSEC_PER_SEC + 2, true) != 95);
 
 	memset(&p, 0, sizeof(p));
 	p.ceil_rise_pct = 100;
 	p.ceil_rise_ref_ns = t;
-	WARN_ON(rfx_ceil_rise_filter(&p, 98, t) != 100);
+	WARN_ON(rfx_ceil_rise_filter(&p, 98, t, false) != 100);
 
-	WARN_ON(rfx_ceil_rise_filter(&p, 97, t + 5 * NSEC_PER_MSEC) != 100);
+	WARN_ON(rfx_ceil_rise_filter(&p, 97, t + 5 * NSEC_PER_MSEC, false) != 100);
 
-	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 6 * NSEC_PER_MSEC) != 100);
-	WARN_ON(rfx_ceil_rise_filter(&p, 98, t + 7 * NSEC_PER_MSEC) != 100);
+	WARN_ON(rfx_ceil_rise_filter(&p, 100, t + 6 * NSEC_PER_MSEC, false) != 100);
+	WARN_ON(rfx_ceil_rise_filter(&p, 98, t + 7 * NSEC_PER_MSEC, false) != 100);
 
-	WARN_ON(rfx_ceil_rise_filter(&p, 98, t + 23 * NSEC_PER_MSEC) != 98);
+	WARN_ON(rfx_ceil_rise_filter(&p, 98, t + 23 * NSEC_PER_MSEC, false) != 98);
 
-	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 24 * NSEC_PER_MSEC) != 90);
+	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 24 * NSEC_PER_MSEC, false) != 90);
 
 	memset(&p, 0, sizeof(p));
 	rfx_warmup_rearm_quiet(&p, RFX_GAMING_WARMUP_TRIGGER_PCT - 1, t);
