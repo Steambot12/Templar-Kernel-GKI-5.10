@@ -1930,8 +1930,8 @@ void balance_dirty_pages_ratelimited(struct address_space *mapping)
 	 * preemption or acquiring per-CPU pointers.
 	 */
 	if (likely(current->nr_dirtied < ratelimit &&
-		   this_cpu_read(bdp_ratelimits) < ratelimit_pages &&
-		   this_cpu_read(dirty_throttle_leaks) <= 0)) {
+		   raw_cpu_read(bdp_ratelimits) < ratelimit_pages &&
+		   raw_cpu_read(dirty_throttle_leaks) <= 0)) {
 		wb_put(wb);
 		return;
 	}

@@ -1184,6 +1184,9 @@ static bool suitable_migration_source(struct compact_control *cc,
 	if (pageblock_skip_persistent(page))
 		return false;
 
+	if ((cc->mode != MIGRATE_ASYNC) || !cc->direct_compaction)
+		return true;
+
 	if (cc->ignore_block_suitable)
 		return true;
 
