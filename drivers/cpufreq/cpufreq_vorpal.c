@@ -55,13 +55,13 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_LITTLE_CAP_THRESHOLD	614
 #define RFX_PRIME_CAP_THRESHOLD		1000
 
-#define RFX_LITTLE_RATE_US		3000
+#define RFX_LITTLE_RATE_US		4000
 #define RFX_LITTLE_UP_US		200
-#define RFX_LITTLE_DOWN_US		3000
+#define RFX_LITTLE_DOWN_US		4000
 
 #define RFX_BIG_RATE_US			3000
 #define RFX_BIG_UP_US			500
-#define RFX_BIG_DOWN_US			2500
+#define RFX_BIG_DOWN_US			3500
 
 #define RFX_FAST_RATE_US		250
 #define RFX_GAMING_DOWN_US		10000
@@ -89,42 +89,42 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_DOWN_FAST_MS_DEFAULT	32
 #define RFX_G_ENERGY_AWARE_DEFAULT	0
 
-#define RFX_D_LITTLE_CAP_PCT		54
-#define RFX_D_LITTLE_FLOOR_PCT		26
-#define RFX_D_LITTLE_FLOOR_ARM_PCT	15
+#define RFX_D_LITTLE_CAP_PCT		48
+#define RFX_D_LITTLE_FLOOR_PCT		22
+#define RFX_D_LITTLE_FLOOR_ARM_PCT	12
 #define RFX_D_LITTLE_FLOOR_REARM_PCT	6
 #define RFX_D_LITTLE_FLOOR_NS		(40 * NSEC_PER_MSEC)
-#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	60
-#define RFX_D_LITTLE_LIFT_PCT		58
-#define RFX_D_LITTLE_DROP_PCT		44
+#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	54
+#define RFX_D_LITTLE_LIFT_PCT		62
+#define RFX_D_LITTLE_DROP_PCT		40
 
-#define RFX_D_BIG_CAP_PCT		56
-#define RFX_D_PRIME_CAP_PCT		38
-#define RFX_D_BIG_LIFT_PCT		56
-#define RFX_D_BIG_DROP_PCT		42
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	64
-#define RFX_D_PRIME_SUSTAINED_CAP_PCT	45
-#define RFX_D_BURST_TRIGGER_PCT		85
-#define RFX_D_BURST_CAP_PCT		76
-#define RFX_D_PRIME_BURST_CAP_PCT	55
+#define RFX_D_BIG_CAP_PCT		48
+#define RFX_D_PRIME_CAP_PCT		32
+#define RFX_D_BIG_LIFT_PCT		60
+#define RFX_D_BIG_DROP_PCT		38
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	56
+#define RFX_D_PRIME_SUSTAINED_CAP_PCT	38
+#define RFX_D_BURST_TRIGGER_PCT		88
+#define RFX_D_BURST_CAP_PCT		68
+#define RFX_D_PRIME_BURST_CAP_PCT	48
 #define RFX_D_TOUCH_FLOOR_MIN_DEMAND	16
-#define RFX_D_BIG_TOUCH_FLOOR_PCT	36
+#define RFX_D_BIG_TOUCH_FLOOR_PCT	30
 
-#define RFX_D_IDLE_EVAL_US		50000
-#define RFX_D_LIGHT_EVAL_OPP_PCT	25
-#define RFX_D_LIGHT_EVAL_US		30000
-#define RFX_D_LITTLE_MIN_SAMPLE_US	4000
-#define RFX_D_BIG_MIN_SAMPLE_US		2000
+#define RFX_D_IDLE_EVAL_US		80000
+#define RFX_D_LIGHT_EVAL_OPP_PCT	30
+#define RFX_D_LIGHT_EVAL_US		45000
+#define RFX_D_LITTLE_MIN_SAMPLE_US	6000
+#define RFX_D_BIG_MIN_SAMPLE_US		3000
 #define RFX_D_ENERGY_AWARE		1
 #define RFX_D_ENERGY_AWARE_MIN_PCT	0
-#define RFX_D_PARK_EXIT_PCT		14
-#define RFX_D_PARK_EXIT_EVALS		1
+#define RFX_D_PARK_EXIT_PCT		16
+#define RFX_D_PARK_EXIT_EVALS		2
 #define RFX_D_TOUCH_WINDOW_MS		100
 
 #define RFX_EMA_DECAY_PERIOD_NS		250000
 
 #define RFX_EMA_GAMING_DIVISOR		160
-#define RFX_EMA_DAILY_DIVISOR		35
+#define RFX_EMA_DAILY_DIVISOR		28
 
 #define RFX_EMA_MAX_STEPS		40
 
@@ -1001,7 +1001,7 @@ static void rfx_iowait_boost(struct rfx_cpu *rfx_c, u64 time, unsigned int flags
 
 	if (rfx_c->iowait_boost) {
 
-		cap = rfx_gaming_enabled() ? SCHED_CAPACITY_SCALE : (SCHED_CAPACITY_SCALE / 8);
+		cap = rfx_gaming_enabled() ? SCHED_CAPACITY_SCALE : (SCHED_CAPACITY_SCALE / 4);
 		rfx_c->iowait_boost = min_t(unsigned int,
 					    rfx_c->iowait_boost << 1, cap);
 		return;
@@ -1062,8 +1062,8 @@ static inline void rfx_set_down_delay(struct rfx_policy *p, bool gaming, u64 tim
 			}
 		} else if (!touch) {
 
-			p->down_rate_delay_ns = min_t(s64, p->down_rate_delay_ns, 1000LL * NSEC_PER_USEC);
-			p->min_sample_ns = (s64)(p->is_little ? 1000LL : 500LL) * NSEC_PER_USEC;
+			p->down_rate_delay_ns = min_t(s64, p->down_rate_delay_ns, 800LL * NSEC_PER_USEC);
+			p->min_sample_ns = (s64)(p->is_little ? 800LL : 400LL) * NSEC_PER_USEC;
 		} else {
 
 			p->min_sample_ns = (s64)(p->is_little ?
