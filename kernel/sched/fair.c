@@ -3858,6 +3858,26 @@ dequeue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
 #endif
 
 /*
+ * EEVDF: calculate bounded entity lag (V - vruntime).
+ * Clamped to ±2 slices to prevent unbounded accumulation and s64 overflow.
+ */
+static s64 entity_lag(u64 avruntime, struct sched_entity *se)
+{
+	s64 vlag, limit;
+
+	vlag = (s64)(avruntime - se->vruntime);
+	limit = calc_delta_fair(max_t(u64, 2 * se->slice, TICK_NSEC), se);
+#ifdef CONFIG_SCHED_BORE
+	/* BORE 6.8.0: halve the clamp so a sleeper restores at most one
+	 * slice of credit/debt on wake; long sleepers stop banking large
+	 * catch-up credit. */
+	if (likely(sched_bore))
+		limit >>= 1;
+#endif /* CONFIG_SCHED_BORE */
+	return clamp(vlag, -limit, limit);
+}
+
+/*
  * EEVDF: rescale vruntime and deadline into the new weight domain. Both are
  * weight-dependent (deadline = vruntime + calc_delta_fair(slice, se)), so a
  * weight change without this leaves a stale deadline and corrupts the
@@ -3865,23 +3885,26 @@ dequeue_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) { }
  * avg_vruntime() so lag and remaining slice are preserved: lag' = lag *
  * old_weight / weight.
  *
- * Pure EEVDF, no CONFIG_SCHED_BORE dependency. Backport of mainline commit
- * eab03c23c2a1 ("sched/eevdf: Fix vruntime adjustment on reweight").
+ * Backport of mainline commit eab03c23c2a1 ("sched/eevdf: Fix vruntime
+ * adjustment on reweight") with CVE-2024-35985 fix: clamp vlag via
+ * entity_lag() and vslice to avoid s64 multiplication overflow.
  */
 static void reweight_eevdf(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			   unsigned long weight)
 {
 	unsigned long old_weight = se->load.weight;	/* read BEFORE update_load_set */
 	u64 avruntime = avg_vruntime(cfs_rq);
-	s64 vlag, vslice;
+	s64 vlag, vslice, limit;
 
 	if (avruntime != se->vruntime) {
-		vlag = (s64)(avruntime - se->vruntime);
+		vlag = entity_lag(avruntime, se);
 		vlag = div_s64(vlag * old_weight, weight);
 		se->vruntime = avruntime - vlag;
 	}
 
 	vslice = (s64)(se->deadline - avruntime);
+	limit = calc_delta_fair(se->slice, se);
+	vslice = clamp(vslice, -limit, limit);
 	vslice = div_s64(vslice * old_weight, weight);
 	se->deadline = avruntime + vslice;
 }
@@ -3893,9 +3916,9 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 	u64 old_deadline = 0;
 
 	if (se->on_rq) {
-		/* commit outstanding execution time */
+		/* commit outstanding execution time unconditionally so V is up-to-date */
+		update_curr(cfs_rq);
 		if (curr) {
-			update_curr(cfs_rq);
 			/* capture AFTER update_curr, for the RUN_TO_PARITY marker guard below */
 			old_deadline = se->deadline;
 		} else {
@@ -5132,20 +5155,8 @@ static inline bool entity_is_long_sleeper(struct sched_entity *se)
  */
 static void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	s64 lag, limit;
-
 	SCHED_WARN_ON(!se->on_rq);
-	lag = avg_vruntime(cfs_rq) - se->vruntime;
-
-	limit = calc_delta_fair(max_t(u64, 2 * se->slice, TICK_NSEC), se);
-#ifdef CONFIG_SCHED_BORE
-	/* BORE 6.8.0: halve the clamp so a sleeper restores at most one
-	 * slice of credit/debt on wake; long sleepers stop banking large
-	 * catch-up credit. */
-	if (likely(sched_bore))
-		limit >>= 1;
-#endif /* CONFIG_SCHED_BORE */
-	se->vlag = clamp(lag, -limit, limit);
+	se->vlag = entity_lag(avg_vruntime(cfs_rq), se);
 }
 
 /*
