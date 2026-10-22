@@ -66,7 +66,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_FAST_RATE_US		250
 #define RFX_GAMING_DOWN_US		10000
 
-#define RFX_G_PRIME_FLOOR_PCT		58
+#define RFX_G_PRIME_FLOOR_PCT		68
 #define RFX_G_BIG_FLOOR_PCT		54
 #define RFX_G_WARMUP_FLOOR_PCT		70
 #define RFX_G_LITTLE_FLOOR_PCT		42
@@ -80,8 +80,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_EVAL_US_DEFAULT		250
 #define RFX_G_HISPEED_PCT_DEFAULT	68
 
-#define RFX_G_GO_HISPEED_PCT_DEFAULT	64
-#define RFX_G_HISPEED_HOLD_US_DEFAULT	48000
+#define RFX_G_GO_HISPEED_PCT_DEFAULT	56
+#define RFX_G_HISPEED_HOLD_US_DEFAULT	120000
 #define RFX_G_TOUCH_PCT_DEFAULT		62
 #define RFX_G_TOUCH_MS_DEFAULT		200
 #define RFX_G_MIN_SAMPLE_US_DEFAULT	20000
@@ -112,7 +112,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 #define RFX_D_IDLE_EVAL_US		80000
 #define RFX_D_LIGHT_EVAL_OPP_PCT	30
-#define RFX_D_LIGHT_EVAL_US		45000
+#define RFX_D_LIGHT_EVAL_US		50000
 #define RFX_D_LITTLE_MIN_SAMPLE_US	6000
 #define RFX_D_BIG_MIN_SAMPLE_US		3000
 #define RFX_D_ENERGY_AWARE		1
@@ -854,7 +854,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			}
 #endif
 			if (demand_pct >= 84 || (demand_pct >= 60 && demand_pct > prev_demand + 14))
-				p->surge_hold_end_ns = time + (u64)64000 * NSEC_PER_USEC;
+				p->surge_hold_end_ns = time + (u64)128000 * NSEC_PER_USEC;
 			if (p->surge_hold_end_ns && time < p->surge_hold_end_ns) {
 				unsigned int s_fl;
 
