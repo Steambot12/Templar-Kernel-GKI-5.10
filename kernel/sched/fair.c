@@ -7956,7 +7956,11 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	cpu = smp_processor_id();
 	if (sync && cpu_rq(cpu)->nr_running == 1 &&
 	    cpumask_test_cpu(cpu, p->cpus_ptr) &&
-	    task_fits_cpu(p, cpu)) {
+	    task_fits_cpu(p, cpu) &&
+	    (arch_scale_cpu_capacity(cpu) < 1000 ||
+	     task_util_est(p) >= 128 ||
+	     uclamp_boosted(p) ||
+	     uclamp_latency_sensitive(p))) {
 		rcu_read_unlock();
 		return cpu;
 	}
@@ -8130,27 +8134,21 @@ unlock:
 		return best_idle_cpu >= 0 ? best_idle_cpu : max_spare_cap_cpu_ls;
 
 	/*
-	 * Pick the best CPU if prev_cpu cannot be used, or if it saves at
-	 * least the required energy margin.
+	 * Pick the best CPU if prev_cpu cannot be used, or if it saves energy
+	 * compared to prev_cpu.
 	 *
-	 * BACKPORT (Linux 6.12 dynamic energy margin):
-	 * Scale the migration threshold by task utilization so lightweight
-	 * tasks (UI events, touch, background threads) do not oscillate between
-	 * CPU clusters over tiny marginal energy deltas.
+	 * Mainline EAS (Vincent Donnefort / Arm):
+	 * Remove the artificial base_energy margin. compute_energy() is a delta
+	 * calculation, not an absolute system metric; adding SoC-wide base_energy
+	 * creates an impassable barrier (70-150mW) that permanently traps small
+	 * tasks on Big/Prime cores and prevents migration to Little cores, causing
+	 * severe active and idle battery drain.
 	 */
 	if (prev_delta == ULONG_MAX)
 		return best_energy_cpu;
 
-	{
-		unsigned long margin = (prev_delta + base_energy) >> 4;
-		unsigned long task_util = task_util_est(p);
-
-		if (task_util < 128)
-			margin += (margin >> 1); /* +50% margin for small tasks to prevent thrashing */
-
-		if ((prev_delta - best_delta) > margin)
-			return best_energy_cpu;
-	}
+	if (best_delta < prev_delta)
+		return best_energy_cpu;
 
 	return prev_cpu;
 
