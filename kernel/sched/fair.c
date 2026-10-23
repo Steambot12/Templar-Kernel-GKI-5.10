@@ -7432,6 +7432,8 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 			/* overloaded LLC is unlikely to have idle cpu/core */
 			if (nr == 1)
 				return -1;
+
+			nr = min_t(int, nr, sd->span_weight);
 		}
 	}
 
@@ -7934,7 +7936,7 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	struct root_domain *rd = cpu_rq(smp_processor_id())->rd;
 	int max_spare_cap_cpu_ls = prev_cpu, best_idle_cpu = -1;
 	unsigned long max_spare_cap_ls = 0, target_cap;
-	unsigned long cpu_cap, util, base_energy = 0;
+	unsigned long cpu_cap, util;
 	bool boosted, latency_sensitive = false;
 	unsigned int min_exit_lat = UINT_MAX;
 	int cpu, best_energy_cpu = prev_cpu;
@@ -8013,8 +8015,51 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	if (!sd)
 		goto fail;
 
-	if (!task_util_est(p) && p_util_min == 0)
+	if (!task_util_est(p) && p_util_min == 0) {
+		/*
+		 * If a zero-util wakee previously touched a Big or Prime core,
+		 * redirect it to an idle LITTLE core rather than waking or
+		 * keeping the high-power cluster awake.
+		 *
+		 * Deliberately no active-CPU fallback: if no Little core is
+		 * idle right now, keep the wakee on its previous Big/Prime
+		 * core instead of packing zero-util background work onto a
+		 * busy Little core, which would only starve that cluster and
+		 * hurt daily-use responsiveness.
+		 */
+		if (arch_scale_cpu_capacity(prev_cpu) > 614 &&
+		    !uclamp_boosted(p) && !uclamp_latency_sensitive(p)) {
+			struct perf_domain *min_pd = pd;
+			struct perf_domain *it_pd;
+			unsigned long min_cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(pd)));
+			int target;
+
+			for (it_pd = pd->next; it_pd; it_pd = it_pd->next) {
+				unsigned long cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(it_pd)));
+
+				if (cap < min_cap) {
+					min_cap = cap;
+					min_pd = it_pd;
+				}
+			}
+
+			/*
+			 * Only steer into the Little domain if it is genuinely the
+			 * energy-efficient one, and only if the task can actually fit
+			 * on a Little core; otherwise leave it on prev_cpu.
+			 */
+			if (arch_scale_cpu_capacity(cpumask_first(perf_domain_span(min_pd))) <= 614 &&
+			    task_fits_cpu(p, cpumask_first(perf_domain_span(min_pd)))) {
+				for_each_cpu_and(target, perf_domain_span(min_pd), p->cpus_ptr) {
+					if (cpu_active(target) && available_idle_cpu(target)) {
+						rcu_read_unlock();
+						return target;
+					}
+				}
+			}
+		}
 		goto unlock;
+	}
 
 	latency_sensitive = uclamp_latency_sensitive(p);
 	boosted = uclamp_boosted(p);
@@ -8033,10 +8078,8 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 		 * Latency-sensitive tasks pick idle or max spare capacity CPUs
 		 * directly and do not evaluate energy deltas.
 		 */
-		if (!latency_sensitive) {
+		if (!latency_sensitive)
 			base_energy_pd = compute_energy(p, -1, pd);
-			base_energy += base_energy_pd;
-		}
 
 		for_each_cpu_and(cpu, perf_domain_span(pd), sched_domain_span(sd)) {
 			if (!cpumask_test_cpu(cpu, p->cpus_ptr))

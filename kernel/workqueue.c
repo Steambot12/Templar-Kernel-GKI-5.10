@@ -1402,41 +1402,27 @@ static int wq_select_unbound_cpu(int cpu)
 		 */
 		if (wq_power_efficient) {
 			int target;
-			int fallback = -1;
+			int little_cpus[NR_CPUS];
+			int count = 0;
 
 			if (cpumask_test_cpu(cpu, wq_unbound_cpumask) &&
 			    arch_scale_cpu_capacity(cpu) <= 614)
 				return cpu;
 
-			/* Fast-path: find an idle LITTLE CPU */
+			/* Fast-path: find an idle LITTLE CPU while recording online candidates in a single pass */
 			for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
 				if (arch_scale_cpu_capacity(target) <= 614) {
 					if (available_idle_cpu(target))
 						return target;
-					if (fallback < 0)
-						fallback = target;
+					little_cpus[count++] = target;
 				}
 			}
 
-			/* Fallback: distribute evenly among online LITTLE CPUs to avoid CPU 0 hot-spotting */
-			if (fallback >= 0) {
+			/* Fallback: O(1) direct round-robin among recorded LITTLE CPUs */
+			if (count > 0) {
 				static atomic_t wq_little_cursor = ATOMIC_INIT(0);
-				int count = 0, idx, pick = 0;
-
-				for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
-					if (arch_scale_cpu_capacity(target) <= 614)
-						count++;
-				}
-				if (count > 1) {
-					idx = (unsigned int)atomic_inc_return(&wq_little_cursor) % count;
-					for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
-						if (arch_scale_cpu_capacity(target) <= 614) {
-							if (pick++ == idx)
-								return target;
-						}
-					}
-				}
-				return fallback;
+				unsigned int idx = (unsigned int)atomic_inc_return(&wq_little_cursor) % count;
+				return little_cpus[idx];
 			}
 		}
 

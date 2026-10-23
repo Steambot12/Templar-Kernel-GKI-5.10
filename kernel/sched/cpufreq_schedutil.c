@@ -487,10 +487,17 @@ static inline void ignore_rate_limit_latency_sensitive(struct sugov_cpu *sg_cpu,
 		return;
 	}
 
-	if (uclamp_is_used() && rq->curr &&
-	    (uclamp_latency_sensitive(rq->curr) || uclamp_boosted(rq->curr))) {
-		WRITE_ONCE(sg_policy->limits_changed, true);
-		return;
+	if (uclamp_is_used()) {
+		if (uclamp_rq_get(rq, UCLAMP_MIN) > 0) {
+			WRITE_ONCE(sg_policy->limits_changed, true);
+			return;
+		}
+
+		if (rq->curr &&
+		    (uclamp_latency_sensitive(rq->curr) || uclamp_boosted(rq->curr))) {
+			WRITE_ONCE(sg_policy->limits_changed, true);
+			return;
+		}
 	}
 }
 
