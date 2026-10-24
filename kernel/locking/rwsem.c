@@ -380,6 +380,15 @@ enum writer_wait_state {
 #define RWSEM_WAIT_TIMEOUT	DIV_ROUND_UP(HZ, 250)
 
 /*
+ * BACKPORT (Linux 6.12):
+ * Bound optimistic spinning loop iterations. On asymmetric big.LITTLE
+ * architectures, indefinite spinning while the owner executes on a
+ * lower-frequency core burns excessive power and causes thermal
+ * throttling. Yield to slowpath if threshold reached.
+ */
+#define RWSEM_OPT_SPIN_LIMIT	1024
+
+/*
  * Magic number to batch-wakeup waiting readers, even when writers are
  * also present in the queue. This both limits the amount of work the
  * waking thread must do and also prevents any potential counter overflow,
@@ -767,7 +776,7 @@ rwsem_spin_on_owner(struct rw_semaphore *sem, unsigned long nonspinnable)
 		 * executes on a lower-frequency core burns excessive power and
 		 * causes thermal throttling. Yield to slowpath if threshold reached.
 		 */
-		if (++cnt > 1024) {
+		if (++cnt > RWSEM_OPT_SPIN_LIMIT) {
 			state = OWNER_NONSPINNABLE;
 			break;
 		}
@@ -917,6 +926,18 @@ static bool rwsem_optimistic_spin(struct rw_semaphore *sem, bool wlock)
 			   (prev_owner_state != OWNER_WRITER))
 				break;
 		}
+		/*
+		 * BACKPORT (Linux 6.12):
+		 * Bound the outer optimistic spinning loop so a spinner
+		 * whose owner keeps changing or repeatedly fails the
+		 * trylock acquires does not burn unbounded power on
+		 * asymmetric big.LITTLE cores. Yield to the slowpath
+		 * after RWSEM_OPT_SPIN_LIMIT full owner/trylock cycles.
+		 * Mirrors the bound in rwsem_spin_on_owner().
+		 */
+		if (++cnt > RWSEM_OPT_SPIN_LIMIT)
+			break;
+
 		prev_owner_state = owner_state;
 
 		/*
