@@ -66,8 +66,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_FAST_RATE_US		250
 #define RFX_GAMING_DOWN_US		4000
 
-#define RFX_G_PRIME_FLOOR_PCT		72
-#define RFX_G_BIG_FLOOR_PCT		70
+#define RFX_G_PRIME_FLOOR_PCT		64
+#define RFX_G_BIG_FLOOR_PCT		66
 #define RFX_G_WARMUP_FLOOR_PCT		78
 #define RFX_G_LITTLE_FLOOR_PCT		56
 #define RFX_G_PRIME_TOUCH_PCT		82
@@ -93,7 +93,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_LITTLE_FLOOR_PCT		20
 #define RFX_D_LITTLE_FLOOR_ARM_PCT	12
 #define RFX_D_LITTLE_FLOOR_REARM_PCT	6
-#define RFX_D_LITTLE_FLOOR_NS		(40 * NSEC_PER_MSEC)
+#define RFX_D_LITTLE_FLOOR_NS		(20 * NSEC_PER_MSEC)
 #define RFX_D_LITTLE_SUSTAINED_CAP_PCT	50
 #define RFX_D_LITTLE_LIFT_PCT		62
 #define RFX_D_LITTLE_DROP_PCT		40
@@ -119,12 +119,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_ENERGY_AWARE_MIN_PCT	0
 #define RFX_D_PARK_EXIT_PCT		16
 #define RFX_D_PARK_EXIT_EVALS		2
-#define RFX_D_TOUCH_WINDOW_MS		100
+#define RFX_D_TOUCH_WINDOW_MS		60
 
 #define RFX_EMA_DECAY_PERIOD_NS		250000
 
 #define RFX_EMA_GAMING_DIVISOR		64
-#define RFX_EMA_DAILY_DIVISOR		28
+#define RFX_EMA_DAILY_DIVISOR		36
 
 #define RFX_EMA_MAX_STEPS		40
 
@@ -136,7 +136,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_HEADROOM_DAILY_HIGH		0
 #define RFX_HEADROOM_DAILY_MID		0
 
-#define RFX_HEADROOM_GAMING		18
+#define RFX_HEADROOM_GAMING		10
 #define RFX_HEADROOM_GAMING_GATE	0
 
 #define RFX_SAT_TO_MAX_GAMING_PCT	80
@@ -905,15 +905,16 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * Latch 80% Prime, 78% Big, 66% Little for 500ms.
 		 * Sustains 40-50% CPU usage, 4W-5W power, and 0.0% jitter.
 		 */
-		if (demand_pct >= 85) {
+		if (demand_pct >= 85 && (demand_pct > prev_demand + 8 || p->surge_tier >= 3)) {
 			p->surge_hold_end_ns = time + (u64)500000 * NSEC_PER_USEC;
-			p->surge_tier = 3;
-		} else if (demand_pct >= 70) {
+			if (p->surge_tier < 3)
+				p->surge_tier = 3;
+		} else if (demand_pct >= 70 && demand_pct > prev_demand + 8) {
 			p->surge_hold_end_ns = time + (u64)500000 * NSEC_PER_USEC;
 			if (p->surge_tier < 2)
 				p->surge_tier = 2;
-		} else if (demand_pct >= 52 && (demand_pct > prev_demand + 8 || p->surge_tier == 1)) {
-			p->surge_hold_end_ns = time + (u64)500000 * NSEC_PER_USEC;
+		} else if (demand_pct >= 52 && demand_pct > prev_demand + 8) {
+			p->surge_hold_end_ns = time + (u64)300000 * NSEC_PER_USEC;
 			if (p->surge_tier < 1)
 				p->surge_tier = 1;
 		}
