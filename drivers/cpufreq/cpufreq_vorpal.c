@@ -87,7 +87,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_MIN_SAMPLE_US_DEFAULT	10000
 #define RFX_G_DOWN_FAST_PCT_DEFAULT	1
 #define RFX_G_DOWN_FAST_MS_DEFAULT	24
-#define RFX_G_ENERGY_AWARE_DEFAULT	0
+#define RFX_G_ENERGY_AWARE_DEFAULT	1
 
 #define RFX_D_LITTLE_CAP_PCT		46
 #define RFX_D_LITTLE_FLOOR_PCT		20
@@ -123,7 +123,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 #define RFX_EMA_DECAY_PERIOD_NS		250000
 
-#define RFX_EMA_GAMING_DIVISOR		80
+#define RFX_EMA_GAMING_DIVISOR		64
 #define RFX_EMA_DAILY_DIVISOR		28
 
 #define RFX_EMA_MAX_STEPS		40
@@ -920,11 +920,15 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 			/*
 			 * Daily Little Cluster Audio & Background Floor:
-			 * Ensure Little cores never drop below RFX_D_LITTLE_FLOOR_PCT (20%)
-			 * during media playback / screen-on, eliminating audio buffer underruns
-			 * and audio-video desync while consuming < 15mW.
+			 * While a floor window is active (recent touch or small
+			 * steady demand >= RFX_D_LITTLE_FLOOR_REARM_PCT), keep
+			 * Little at or above RFX_D_LITTLE_FLOOR_PCT to prevent
+			 * audio underruns and A/V desync. Once the window expires
+			 * and Little demand is ~0, the window drops to fmin so
+			 * idle Little cores do not burn sub-threshold power.
 			 */
-			if (freq < rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT))
+			if (p->little_floor_end_ns && time < p->little_floor_end_ns &&
+			    freq < rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT))
 				freq = rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT);
 		} else {
 			cap = rfx_pct(fceil, prime ? RFX_D_PRIME_CAP_PCT :
