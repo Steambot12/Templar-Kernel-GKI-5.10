@@ -718,14 +718,6 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 						p->warmup_low_demand_since_ns) >=
 					 RFX_GAMING_WARMUP_RELEASE_NS)
 					p->gaming_warmup_end_ns = time;
-			} else if (!p->gaming_warmup_entry &&
-				   demand_pct < RFX_GAMING_WARMUP_RELEASE_PCT) {
-				if (!p->warmup_low_demand_since_ns)
-					p->warmup_low_demand_since_ns = time;
-				else if (rfx_elapsed(time,
-						p->warmup_low_demand_since_ns) >=
-					 RFX_GAMING_WARMUP_RELEASE_NS)
-					p->gaming_warmup_end_ns = time;
 			} else {
 				p->warmup_low_demand_since_ns = 0;
 			}
