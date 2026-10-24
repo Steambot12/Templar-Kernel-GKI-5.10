@@ -162,6 +162,19 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_RISK_CLEAR_PCT		40
 #define RFX_G_RISK_BOOST_NS		(600 * NSEC_PER_MSEC)
 
+/* Render-aware floor (gaming, profile 1):
+ * The stable gaming floor assumes the app is demanding the target high
+ * frame rate. When demand has stayed quiet for RFX_G_RENDER_QUIET_NS
+ * (menus, cutscenes, a low-fps-capped scene) the app is not using that
+ * headroom, so the floor relaxes to RFX_G_RENDER_LOW_FLOOR_PCT of the
+ * ceiling and ramps back up as soon as demand returns. A demand spike
+ * above RFX_G_RENDER_SUSTAIN_PCT unrelaxes instantly.
+ */
+#define RFX_G_RENDER_SUSTAIN_PCT		52
+#define RFX_G_RENDER_QUIET_PCT		40
+#define RFX_G_RENDER_QUIET_NS		(2000 * NSEC_PER_MSEC)
+#define RFX_G_RENDER_LOW_FLOOR_PCT	48
+
 #define RFX_G_FLOOR_GATE_PCT		12
 #define RFX_G_FLOOR_GATE_EXIT_PCT	24
 
@@ -271,6 +284,8 @@ struct rfx_policy {
 
 	u64 descend_hold_end_ns;
 	unsigned int prev_demand_pct;
+
+	u64 render_low_since_ns;
 
 	unsigned int ceil_rise_pct;
 	u64 ceil_rise_ref_ns;
@@ -789,6 +804,29 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		if (warmup_ramp_pct > 0 && warmup_fl > fl)
 			fl = fl + (warmup_fl - fl) * warmup_ramp_pct / 100;
+
+		/*
+		 * Render-aware floor relaxation:
+		 *
+		 * When the render demand has been below
+		 * RFX_G_RENDER_SUSTAIN_PCT for RFX_G_RENDER_QUIET_NS (menus,
+		 * cutscenes, or a capped low-FPS scene) the app is not using
+		 * the stable-120 FPS floor, so relax it to
+		 * RFX_G_RENDER_LOW_FLOOR_PCT of the ceiling.  The floor stays
+		 * full while warmup is active, and a demand spike above
+		 * RFX_G_RENDER_SUSTAIN_PCT restores it immediately.
+		 */
+		if (!warmup_active &&
+		    demand_pct < RFX_G_RENDER_SUSTAIN_PCT) {
+			if (!p->render_low_since_ns)
+				p->render_low_since_ns = time;
+			else if (rfx_elapsed(time, p->render_low_since_ns) >=
+					 RFX_G_RENDER_QUIET_NS &&
+				   demand_pct < RFX_G_RENDER_QUIET_PCT)
+				fl = min(fl, rfx_pct(fceil,
+						     RFX_G_RENDER_LOW_FLOOR_PCT));
+		} else
+			p->render_low_since_ns = 0;
 
 		if (freq < fl)
 			freq = fl;
@@ -1496,6 +1534,7 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->park_exit_count = 0;
 	p->descend_hold_end_ns = 0;
 	p->prev_demand_pct = 0;
+	p->render_low_since_ns = 0;
 	p->ceil_rise_pct = 100;
 	p->ceil_rise_ref_ns = 0;
 	p->ceil_fall_ns = 0;
@@ -2296,6 +2335,8 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_G_PRIME_FLOOR_PCT > RFX_G_PRIME_TOUCH_PCT);
 	BUILD_BUG_ON(RFX_G_PRIME_TOUCH_PCT > RFX_G_PRIME_CAP_PCT);
 	BUILD_BUG_ON(RFX_G_PRIME_FLOOR_PCT > RFX_G_PRIME_COOL_CAP_PCT);
+	BUILD_BUG_ON(RFX_G_RENDER_QUIET_PCT >= RFX_G_RENDER_SUSTAIN_PCT);
+	BUILD_BUG_ON(RFX_G_RENDER_LOW_FLOOR_PCT > RFX_G_BIG_FLOOR_PCT);
 	BUILD_BUG_ON(RFX_G_DOWN_FAST_PCT_DEFAULT > 100);
 	BUILD_BUG_ON(RFX_G_ENERGY_AWARE_DEFAULT > 1);
 
