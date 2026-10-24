@@ -66,26 +66,26 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_FAST_RATE_US		250
 #define RFX_GAMING_DOWN_US		4000
 
-#define RFX_G_PRIME_FLOOR_PCT		78
-#define RFX_G_BIG_FLOOR_PCT		74
-#define RFX_G_WARMUP_FLOOR_PCT		82
-#define RFX_G_LITTLE_FLOOR_PCT		60
-#define RFX_G_PRIME_TOUCH_PCT		86
+#define RFX_G_PRIME_FLOOR_PCT		72
+#define RFX_G_BIG_FLOOR_PCT		70
+#define RFX_G_WARMUP_FLOOR_PCT		78
+#define RFX_G_LITTLE_FLOOR_PCT		56
+#define RFX_G_PRIME_TOUCH_PCT		82
 #define RFX_G_PRIME_CAP_PCT		100
 #define RFX_G_PRIME_TURBO_CAP_PCT	100
 #define RFX_G_PRIME_COOL_CAP_PCT	100
 
 #define RFX_GAMING_DOWN_PCT_PER_2MS	1
 
-#define RFX_G_EVAL_US_DEFAULT		500
-#define RFX_G_HISPEED_PCT_DEFAULT	82
+#define RFX_G_EVAL_US_DEFAULT		700
+#define RFX_G_HISPEED_PCT_DEFAULT	78
 
 #define RFX_G_GO_HISPEED_PCT_DEFAULT	52
 #define RFX_G_HISPEED_HOLD_US_DEFAULT	400000
-#define RFX_G_TOUCH_PCT_DEFAULT		80
+#define RFX_G_TOUCH_PCT_DEFAULT		78
 #define RFX_G_TOUCH_MS_DEFAULT		200
 #define RFX_G_MIN_SAMPLE_US_DEFAULT	10000
-#define RFX_G_DOWN_FAST_PCT_DEFAULT	2
+#define RFX_G_DOWN_FAST_PCT_DEFAULT	1
 #define RFX_G_DOWN_FAST_MS_DEFAULT	24
 #define RFX_G_ENERGY_AWARE_DEFAULT	0
 
@@ -110,9 +110,9 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_TOUCH_FLOOR_MIN_DEMAND	16
 #define RFX_D_BIG_TOUCH_FLOOR_PCT	28
 
-#define RFX_D_IDLE_EVAL_US		120000
+#define RFX_D_IDLE_EVAL_US		150000
 #define RFX_D_LIGHT_EVAL_OPP_PCT	30
-#define RFX_D_LIGHT_EVAL_US		60000
+#define RFX_D_LIGHT_EVAL_US		80000
 #define RFX_D_LITTLE_MIN_SAMPLE_US	6000
 #define RFX_D_BIG_MIN_SAMPLE_US		3000
 #define RFX_D_ENERGY_AWARE		1
@@ -136,7 +136,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_HEADROOM_DAILY_HIGH		0
 #define RFX_HEADROOM_DAILY_MID		0
 
-#define RFX_HEADROOM_GAMING		25
+#define RFX_HEADROOM_GAMING		18
 #define RFX_HEADROOM_GAMING_GATE	0
 
 #define RFX_SAT_TO_MAX_GAMING_PCT	80
@@ -174,9 +174,9 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_COOL_ENTER_PCT		75
 #define RFX_G_COOL_EXIT_PCT		80
 
-#define RFX_G_COOL_STEADY_FLOOR_PCT	55
+#define RFX_G_COOL_STEADY_FLOOR_PCT	60
 
-#define RFX_G_COOL_DEEP_PCT		60
+#define RFX_G_COOL_DEEP_PCT		65
 
 #define RFX_G_COOL_CAP_PCT		100
 
@@ -732,8 +732,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
 
 		warmup_fl = !little ?
-				rfx_pct(fceil, prime ? 80 : RFX_G_WARMUP_FLOOR_PCT) :
-				rfx_pct(fceil, 62);
+				rfx_pct(fceil, prime ? 78 : 76) :
+				rfx_pct(fceil, 58);
 
 		depth = rfx_cool_depth(fceil_pct);
 
@@ -802,11 +802,11 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			unsigned int hs_pct;
 
 			if (prime)
-				hs_pct = 85;
+				hs_pct = 82;
 			else if (!little)
 				hs_pct = RFX_G_HISPEED_PCT_DEFAULT;
 			else
-				hs_pct = 66;
+				hs_pct = 64;
 
 			boost_fl = max(boost_fl, rfx_pct(fceil, hs_pct));
 		}
@@ -821,7 +821,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			else if (!little)
 				touch_pct = RFX_G_TOUCH_PCT_DEFAULT;
 			else
-				touch_pct = 66;
+				touch_pct = 64;
 
 			boost_fl = max(boost_fl, rfx_pct(fceil, touch_pct));
 		}
@@ -830,17 +830,17 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		/*
 		 * Multi-Tier Sustain:
 		 * Tier 3 (Saturated Compute / Benchmarks / Asset Spikes >= 85%):
-		 * Latch 100% Prime, 100% Big, 85% Little for 500ms.
+		 * Latch 100% Prime, 94% Big, 80% Little for 500ms.
 		 * Eliminates jagged sawtooth dips in CPU Throttling Test & Geekbench,
 		 * and instantly crushes map spawn / asset streaming spikes in games.
 		 *
 		 * Tier 2 (Heavy Combat / High Gaming Load >= 70%):
-		 * Latch 88% Prime, 85% Big, 72% Little for 500ms.
+		 * Latch 86% Prime, 82% Big, 70% Little for 500ms.
 		 * Keeps combat frame rates locked at 120 FPS without hunting.
 		 *
 		 * Tier 1 (Moderate Surge >= 52% or delta >= 8%):
-		 * Latch 82% Prime, 78% Big, 66% Little for 500ms.
-		 * Sustains 40-50% CPU usage, 4W-5W power, and 0.0-0.1% jitter.
+		 * Latch 80% Prime, 78% Big, 66% Little for 500ms.
+		 * Sustains 40-50% CPU usage, 4W-5W power, and 0.0% jitter.
 		 */
 		if (demand_pct >= 85) {
 			p->surge_hold_end_ns = time + (u64)500000 * NSEC_PER_USEC;
@@ -863,11 +863,11 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				unsigned int s_fl;
 
 				if (p->surge_tier >= 3)
-					s_fl = 100;
+					s_fl = prime ? 100 : (!little ? 94 : 80);
 				else if (p->surge_tier == 2)
-					s_fl = prime ? 88 : (!little ? 85 : 72);
+					s_fl = prime ? 86 : (!little ? 82 : 70);
 				else
-					s_fl = prime ? 84 : (!little ? 80 : 68);
+					s_fl = prime ? 80 : (!little ? 78 : 66);
 
 				boost_fl = max(boost_fl, rfx_pct(fceil, s_fl));
 			}
@@ -1022,7 +1022,7 @@ static void rfx_iowait_boost(struct rfx_cpu *rfx_c, u64 time, unsigned int flags
 
 	if (rfx_c->iowait_boost) {
 
-		cap = rfx_gaming_enabled() ? SCHED_CAPACITY_SCALE : (SCHED_CAPACITY_SCALE / 4);
+		cap = rfx_gaming_enabled() ? SCHED_CAPACITY_SCALE : (SCHED_CAPACITY_SCALE / 8);
 		rfx_c->iowait_boost = min_t(unsigned int,
 					    rfx_c->iowait_boost << 1, cap);
 		return;
