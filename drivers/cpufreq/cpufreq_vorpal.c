@@ -277,6 +277,7 @@ struct rfx_policy {
 	bool big_cap_lifted;
 	bool parked;
 	unsigned int park_exit_count;
+	bool iowait_active;
 	bool thermal_cooling;
 	bool risk_high;
 
@@ -1274,6 +1275,8 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	bool touch = false;
 	bool smooth = gaming;
 
+	p->iowait_active = false;
+
 	for_each_cpu(j, policy->cpus) {
 		struct rfx_cpu *jc = per_cpu_ptr(&rfx_cpu, j);
 		unsigned long jb, je;
@@ -1284,6 +1287,14 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 
 		if (je > max_util)
 			max_util = je;
+		/*
+		 * Track whether any CPU in this policy has an active I/O-wait
+		 * boost.  An in-flight iowait boost means storage/sync work is
+		 * waiting on this cluster; parking it would stall that work
+		 * and force a wake/re-park cycle.
+		 */
+		if (jc->iowait_boost)
+			p->iowait_active = true;
 	}
 
 	if (!gaming) {
@@ -1328,16 +1339,29 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 			 * Daily Mode Prime Core Conservation:
 			 * Prime cluster is a high-drain execution tier. In daily mode,
 			 * UI interaction and touches are handled smoothly by Little and
-			 * Big clusters. Keep Prime parked at fmin unless there is sustained,
-			 * heavy workload demand (>= 45%).
+			 * Big clusters. Keep Prime parked at fmin unless there is
+			 * sustained heavy workload demand (>= 45%) or an in-flight
+			 * I/O-wait boost on this cluster.
 			 */
-			if (p->filt_util < (max_cap * 45 / 100)) {
+			if (p->iowait_active) {
+				p->parked = false;
+				p->park_exit_count = RFX_D_PARK_EXIT_EVALS;
+			} else if (p->filt_util < (max_cap * 45 / 100)) {
 				p->parked = true;
 				p->park_exit_count = 0;
 			} else {
 				if (++p->park_exit_count >= RFX_D_PARK_EXIT_EVALS)
 					p->parked = false;
 			}
+		} else if (p->iowait_active) {
+			/*
+			 * In-flight I/O-wait boost on a Big cluster: work is waiting on
+			 * storage. Parking at fmin would keep the cluster cold while the
+			 * I/O completes and extend the stall, so run it unparked so the
+			 * boost applies.
+			 */
+			p->parked = false;
+			p->park_exit_count = RFX_D_PARK_EXIT_EVALS;
 		} else if (p->filt_util < park_thresh) {
 			p->parked = true;
 			p->park_exit_count = 0;
@@ -1535,6 +1559,7 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->descend_hold_end_ns = 0;
 	p->prev_demand_pct = 0;
 	p->render_low_since_ns = 0;
+	p->iowait_active = false;
 	p->ceil_rise_pct = 100;
 	p->ceil_rise_ref_ns = 0;
 	p->ceil_fall_ns = 0;
