@@ -718,6 +718,14 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 						p->warmup_low_demand_since_ns) >=
 					 RFX_GAMING_WARMUP_RELEASE_NS)
 					p->gaming_warmup_end_ns = time;
+			} else if (!p->gaming_warmup_entry &&
+				   demand_pct < RFX_GAMING_WARMUP_RELEASE_PCT) {
+				if (!p->warmup_low_demand_since_ns)
+					p->warmup_low_demand_since_ns = time;
+				else if (rfx_elapsed(time,
+						p->warmup_low_demand_since_ns) >=
+					 RFX_GAMING_WARMUP_RELEASE_NS)
+					p->gaming_warmup_end_ns = time;
 			} else {
 				p->warmup_low_demand_since_ns = 0;
 			}
@@ -810,6 +818,30 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 			boost_fl = max(boost_fl, rfx_pct(fceil, hs_pct));
 		}
+		/*
+		 * Quiet-release settle: while the warmup floor is still
+		 * active but demand has been quiet, ramp the warmup
+		 * floor down to the steady floor over the first quarter
+		 * of the quiet-release window. Between game rounds the
+		 * SoC then settles to a low-power state instead of
+		 * holding the launch floor for the full warmup budget.
+		 * The launch entry (gaming_warmup_entry) keeps the full
+		 * floor until the session starts, and a rise in demand
+		 * (warmup_low_demand_since_ns reset) restores the full
+		 * warmup floor immediately.
+		 */
+		if (!p->gaming_warmup_entry && warmup_active &&
+		    p->warmup_low_demand_since_ns) {
+			u64 elapsed = rfx_elapsed(time,
+					p->warmup_low_demand_since_ns);
+			u64 span = RFX_GAMING_WARMUP_RELEASE_NS / 4;
+			unsigned int t =
+				(unsigned int)min_t(u64, elapsed, span) *
+				100 / span;
+
+			warmup_fl = warmup_fl + (fl - warmup_fl) * t / 100;
+		}
+
 
 		/* Interactive touch boost across all clusters */
 #if RFX_G_TOUCH_PCT_DEFAULT && RFX_G_TOUCH_MS_DEFAULT
