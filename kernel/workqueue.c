@@ -320,6 +320,34 @@ static cpumask_var_t wq_unbound_cpumask;
 static DEFINE_PER_CPU(int, wq_rr_cpu_last);
 
 /*
+ * BACKPORT (Linux 6.12): per-CPU candidate set of online LITTLE cores and
+ * the round-robin cursor into it.  wq_select_unbound_cpu() fills the mask
+ * with the allowed AND online LITTLE cores and hands out the next one by
+ * advancing the cursor, so unbound work spreads across the LITTLE cluster
+ * instead of being pinned to the first core.  Guarded on SMP so that the
+ * per-CPU variables are not introduced when NR_CPUS == 1.
+ */
+#if NR_CPUS > 1
+static DEFINE_PER_CPU(struct cpumask, wq_little_rr_mask);
+static DEFINE_PER_CPU(int, wq_little_rr_last);
+
+/*
+ * Next LITTLE core in @set strictly greater than @start, wrapping to the
+ * smallest core when @start is already the largest set bit.  @start is the
+ * last core handed out from this CPU; a negative value means "from the
+ * beginning".  Callers must guarantee @set is non-empty.
+ */
+static unsigned int wq_little_rr_next(unsigned int start, struct cpumask *set)
+{
+	unsigned int n = cpumask_next(start, set);
+
+	if (n >= nr_cpumask_bits)
+		n = cpumask_first(set);
+	return n;
+}
+#endif /* NR_CPUS > 1 */
+
+/*
  * Local execution of unbound work items is no longer guaranteed.  The
  * following always forces round-robin CPU selection on unbound work items
  * to uncover usages which depend on it.
@@ -1402,28 +1430,61 @@ static int wq_select_unbound_cpu(int cpu)
 		 */
 		if (wq_power_efficient) {
 			int target;
-			int little_cpus[NR_CPUS];
-			int count = 0;
 
 			if (cpumask_test_cpu(cpu, wq_unbound_cpumask) &&
 			    arch_scale_cpu_capacity(cpu) <= 614)
 				return cpu;
 
-			/* Fast-path: find an idle LITTLE CPU while recording online candidates in a single pass */
-			for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
-				if (arch_scale_cpu_capacity(target) <= 614) {
-					if (available_idle_cpu(target))
-						return target;
-					little_cpus[count++] = target;
+#if NR_CPUS > 1
+			{
+				struct cpumask *little_set =
+					&per_cpu(wq_little_rr_mask, cpu);
+				bool found_idle = false;
+				int last = per_cpu(wq_little_rr_last, cpu);
+				unsigned int pick;
+
+				/*
+				 * Fill the per-CPU candidate set with the online
+				 * LITTLE cores allowed by wq_unbound_cpumask,
+				 * while picking an idle one to hand off to
+				 * immediately.  The per-CPU set (instead of a
+				 * shared one) avoids any cross-CPU data race on
+				 * the candidate set and keeps the cursor local.
+				 */
+				cpumask_clear(little_set);
+				for_each_cpu_and(target, wq_unbound_cpumask,
+						  cpu_online_mask) {
+					if (arch_scale_cpu_capacity(target) > 614)
+						continue;
+
+					cpumask_set_cpu(target, little_set);
+					if (!found_idle &&
+					    available_idle_cpu(target)) {
+						found_idle = true;
+						last = target;
+						pick = target;
+					}
+				}
+
+				if (!cpumask_empty(little_set)) {
+					if (found_idle) {
+						per_cpu(wq_little_rr_last, cpu) = last;
+						return pick;
+					}
+
+					/*
+					 * No idle LITTLE core: round-robin over
+					 * the online candidates so back-to-back
+					 * unbound work items spread across the
+					 * LITTLE cluster instead of piling onto
+					 * a single core.
+					 */
+					pick = wq_little_rr_next(last, little_set);
+					per_cpu(wq_little_rr_last, cpu) = pick;
+					return pick;
 				}
 			}
-
-			/* Fallback: O(1) direct round-robin among recorded LITTLE CPUs */
-			if (count > 0) {
-				static atomic_t wq_little_cursor = ATOMIC_INIT(0);
-				unsigned int idx = (unsigned int)atomic_inc_return(&wq_little_cursor) % count;
-				return little_cpus[idx];
-			}
+#endif /* NR_CPUS > 1 */
 		}
 
 		if (cpumask_test_cpu(cpu, wq_unbound_cpumask))
