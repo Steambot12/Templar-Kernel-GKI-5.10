@@ -109,6 +109,15 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_PRIME_BURST_CAP_PCT	48
 #define RFX_D_TOUCH_FLOOR_MIN_DEMAND	16
 #define RFX_D_BIG_TOUCH_FLOOR_PCT	28
+/*
+ * Filtered-demand lift thresholds for the Big/Prime sustained caps.
+ * Video decode and sustained media workloads run at 35-55% demand
+ * with no touch input; the old touch-only lift left them capped at
+ * RFX_D_BIG_CAP_PCT, starving the decode thread (A/V desync).
+ * Lift on filtered demand >= RFX_D_BIG_LIFT_EMA_PCT, drop back when
+ * demand stays <= RFX_D_BIG_DROP_PCT, so idle battery is preserved.
+ */
+#define RFX_D_BIG_LIFT_EMA_PCT		45
 
 #define RFX_D_IDLE_EVAL_US		150000
 #define RFX_D_LIGHT_EVAL_OPP_PCT	30
@@ -138,6 +147,14 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 #define RFX_HEADROOM_GAMING		10
 #define RFX_HEADROOM_GAMING_GATE	0
+
+/*
+ * The gaming headroom boost is only applied while demand is below this
+ * gate. At >= RFX_G_HEADROOM_GATE_PCT the raw demand already pins the
+ * frequency near the ceiling, so adding +10% util just rides the top of
+ * the power curve for no frame-rate gain.
+ */
+#define RFX_G_HEADROOM_GATE_PCT		60
 
 #define RFX_SAT_TO_MAX_GAMING_PCT	80
 #define RFX_SAT_TO_MAX_DAILY_PCT	100
@@ -608,9 +625,17 @@ static unsigned long rfx_apply_headroom(unsigned long util, unsigned long max_ca
 		return max_cap;
 
 	if (gaming) {
-		unsigned long boosted = util + (util * RFX_HEADROOM_GAMING / 100);
+		/*
+		 * +10% util headroom covers mid-load frames; at high demand
+		 * it only pushes the SoC up the power curve, so gate it
+		 * below RFX_G_HEADROOM_GATE_PCT demand.
+		 */
+		if (upct < RFX_G_HEADROOM_GATE_PCT) {
+			unsigned long boosted = util + (util * RFX_HEADROOM_GAMING / 100);
 
-		return min(boosted, max_cap);
+			return min(boosted, max_cap);
+		}
+		return util;
 	}
 
 	if (little) {
@@ -814,10 +839,13 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * cutscenes, or a capped low-FPS scene) the app is not using
 		 * the stable-120 FPS floor, so relax it to
 		 * RFX_G_RENDER_LOW_FLOOR_PCT of the ceiling.  The floor stays
-		 * full while warmup is active, and a demand spike above
-		 * RFX_G_RENDER_SUSTAIN_PCT restores it immediately.
+		 * full on the launch entry path (gaming_warmup_entry), and a
+		 * demand spike above RFX_G_RENDER_SUSTAIN_PCT restores it
+		 * immediately. Rearmed warmups keep the full floor only
+		 * while demand stays at or above RFX_G_RENDER_SUSTAIN_PCT,
+		 * so sustained play never dips into the relaxed floor.
 		 */
-		if (!warmup_active &&
+		if (!p->gaming_warmup_entry &&
 		    demand_pct < RFX_G_RENDER_SUSTAIN_PCT) {
 			if (!p->render_low_since_ns)
 				p->render_low_since_ns = time;
@@ -905,7 +933,16 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * Latch 80% Prime, 78% Big, 66% Little for 500ms.
 		 * Sustains 40-50% CPU usage, 4W-5W power, and 0.0% jitter.
 		 */
-		if (demand_pct >= 85 && (demand_pct > prev_demand + 8 || p->surge_tier >= 3)) {
+		/*
+		 * Tier 3 re-latch only outside warmup: during warmup the
+		 * filtered demand stays quiet even while the render thread
+		 * runs, so a >=85% noise blip would otherwise re-latch the
+		 * 100%/94%/80% floor for 500ms on every eval and pin the
+		 * prime core at the top of the power curve. Outside warmup
+		 * the re-latch keeps the saturated steady state latched.
+		 */
+		if (demand_pct >= 85 && (demand_pct > prev_demand + 8 ||
+		    (!warmup_active && p->surge_tier >= 3))) {
 			p->surge_hold_end_ns = time + (u64)500000 * NSEC_PER_USEC;
 			if (p->surge_tier < 3)
 				p->surge_tier = 3;
@@ -959,10 +996,23 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				freq = prime_cap;
 		}
 	} else {
-		unsigned int cap, demand_pct;
+		unsigned int cap, demand_pct, filt_util_pct;
 		bool touch = rfx_touch_active(time, (u64)RFX_D_TOUCH_WINDOW_MS * NSEC_PER_MSEC);
 
 		demand_pct = (unsigned int)(raw_util * 100 / max_cap);
+		/*
+		 * Filtered (EMA) demand in percent of capacity. The
+		 * demand_pct above is the instantaneous value; video
+		 * decode and sustained media workloads run steady at
+		 * 35-55% without any touch input, so the cap lift is
+		 * decided on the smoothed demand with hysteresis
+		 * (lift >= RFX_D_BIG_LIFT_EMA_PCT, drop back when both
+		 * demand and EMA have settled <= RFX_D_BIG_DROP_PCT)
+		 * instead of the old touch-only lift. That keeps idle
+		 * battery while keeping capped decode from stalling
+		 * A/V sync.
+		 */
+		filt_util_pct = (unsigned int)(p->filt_util * 100 / max_cap);
 		p->dbg_demand_pct = demand_pct;
 
 		if (little) {
@@ -998,9 +1048,17 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			cap = rfx_pct(fceil, prime ? RFX_D_PRIME_CAP_PCT :
 						     RFX_D_BIG_CAP_PCT);
 
-			if (demand_pct >= RFX_D_BIG_LIFT_PCT)
+			if (demand_pct >= RFX_D_BIG_LIFT_PCT ||
+			    filt_util_pct >= RFX_D_BIG_LIFT_EMA_PCT)
 				p->big_cap_lifted = true;
-			else if (demand_pct <= RFX_D_BIG_DROP_PCT || !touch)
+			/*
+			 * Drop only when the instantaneous AND the
+			 * filtered demand have both settled low; a
+			 * single dip while the EMA is still high must
+			 * not flicker the cap back down.
+			 */
+			else if (demand_pct <= RFX_D_BIG_DROP_PCT &&
+				 filt_util_pct <= RFX_D_BIG_DROP_PCT)
 				p->big_cap_lifted = false;
 			if (touch && demand_pct >= RFX_D_BURST_TRIGGER_PCT)
 				cap = rfx_pct(fceil, prime ?
@@ -1972,7 +2030,7 @@ static void __init rfx_selfcheck(void)
 {
 	const u64 t = 1ULL << 40;
 	struct rfx_policy p = { };
-	unsigned long gate, over;
+	unsigned long gate, over, at;
 	u64 ns;
 
 	ns = 0;
@@ -2011,6 +2069,16 @@ static void __init rfx_selfcheck(void)
 		over);
 	WARN_ON(rfx_apply_headroom(SCHED_CAPACITY_SCALE - 1, SCHED_CAPACITY_SCALE,
 				   true, false) > SCHED_CAPACITY_SCALE);
+
+	/*
+	 * The gaming +10% util boost is gated at
+	 * RFX_G_HEADROOM_GATE_PCT demand: below it the boost applies,
+	 * at/above it the util passes through unchanged.
+	 */
+	at = rfx_pct(SCHED_CAPACITY_SCALE, 50);
+	WARN_ON(rfx_apply_headroom(at, SCHED_CAPACITY_SCALE, true, false) <= at);
+	at = rfx_pct(SCHED_CAPACITY_SCALE, RFX_G_HEADROOM_GATE_PCT + 5);
+	WARN_ON(rfx_apply_headroom(at, SCHED_CAPACITY_SCALE, true, false) != at);
 
 	p.gaming_warmup_entry = true;
 	WARN_ON(rfx_update_warmup_ramp(&p, true, t) != 100);
@@ -2318,6 +2386,10 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_D_BURST_TRIGGER_PCT > 100);
 	BUILD_BUG_ON(RFX_D_TOUCH_FLOOR_MIN_DEMAND > 100);
 	BUILD_BUG_ON(RFX_D_BIG_TOUCH_FLOOR_PCT > RFX_D_BIG_CAP_PCT);
+	BUILD_BUG_ON(RFX_D_BIG_DROP_PCT >= RFX_D_BIG_LIFT_EMA_PCT);
+	BUILD_BUG_ON(RFX_D_BIG_LIFT_EMA_PCT >= RFX_D_BIG_LIFT_PCT);
+	BUILD_BUG_ON(RFX_D_BIG_LIFT_EMA_PCT <= RFX_D_BIG_CAP_PCT);
+	BUILD_BUG_ON(RFX_G_HEADROOM_GATE_PCT > 100);
 	BUILD_BUG_ON(RFX_D_ENERGY_AWARE > 1);
 	BUILD_BUG_ON(RFX_D_ENERGY_AWARE_MIN_PCT > 100);
 
