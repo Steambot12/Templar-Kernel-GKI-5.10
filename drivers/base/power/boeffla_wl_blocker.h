@@ -25,10 +25,11 @@
  * is not portable. No input/i2c/spi nodes -- those break wake-on-touch.
  * No modem keep-alive (mtk_md, mtk_md_wl) -- the 5G modem requires the
  * link to stay up through idle; blocking it drops the data connection.
+ * No MTK WMT packet rx (mtk_wmt_top) -- MTK Wireless Management Task handles
+ * incoming WiFi/BT packet transfers; blocking it drops packets & resets sockets.
  * Per-device offenders go in the runtime sysfs 'wakelock_blocker' node.
  *
  * Q6BIOS_WLAN : QCOM WLAN firmware idle poll (WiFi stays associated)
- * mtk_wmt_top : MTK Wireless Module Top idle poll (inert on QCOM)
  * btsdio_wl   : QCOM/MTK BT controller idle poll (BT stays paired)
  * mgmt_txrx   : WLAN mgmt-frame TX/RX idle poll -- beacon/probe/assoc
  *               churn; association is kept by the firmware WoW offload, a
@@ -40,7 +41,7 @@
 	"a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;" \
 	"IPA_WS;IPA_CLIENT_APPS_WAN_COAL_CONS;IPA_CLIENT_APPS_WAN_LOW_LAT_CONS;" \
 	"IPA_CLIENT_APPS_LAN_CONS;rmnet_ipa%d;rmnet_ctl;RMNET_SHS;" \
-	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;mgmt_txrx"
+	"Q6BIOS_WLAN;btsdio_wl;mgmt_txrx"
 
 #define LENGTH_LIST_WL				1024
 /* Both lists are sysfs-writable, so both get the full capacity. Deriving this
