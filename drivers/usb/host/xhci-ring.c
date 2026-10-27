@@ -797,7 +797,7 @@ static void xhci_unmap_one_bounce_buffer(struct xhci_hcd *xhci,
 		struct xhci_ring *ring, struct xhci_td *td,
 		struct xhci_segment *seg)
 {
-	struct device *dev = xhci_to_hcd(xhci)->self.sysdev;
+	struct device *dev = xhci_to_hcd(xhci)->self.controller;
 	struct urb *urb = td->urb;
 	size_t len;
 

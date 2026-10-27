@@ -240,12 +240,6 @@ prune_bucket(struct nfsd_drc_bucket *b, struct nfsd_net *nn)
 		if (atomic_read(&nn->num_drc_entries) <= nn->max_drc_entries &&
 		    time_before(jiffies, rp->c_timestamp + RC_EXPIRE))
 			break;
-
-		nfsd_cacherep_unlink_locked(nn, b, rp);
-		list_add(&rp->c_lru, dispose);
-
-		if (max && ++freed >= max)
-			break;
 	}
 }
 

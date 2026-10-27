@@ -9,15 +9,7 @@
 #include "xdr.h"
 #include "auth.h"
 
-/*
- * Sun convention: a sattr time-useconds field of one full second (an
- * otherwise out-of-range value) means "set this time to the current
- * server time." It's needed to make permissions checks for the "touch"
- * program across NFSv2 mounts work correctly. See description of
- * sattr in section 6.1 of "NFS Illustrated" by Brent Callaghan,
- * Addison-Wesley, ISBN 0-201-32750-5
- */
-#define NFS2_SATTR_SET_TO_SERVER_TIME	(1000000)
+#define NFSDDBG_FACILITY		NFSDDBG_XDR
 
 /*
  * Mapping of S_IF* types to NFS file types
@@ -107,33 +99,27 @@ decode_sattr(__be32 *p, struct iattr *iap, struct user_namespace *userns)
 		iap->ia_valid |= ATTR_SIZE;
 		iap->ia_size = tmp;
 	}
-
-	tmp1 = be32_to_cpup(p++);
-	tmp2 = be32_to_cpup(p++);
-	if (tmp1 != (u32)-1 && tmp2 != (u32)-1) {
-		/*
-		 * Range test here to prevent the multiplication from
-		 * wrapping to a valid (but incorrect) value on 32-bit
-		 * platforms.
-		 */
-		if (tmp2 > NFS2_SATTR_SET_TO_SERVER_TIME)
-			return false;
+	tmp  = ntohl(*p++); tmp1 = ntohl(*p++);
+	if (tmp != (u32)-1 && tmp1 != (u32)-1) {
 		iap->ia_valid |= ATTR_ATIME | ATTR_ATIME_SET;
-		iap->ia_atime.tv_sec = tmp1;
-		iap->ia_atime.tv_nsec = tmp2 * NSEC_PER_USEC;
-		if (tmp2 == NFS2_SATTR_SET_TO_SERVER_TIME)
-			iap->ia_valid &= ~ATTR_ATIME_SET;
+		iap->ia_atime.tv_sec = tmp;
+		iap->ia_atime.tv_nsec = tmp1 * 1000; 
 	}
-
-	tmp1 = be32_to_cpup(p++);
-	tmp2 = be32_to_cpup(p++);
-	if (tmp1 != (u32)-1 && tmp2 != (u32)-1) {
-		if (tmp2 > NFS2_SATTR_SET_TO_SERVER_TIME)
-			return false;
+	tmp  = ntohl(*p++); tmp1 = ntohl(*p++);
+	if (tmp != (u32)-1 && tmp1 != (u32)-1) {
 		iap->ia_valid |= ATTR_MTIME | ATTR_MTIME_SET;
-		iap->ia_mtime.tv_sec = tmp1;
-		iap->ia_mtime.tv_nsec = tmp2 * NSEC_PER_USEC;
-		if (tmp2 == NFS2_SATTR_SET_TO_SERVER_TIME)
+		iap->ia_mtime.tv_sec = tmp;
+		iap->ia_mtime.tv_nsec = tmp1 * 1000; 
+		/*
+		 * Passing the invalid value useconds=1000000 for mtime
+		 * is a Sun convention for "set both mtime and atime to
+		 * current server time".  It's needed to make permissions
+		 * checks for the "touch" program across v2 mounts to
+		 * Solaris and Irix boxes work correctly. See description of
+		 * sattr in section 6.1 of "NFS Illustrated" by
+		 * Brent Callaghan, Addison-Wesley, ISBN 0-201-32750-5
+		 */
+		if (tmp1 == 1000000)
 			iap->ia_valid &= ~(ATTR_ATIME_SET|ATTR_MTIME_SET);
 	}
 	return p;
