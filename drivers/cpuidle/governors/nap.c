@@ -529,9 +529,25 @@ static int nap_decide(struct nap_cpu_data *d, struct cpuidle_driver *drv,
 	for (k = 1; k < drv->state_count; k++) {
 		s32 q_nn = nap_fx_sigmoid(d->nn_output -
 					  d->weights.thr_ord[k - 1]);
-		s32 q = (s32)div64_u64(((u64)NAP_PRIOR_K * q_nn + suffix[k]) <<
-				       NAP_FX_SHIFT,
-				       (u64)NAP_PRIOR_K * NAP_FX_ONE + total);
+		s32 q;
+
+		/*
+		 * Survival q_k blends the Neural Network's prediction q_nn with
+		 * the empirical histogram survival rate p_floor.
+		 * On mobile devices, 95%+ of active idles are short, which keeps
+		 * the raw event-count histogram low (< 10%). Weighting the NN
+		 * at 75% ensures that when a long screen-off idle arrives, q_nn
+		 * is not suppressed by historical short-idle counts and can clear
+		 * the confidence bar, while the timer clamp strictly guards
+		 * against overshoots when a timer is near.
+		 */
+		if (total > 0) {
+			s32 p_floor = (s32)div64_u64((u64)suffix[k] << NAP_FX_SHIFT,
+						     total);
+			q = (3 * q_nn + p_floor) >> 2;
+		} else {
+			q = q_nn;
+		}
 
 		/* cannot idle past the next timer */
 		if (d->log2_tres[k] > d->features[0])
@@ -644,7 +660,12 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 			dev->poll_limit_ns = max_t(u64, sleep_length_ns,
 						   NAP_POLL_LIMIT_MIN_NS);
 
-		*stop_tick = !(drv->states[0].flags & CPUIDLE_FLAG_POLLING);
+		if (((drv->states[0].flags & CPUIDLE_FLAG_POLLING) ||
+		     sleep_length_ns < TICK_NSEC) && !tick_nohz_tick_stopped())
+			*stop_tick = false;
+		else
+			*stop_tick = true;
+
 		d->short_circuited = true;
 		d->stats.total_selects++;
 		return 0;
@@ -679,7 +700,7 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 		*stop_tick = false;
 
 		while (idx > 0 &&
-		       drv->states[idx].target_residency_ns > delta_tick) {
+		       (s64)drv->states[idx].target_residency_ns > (s64)delta_tick) {
 			idx--;
 			while (idx > 0 && dev->states_usage[idx].disable)
 				idx--;
@@ -706,10 +727,12 @@ static void nap_reflect(struct cpuidle_device *dev, int index)
 
 	/*
 	 * A short-circuited idle never reached the network, so its residency is
-	 * not part of the training distribution: account it and nothing else.
+	 * not part of the training distribution: account it and update the exit
+	 * timestamp so feature 6 (busy time) remains accurate.
 	 */
 	if (d->short_circuited) {
 		d->stats.total_residency_ns += measured_ns;
+		d->prev_idle_exit = local_clock();
 		return;
 	}
 
