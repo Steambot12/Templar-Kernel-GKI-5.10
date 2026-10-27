@@ -20,6 +20,7 @@
 #include <linux/shmem_fs.h>
 #include <linux/uaccess.h>
 #include <linux/pkeys.h>
+#include <linux/cpufreq.h>
 
 #include <asm/elf.h>
 #include <asm/tlb.h>
@@ -1385,6 +1386,51 @@ out_mm:
 
 const struct file_operations proc_clear_refs_operations = {
 	.write		= clear_refs_write,
+	.llseek		= noop_llseek,
+};
+
+static ssize_t reclaim_write(struct file *file, const char __user *buf,
+			     size_t count, loff_t *ppos)
+{
+	struct task_struct *task;
+	char buffer[200];
+	struct mm_struct *mm;
+
+	/*
+	 * Bypass app compaction when Vorpal gaming mode is active.
+	 * Stops background ROM services (such as MiuiMemoryService /
+	 * MiuiCompact:all) from acquiring mmap_lock and causing ~1000ms
+	 * UI freezes while render threads and games are active.
+	 */
+	if (vorpal_is_gaming_mode())
+		return count;
+
+	if (!count)
+		return 0;
+
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+
+	buffer[count] = '\0';
+
+	task = get_proc_task(file_inode(file));
+	if (!task)
+		return -ESRCH;
+
+	mm = get_task_mm(task);
+	put_task_struct(task);
+	if (!mm)
+		return -EINVAL;
+
+	mmput(mm);
+	return count;
+}
+
+const struct file_operations proc_reclaim_operations = {
+	.write		= reclaim_write,
 	.llseek		= noop_llseek,
 };
 

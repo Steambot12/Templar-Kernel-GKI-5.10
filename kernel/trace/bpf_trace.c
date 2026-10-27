@@ -16,6 +16,7 @@
 #include <linux/syscalls.h>
 #include <linux/error-injection.h>
 #include <linux/btf_ids.h>
+#include <linux/cpufreq.h>
 
 #include <uapi/linux/bpf.h>
 #include <uapi/linux/btf.h>
@@ -417,6 +418,9 @@ BPF_CALL_5(bpf_trace_printk, char *, fmt, u32, fmt_size, u64, arg1,
 	char buf[64], fmt_ptype;
 	void *unsafe_ptr = NULL;
 	bool str_seen = false;
+
+	if (vorpal_is_gaming_mode())
+		return 0;
 
 	/*
 	 * bpf_check()->check_func_arg()->check_stack_boundary()
