@@ -591,10 +591,10 @@ u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_inherit_type     = 2;
 u8   __read_mostly sched_burst_protect_slice_lv = 1;
 u8   __read_mostly sched_burst_smoothness       = 1;
-u8   __read_mostly sched_burst_penalty_offset   = 27;
+u8   __read_mostly sched_burst_penalty_offset   = 24;
 uint __read_mostly sched_burst_penalty_scale    = 1024;
 uint __read_mostly sched_burst_cache_lifetime   = 75000000;
-uint __read_mostly sched_credit_cap_us          = 16000;
+uint __read_mostly sched_credit_cap_us          = 2000;
 
 #define BURST_INHERIT_SCAN_LIMIT 63
 
@@ -776,7 +776,9 @@ u64 bore_credit_ns(struct task_struct *p)
 		slept = rq_clock(task_rq(p)) - p->credit_sleep;
 		if ((s64)slept > 0) {
 			p->credit_sleep = 0;
-			credit = slept < cap ? slept : cap;
+			if (!task_has_idle_policy(p) &&
+			    p->se.load.weight >= scale_load(WEIGHT_IDLEPRIO))
+				credit = slept < cap ? slept : cap;
 		} else {
 			slept = 0;
 		}
@@ -1201,8 +1203,8 @@ static inline bool do_preempt_weight(struct cfs_rq *cfs_rq,
 		return false;
 
 	if (static_branch_unlikely(&sched_burst_protect_slice_prefer_key) ?
-	    (pse->load.weight <= se->load.weight) :
-	    (pse->load.weight <  se->load.weight))
+	    (pse->load.weight <  se->load.weight) :
+	    (pse->load.weight <= se->load.weight))
 		return false;
 
 	if (!entity_eligible(cfs_rq, pse))
