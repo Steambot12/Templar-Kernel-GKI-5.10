@@ -7971,15 +7971,24 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
 	    task_fits_cpu(p, prev_cpu)) {
 		struct perf_domain *min_pd = pd;
-		struct perf_domain *it_pd;
 		unsigned long min_cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(pd)));
 
-		for (it_pd = pd->next; it_pd; it_pd = it_pd->next) {
-			unsigned long cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(it_pd)));
+		/* In DynamIQ, the first pd is the energy-efficient Little cluster */
+		if (cpumask_test_cpu(prev_cpu, perf_domain_span(pd))) {
+			rcu_read_unlock();
+			return prev_cpu;
+		}
 
-			if (cap < min_cap) {
-				min_cap = cap;
-				min_pd = it_pd;
+		{
+			struct perf_domain *it_pd;
+
+			for (it_pd = pd->next; it_pd; it_pd = it_pd->next) {
+				unsigned long cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(it_pd)));
+
+				if (cap < min_cap) {
+					min_cap = cap;
+					min_pd = it_pd;
+				}
 			}
 		}
 
@@ -8000,8 +8009,23 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	if (!sd)
 		goto fail;
 
-	if (!task_util_est(p) && p_util_min == 0)
+	if (!task_util_est(p) && p_util_min == 0) {
+		int idle_cpu = -1;
+
+		for_each_cpu_and(cpu, perf_domain_span(pd), sched_domain_span(sd)) {
+			if (!cpumask_test_cpu(cpu, p->cpus_ptr))
+				continue;
+			if (available_idle_cpu(cpu)) {
+				idle_cpu = cpu;
+				break;
+			}
+		}
+		if (idle_cpu >= 0) {
+			rcu_read_unlock();
+			return idle_cpu;
+		}
 		goto unlock;
+	}
 
 	latency_sensitive = uclamp_latency_sensitive(p);
 	boosted = uclamp_boosted(p);
