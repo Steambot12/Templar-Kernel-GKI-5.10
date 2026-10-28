@@ -70,32 +70,32 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_GAMING_DOWN_OVERRIDE_US	16000
 
 /* Asymmetric EMA filter for gaming mode: a raw sample above the filtered
- * value attacks fast (alpha 72/28), a sample at or below decays slower
- * (alpha 22/78). This keeps inter-frame idle gaps from collapsing the
+ * value attacks fast (alpha 78/22), a sample at or below decays slower
+ * (alpha 16/84). This keeps inter-frame idle gaps from collapsing the
  * Prime/Big utilisation while allowing prompt recovery to efficient OPPs.
  */
-#define RFX_G_EMA_ATTACK_PCT		72
-#define RFX_G_EMA_DECAY_PCT		22
+#define RFX_G_EMA_ATTACK_PCT		78
+#define RFX_G_EMA_DECAY_PCT		16
 
-#define RFX_G_PRIME_FLOOR_PCT		42
-#define RFX_G_BIG_FLOOR_PCT		44
-#define RFX_G_LITTLE_FLOOR_PCT		32
-#define RFX_G_LITTLE_CAP_PCT		72
+#define RFX_G_PRIME_FLOOR_PCT		48
+#define RFX_G_BIG_FLOOR_PCT		50
+#define RFX_G_LITTLE_FLOOR_PCT		36
+#define RFX_G_LITTLE_CAP_PCT		82
 
 /* Soft ceiling: transient spikes in gaming mode hold the cluster at this
  * percentage of the thermal ceiling instead of jumping to the top OPP.
  * 100% is released only after sustained saturation (see sat_count).
  */
-#define RFX_G_SOFT_CEIL_PRIME_PCT	74
-#define RFX_G_SOFT_CEIL_BIG_PCT		76
+#define RFX_G_SOFT_CEIL_PRIME_PCT	80
+#define RFX_G_SOFT_CEIL_BIG_PCT		82
 
 /* Saturation gate: demand windows held at/above these counts release the
  * top OPP; below the release count the counter decays to zero.
  */
-#define RFX_G_SAT_ENTER_PCT		92
-#define RFX_G_SAT_RAW_PCT		94
-#define RFX_G_SAT_UNLOCK_COUNT		6
-#define RFX_G_SAT_COUNT_MAX		10
+#define RFX_G_SAT_ENTER_PCT		90
+#define RFX_G_SAT_RAW_PCT		92
+#define RFX_G_SAT_UNLOCK_COUNT		5
+#define RFX_G_SAT_COUNT_MAX		8
 
 /* Anti-sawtooth step-down cap: after a big/prime frequency drop in gaming
  * mode, the governor descends at most this percentage of max frequency
@@ -127,12 +127,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_THERMAL_CRIT_CLEAR_DEPTH	30
 #define RFX_THERMAL_CRIT_DWELL_NS	((u64)4000 * NSEC_PER_MSEC)
 
-#define RFX_THERMAL_WARM_CAP_PRIME_PCT	70
-#define RFX_THERMAL_WARM_CAP_BIG_PCT	74
-#define RFX_THERMAL_HOT_CAP_PRIME_PCT	64
-#define RFX_THERMAL_HOT_CAP_BIG_PCT	68
-#define RFX_THERMAL_CRIT_CAP_PRIME_PCT	58
-#define RFX_THERMAL_CRIT_CAP_BIG_PCT	62
+#define RFX_THERMAL_WARM_CAP_PRIME_PCT	74
+#define RFX_THERMAL_WARM_CAP_BIG_PCT	78
+#define RFX_THERMAL_HOT_CAP_PRIME_PCT	68
+#define RFX_THERMAL_HOT_CAP_BIG_PCT	72
+#define RFX_THERMAL_CRIT_CAP_PRIME_PCT	60
+#define RFX_THERMAL_CRIT_CAP_BIG_PCT	64
 
 /* Gaming floor-band hysteresis (demand pct of capacity). The floor is
  * armed when smoothed demand crosses ARM; it only disarms when demand
@@ -146,8 +146,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_BIG_GATE_HOLD_NS		(1000 * NSEC_PER_MSEC)
 
 /* Warmup/entry ramps for gaming mode */
-#define RFX_G_WARMUP_FLOOR_PCT		48
-#define RFX_G_TOUCH_PCT_DEFAULT		58
+#define RFX_G_WARMUP_FLOOR_PCT		52
+#define RFX_G_TOUCH_PCT_DEFAULT		64
 #define RFX_G_TOUCH_MS_DEFAULT		100
 #define RFX_G_MIN_SAMPLE_US_DEFAULT	8333
 #define RFX_G_DOWN_FAST_PCT_DEFAULT	2
@@ -155,21 +155,21 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_ENERGY_AWARE_DEFAULT	0
 #define RFX_G_IDLE_FLOOR_PCT		25
 
-#define RFX_G_PRIME_TOUCH_PCT		56
+#define RFX_G_PRIME_TOUCH_PCT		60
 #define RFX_G_PRIME_CAP_PCT		100
 #define RFX_G_PRIME_TURBO_CAP_PCT	100
 #define RFX_G_PRIME_COOL_CAP_PCT	100
 
-#define RFX_G_SURGE_UTIL_PCT		86
-#define RFX_G_FRAME_HOLD_NS		(24000ULL * NSEC_PER_USEC)
+#define RFX_G_SURGE_UTIL_PCT		84
+#define RFX_G_FRAME_HOLD_NS		(20000ULL * NSEC_PER_USEC)
 #define RFX_G_DOWN_RATE_LIMIT_NS	(16000ULL * NSEC_PER_USEC)
 #define RFX_G_MIN_SAMPLE_NS		(8333ULL * NSEC_PER_USEC)
 
 #define RFX_G_EVAL_US_DEFAULT		500
-#define RFX_G_HISPEED_PCT_DEFAULT	70
+#define RFX_G_HISPEED_PCT_DEFAULT	75
 
-#define RFX_G_GO_HISPEED_PCT_DEFAULT	74
-#define RFX_G_HISPEED_HOLD_US_DEFAULT	40000
+#define RFX_G_GO_HISPEED_PCT_DEFAULT	72
+#define RFX_G_HISPEED_HOLD_US_DEFAULT	50000
 
 #define RFX_D_LITTLE_CAP_PCT		35
 #define RFX_D_LITTLE_FLOOR_PCT		20
@@ -1169,7 +1169,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			else if (!little)
 				touch_pct = RFX_G_TOUCH_PCT_DEFAULT;
 			else
-				touch_pct = 42;
+				touch_pct = 46;
 
 			/* Touch boost also respects the effective ceiling */
 			boost_fl = max(boost_fl,
@@ -2595,18 +2595,18 @@ static void __init rfx_selfcheck(void)
 	WARN_ON(rfx_ema(200, 100, t, &ns, false, false, 1000) != 100);
 
 	/* Gaming: per-sample asymmetric blend, time-independent */
-	WARN_ON(rfx_ema(1000, 0, t, &ns, true, true, 1000) != 780 || ns != t);
-	WARN_ON(rfx_ema(100, 200, t, &ns, true, true, 1000) != 172);
+	WARN_ON(rfx_ema(1000, 0, t, &ns, true, true, 1000) != 840 || ns != t);
+	WARN_ON(rfx_ema(100, 200, t, &ns, true, true, 1000) != 178);
 	WARN_ON(rfx_ema(0, 200, t, &ns, true, true, 1000) != 200);
 	ns = t - RFX_EMA_DECAY_PERIOD_NS;
-	WARN_ON(rfx_ema(1000, 0, t, &ns, true, true, 1000) != 780 || ns != t);
+	WARN_ON(rfx_ema(1000, 0, t, &ns, true, true, 1000) != 840 || ns != t);
 
 	ns = t - RFX_EMA_DECAY_PERIOD_NS;
 	WARN_ON(rfx_ema(1000, 0, t, &ns, true, false, 1000) !=
 		1000 - 1000 / RFX_EMA_DAILY_DIVISOR || ns != t);
 
 	ns = t + NSEC_PER_MSEC;
-	WARN_ON(rfx_ema(1000, 0, t, &ns, true, true, 1000) != 780);
+	WARN_ON(rfx_ema(1000, 0, t, &ns, true, true, 1000) != 840);
 
 	/* Daily zero-snap: a >8ms quiet gap with near-zero demand
 	 * collapses the filter straight to the newest sample. */
