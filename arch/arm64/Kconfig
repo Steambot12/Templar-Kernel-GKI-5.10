@@ -687,6 +687,73 @@ config ARM64_ERRATUM_1508412
 
 	  If unsure, say Y.
 
+config ARM64_ERRATUM_2051678
+	bool "Cortex-A510: 2051678: disable Hardware Update of the page table's dirty bit"
+	default y
+	help
+	  This options adds the workaround for ARM Cortex-A510 erratum ARM64_ERRATUM_2051678.
+	  Affected Coretex-A510 might not respect the ordering rules for
+	  hardware update of the page table's dirty bit. The workaround
+	  is to not enable the feature on affected CPUs.
+
+	  If unsure, say Y.
+
+config ARM64_WORKAROUND_TSB_FLUSH_FAILURE
+	bool
+
+config ARM64_ERRATUM_2054223
+	bool "Cortex-A710: 2054223: workaround TSB instruction failing to flush trace"
+	default y
+	select ARM64_WORKAROUND_TSB_FLUSH_FAILURE
+	help
+	  Enable workaround for ARM Cortex-A710 erratum 2054223
+
+	  Affected cores may fail to flush the trace data on a TSB instruction, when
+	  the PE is in trace prohibited state. This will cause losing a few bytes
+	  of the trace cached.
+
+	  Workaround is to issue two TSB consecutively on affected cores.
+
+	  If unsure, say Y.
+
+config ARM64_ERRATUM_2067961
+	bool "Neoverse-N2: 2067961: workaround TSB instruction failing to flush trace"
+	default y
+	select ARM64_WORKAROUND_TSB_FLUSH_FAILURE
+	help
+	  Enable workaround for ARM Neoverse-N2 erratum 2067961
+
+	  Affected cores may fail to flush the trace data on a TSB instruction, when
+	  the PE is in trace prohibited state. This will cause losing a few bytes
+	  of the trace cached.
+
+	  Workaround is to issue two TSB consecutively on affected cores.
+
+	  If unsure, say Y.
+
+config ARM64_ERRATUM_2454944
+	bool "Cortex-A510: 2454944: Unmodified cache line might be written back to memory"
+	select ARCH_HAS_TEARDOWN_DMA_OPS
+	select RODATA_FULL_DEFAULT_ENABLED
+	help
+	  This option adds the workaround for ARM Cortex-A510 erratum 2454944.
+
+	  Affected Cortex-A510 core might write unmodified cache lines back to
+	  memory, which breaks the assumptions upon which software coherency
+	  management for non-coherent DMA relies. If a cache line is
+	  speculatively fetched while a non-coherent device is writing directly
+	  to DRAM, and subsequently written back by natural eviction, data
+	  written by the device in the intervening period can be lost.
+
+	  The workaround is to enforce as far as reasonably possible that all
+	  non-coherent DMA transfers are bounced and/or remapped to minimise
+	  the chance that any Cacheable alias exists through which speculative
+	  cache fills could occur. To further improve effectiveness of
+	  the workaround, lazy TLB flushing should be disabled.
+
+	  This is quite involved and has unavoidable performance impact on
+	  affected systems.
+
 config ARM64_WORKAROUND_BROKEN_AMU_CONSTCNT
 	bool
 	# Targeting errata affecting AMEVCNTR01, the AMU constant counter.
