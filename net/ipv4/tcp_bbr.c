@@ -425,12 +425,13 @@ static u64 bbr_rate_bytes_per_sec(struct sock *sk, u64 rate, int gain,
 {
 	unsigned int mss = tcp_sk(sk)->mss_cache;
 
-	rate *= mss;
+	rate *= tcp_mss_to_mtu(sk, mss);
 	rate *= gain;
 	rate >>= BBR_SCALE;
-	rate *= USEC_PER_SEC / 100 * (100 - margin);
+	rate *= USEC_PER_SEC;
 	rate >>= BW_SCALE;
-	rate = max(rate, 1ULL);
+	if (margin)
+		rate -= (rate * margin) / 100;
 	return rate;
 }
 
@@ -476,10 +477,27 @@ static void bbr_set_pacing_rate(struct sock *sk, u32 bw, int gain)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct bbr *bbr = bbr_priv(sk);
-	unsigned long rate = bbr_bw_to_pacing_rate(sk, bw, gain);
+	unsigned long rate;
+	unsigned long min_rate;
 
 	if (unlikely(!bbr->has_seen_rtt && tp->srtt_us))
 		bbr_init_pacing_rate_from_rtt(sk);
+
+	/* If we have not measured valid bandwidth yet, do not overwrite
+	 * the healthy initial pacing rate calculated from RTT with zero.
+	 */
+	if (!bw)
+		return;
+
+	rate = bbr_bw_to_pacing_rate(sk, bw, gain);
+
+	/* Enforce a safe minimum pacing rate floor (at least 1.2 Mbps / 150 KB/s)
+	 * so internal pacing with hrtimers never stalls transmissions.
+	 */
+	min_rate = (unsigned long)tp->mss_cache * bbr_param(sk, cwnd_min_target) * 25;
+	min_rate = max_t(unsigned long, min_rate, 150000UL);
+	rate = max(rate, min_rate);
+
 	if (bbr_full_bw_reached(sk) || rate > READ_ONCE(sk->sk_pacing_rate))
 		WRITE_ONCE(sk->sk_pacing_rate, rate);
 }
@@ -494,6 +512,8 @@ static u32 bbr_tso_segs_generic(struct sock *sk, unsigned int mss_now,
 	struct bbr *bbr = bbr_priv(sk);
 	u32 segs, r;
 	u64 bytes;
+
+	mss_now = max(mss_now, 1U);
 
 	/* Budget a TSO/GSO burst size allowance based on bw (pacing_rate). */
 	bytes = READ_ONCE(sk->sk_pacing_rate) >> READ_ONCE(sk->sk_pacing_shift);
@@ -595,7 +615,7 @@ static u32 bbr_bdp(struct sock *sk, u32 bw, int gain)
 	 * ACKed so far. In this case, an RTO can cut cwnd to 1, in which
 	 * case we need to slow-start up toward something safe: initial cwnd.
 	 */
-	if (unlikely(bbr->min_rtt_us == ~0U))	 /* no valid RTT samples yet? */
+	if (unlikely(bbr->min_rtt_us == ~0U || !bbr->min_rtt_us))	 /* no valid RTT samples yet? */
 		return bbr->init_cwnd;  /* be safe: cap at initial cwnd */
 
 	w = (u64)bw * bbr->min_rtt_us;
@@ -726,13 +746,13 @@ static void bbr_set_cwnd(struct sock *sk, const struct rate_sample *rs,
 
 	/* Update cwnd and enable fast path if cwnd reaches target_cwnd. */
 	bbr->try_fast_path = 0;
-	if (bbr_full_bw_reached(sk)) { /* only cut cwnd if we filled the pipe */
+	if (bbr_full_bw_reached(sk) && tp->delivered >= TCP_INIT_CWND) { /* only cut cwnd if we filled the pipe and delivered initial flight */
 		cwnd += acked;
 		if (cwnd >= target_cwnd) {
 			cwnd = target_cwnd;
 			bbr->try_fast_path = 1;
 		}
-	} else if (cwnd < target_cwnd || cwnd  < 2 * bbr->init_cwnd) {
+	} else if (cwnd < target_cwnd || cwnd  < 2 * bbr->init_cwnd || tp->delivered < TCP_INIT_CWND) {
 		cwnd += acked;
 	} else {
 		bbr->try_fast_path = 1;
@@ -910,7 +930,7 @@ static void bbr_update_min_rtt(struct sock *sk, const struct rate_sample *rs)
 	if (rs->rtt_us >= 0 &&
 	    (rs->rtt_us < bbr->probe_rtt_min_us ||
 	     (probe_rtt_expired && !rs->is_ack_delayed))) {
-		bbr->probe_rtt_min_us = rs->rtt_us;
+		bbr->probe_rtt_min_us = max_t(u32, rs->rtt_us, 1U);
 		bbr->probe_rtt_min_stamp = tcp_jiffies32;
 	}
 	/* Track min RTT seen in the min_rtt_win_sec filter window: */
@@ -918,7 +938,7 @@ static void bbr_update_min_rtt(struct sock *sk, const struct rate_sample *rs)
 	min_rtt_expired = after(tcp_jiffies32, expire);
 	if (bbr->probe_rtt_min_us <= bbr->min_rtt_us ||
 	    min_rtt_expired) {
-		bbr->min_rtt_us = bbr->probe_rtt_min_us;
+		bbr->min_rtt_us = max_t(u32, bbr->probe_rtt_min_us, 1U);
 		bbr->min_rtt_stamp = bbr->probe_rtt_min_stamp;
 	}
 
@@ -1057,6 +1077,7 @@ static void bbr_handle_queue_too_high_in_startup(struct sock *sk)
 
 	bdp = bbr_inflight(sk, bbr_max_bw(sk), BBR_UNIT);
 	bbr->inflight_hi = max(bdp, bbr->inflight_latest);
+	bbr->inflight_hi = max_t(u32, bbr->inflight_hi, bbr_param(sk, cwnd_min_target));
 }
 
 /* Exit STARTUP upon N consecutive rounds with ECN mark rate > ecn_thresh. */
@@ -1183,7 +1204,8 @@ static bool bbr_is_inflight_too_high(const struct sock *sk,
 	if (lost > 0 && tx_in_flight) {
 		loss_thresh = (u64)tx_in_flight * bbr_param(sk, loss_thresh) >>
 				BBR_SCALE;
-		if (lost > loss_thresh) {
+		if (lost > loss_thresh &&
+		    (lost > 1 || tx_in_flight >= bbr_param(sk, cwnd_min_target) * 2)) {
 			return true;
 		}
 	}
@@ -1271,10 +1293,13 @@ static void bbr_init_lower_bounds(struct sock *sk, bool init_bw)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct bbr *bbr = bbr_priv(sk);
 
-	if (init_bw && bbr->bw_lo == ~0U)
-		bbr->bw_lo = bbr_max_bw(sk);
+	if (init_bw && bbr->bw_lo == ~0U) {
+		u32 max_bw = bbr_max_bw(sk);
+
+		bbr->bw_lo = max_bw ? max_bw : ~0U;
+	}
 	if (bbr->inflight_lo == ~0U)
-		bbr->inflight_lo = tp->snd_cwnd;
+		bbr->inflight_lo = max_t(u32, tp->snd_cwnd, bbr_param(sk, cwnd_min_target));
 }
 
 /* Reduce bw and inflight to (1 - beta). */
@@ -2049,7 +2074,7 @@ static void bbr_init(struct sock *sk)
 	bbr->initialized = 1;
 
 	bbr->init_cwnd = min(0x7FU, tp->snd_cwnd);
-	bbr->prior_cwnd = tp->prior_cwnd;
+	bbr->prior_cwnd = tp->prior_cwnd ? tp->prior_cwnd : tp->snd_cwnd;
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	bbr->next_rtt_delivered = tp->delivered;
 	bbr->prev_ca_state = TCP_CA_Open;
@@ -2164,10 +2189,11 @@ static void bbr_run_loss_probe_recovery(struct sock *sk)
 /* Revert short-term model if current loss recovery event was spurious. */
 static u32 bbr_undo_cwnd(struct sock *sk)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
 	struct bbr *bbr = bbr_priv(sk);
 
 	if (unlikely(!bbr))
-		return tcp_sk(sk)->snd_cwnd;
+		return tp->snd_cwnd;
 
 	bbr_reset_full_bw(sk); /* spurious slow-down; reset full bw detector */
 	bbr->loss_in_round = 0;
@@ -2177,7 +2203,8 @@ static u32 bbr_undo_cwnd(struct sock *sk)
 	bbr->inflight_lo = max(bbr->inflight_lo, bbr->undo_inflight_lo);
 	bbr->inflight_hi = max(bbr->inflight_hi, bbr->undo_inflight_hi);
 	bbr->try_fast_path = 0;  /* take slow path to set proper cwnd, pacing */
-	return bbr->prior_cwnd;
+	return max_t(u32, max(tp->snd_cwnd, bbr->prior_cwnd),
+		     bbr_param(sk, cwnd_min_target));
 }
 
 /* Entering loss recovery, so save state for when we undo recovery. */
