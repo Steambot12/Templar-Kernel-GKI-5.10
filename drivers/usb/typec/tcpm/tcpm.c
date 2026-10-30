@@ -3926,6 +3926,10 @@ static void run_state_machine(struct tcpm_port *port)
 			tcpm_set_state(port, SNK_UNATTACHED, PD_T_DRP_SNK);
 		break;
 	case SRC_ATTACH_WAIT:
+		port->debouncing = true;
+		timer_val_msecs = PD_T_CC_DEBOUNCE;
+		trace_android_vh_typec_tcpm_get_timer(tcpm_states[SRC_ATTACH_WAIT],
+						      CC_DEBOUNCE, &timer_val_msecs);
 		if (tcpm_port_is_debug_source(port))
 			tcpm_set_state(port, DEBUG_ACC_ATTACHED,
 				       timer_val_msecs);
