@@ -3489,9 +3489,10 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	    (addr == vma->vm_end || vma->vm_start == addr + len))
 		new_vma = NULL;
 	else
-		new_vma = vma_merge(mm, prev, addr, addr + len, vma->vm_flags,
-				    vma->anon_vma, vma->vm_file, pgoff,
-				    vma_policy(vma), vma->vm_userfaultfd_ctx);
+		new_vma = __vma_merge(mm, prev, addr, addr + len, vma->vm_flags,
+				      vma->anon_vma, vma->vm_file, pgoff,
+				      vma_policy(vma), vma->vm_userfaultfd_ctx,
+				      vma_get_anon_name(vma), true);
 	if (new_vma) {
 		/*
 		 * Source vma may have been merged into new_vma
