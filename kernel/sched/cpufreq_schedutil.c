@@ -1053,6 +1053,21 @@ boosted:
 EXPORT_SYMBOL_GPL(rfx_get_util_gki510);
 
 /**
+ * rfx_get_uclamp_min_gki510 - get UCLAMP_MIN value of the CPU runqueue for Vorpal.
+ */
+unsigned long rfx_get_uclamp_min_gki510(int cpu)
+{
+#ifdef CONFIG_UCLAMP_TASK
+	struct rq *rq = cpu_rq(cpu);
+
+	if (static_branch_likely(&sched_uclamp_used))
+		return uclamp_rq_get(rq, UCLAMP_MIN);
+#endif
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rfx_get_uclamp_min_gki510);
+
+/**
  * rfx_dl_bw_exceeded_gki510 - DL bandwidth check for Vorpal.
  */
 bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bw_min)
