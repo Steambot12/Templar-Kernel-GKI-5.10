@@ -163,6 +163,9 @@ void tick_install_broadcast_device(struct clock_event_device *dev, int cpu)
 {
 	struct clock_event_device *cur;
 
+	if (tick_set_oneshot_wakeup_device(dev, cpu))
+		return;
+
 	{
 		guard(raw_spinlock_irqsave)(&tick_broadcast_lock);
 
