@@ -82,6 +82,19 @@ static inline int rcu_preempt_depth(void)
 
 #endif /* #else #ifdef CONFIG_PREEMPT_RCU */
 
+#ifdef CONFIG_RCU_LAZY
+void call_rcu_hurry(struct rcu_head *head, rcu_callback_t func);
+void rcu_async_hurry(void);
+void rcu_async_relax(void);
+#else
+static inline void call_rcu_hurry(struct rcu_head *head, rcu_callback_t func)
+{
+	call_rcu(head, func);
+}
+static inline void rcu_async_hurry(void) { }
+static inline void rcu_async_relax(void) { }
+#endif
+
 /* Internal to kernel */
 void rcu_init(void);
 extern int rcu_scheduler_active;
