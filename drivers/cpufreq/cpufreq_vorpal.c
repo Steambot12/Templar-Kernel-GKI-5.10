@@ -171,12 +171,12 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_GO_HISPEED_PCT_DEFAULT	78
 #define RFX_G_HISPEED_HOLD_US_DEFAULT	16000
 
-#define RFX_D_LITTLE_CAP_PCT		35
-#define RFX_D_LITTLE_FLOOR_PCT		20
+#define RFX_D_LITTLE_CAP_PCT		50
+#define RFX_D_LITTLE_FLOOR_PCT		18
 #define RFX_D_LITTLE_FLOOR_ARM_PCT	12
 #define RFX_D_LITTLE_FLOOR_REARM_PCT	6
 #define RFX_D_LITTLE_FLOOR_NS		(16 * NSEC_PER_MSEC)
-#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	38
+#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	55
 #define RFX_D_LITTLE_LIFT_PCT		62
 #define RFX_D_LITTLE_DROP_PCT		40
 
@@ -209,14 +209,14 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 /* Idle floor snap: filtered demand under this (no touch) parks the
  * cluster at policy->min so the deepest C-states are reachable. */
-#define RFX_D_IDLE_FLOOR_SNAP_PCT	10
+#define RFX_D_IDLE_FLOOR_SNAP_PCT	15
 
 /* Time-delta zero-snap: after a quiet gap longer than this with raw
  * demand still under the snap util threshold, collapse the filtered
  * value to the newest sample so a brief wake/idle cycle cannot hold
  * the cluster above its floor. */
-#define RFX_D_TIME_DECAY_SNAP_NS		(8 * NSEC_PER_MSEC)
-#define RFX_D_TIME_DECAY_SNAP_UTIL_PCT	12
+#define RFX_D_TIME_DECAY_SNAP_NS		(6 * NSEC_PER_MSEC)
+#define RFX_D_TIME_DECAY_SNAP_UTIL_PCT	16
 
 /* Crisp baseline down-shed: 1.5-2ms downward transitions so bursts shed
  * quickly while keeping deep-C residency high. Upward stays 1200-1500us. */
@@ -239,7 +239,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_BIG_MIN_SAMPLE_US		3000
 #define RFX_D_ENERGY_AWARE		1
 #define RFX_D_ENERGY_AWARE_MIN_PCT	0
-#define RFX_D_PARK_EXIT_PCT		16
+#define RFX_D_PARK_EXIT_PCT		20
 #define RFX_D_PARK_EXIT_EVALS		2
 #define RFX_D_TOUCH_WINDOW_MS		64
 
@@ -318,7 +318,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * entry are lag-free.
  */
 #define RFX_ECO_INPUT_QUIET_NS		((u64)1500 * NSEC_PER_MSEC)
-#define RFX_ECO_DEEP_INPUT_QUIET_NS	((u64)4000 * NSEC_PER_MSEC)
+#define RFX_ECO_DEEP_INPUT_QUIET_NS	((u64)3000 * NSEC_PER_MSEC)
 #define RFX_ECO_LITTLE_CAP_PCT		30
 #define RFX_ECO_BIG_CAP_PCT		32
 #define RFX_ECO_DEEP_LITTLE_CAP_PCT	20
@@ -330,10 +330,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_ECO_DEEP_UCMIN_PCT		12
 /* Any uclamp_min at/over this percent of capacity wakes eco instantly. */
 #define RFX_ECO_EXIT_UCMIN_PCT		30
-/* Filtered-demand residency gates: stage 1 under 32% of capacity,
- * stage 2 under 10%. */
-#define RFX_ECO_LITE_DEMAND_PCT		32
-#define RFX_ECO_DEEP_DEMAND_PCT		10
+/* Filtered-demand residency gates: stage 1 under 35% of capacity,
+ * stage 2 under 18%. */
+#define RFX_ECO_LITE_DEMAND_PCT		35
+#define RFX_ECO_DEEP_DEMAND_PCT		18
 /* iowait boost cap for Little in either eco stage: background I/O keeps a
  * soft boost so screen-on reads stay responsive. */
 #define RFX_ECO_IOWAIT_LITTLE_PCT	12
@@ -1462,8 +1462,16 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (max_uclamp_min && !p->parked && (touch || ucmin_pct >= 20)) {
 			unsigned int uclamp_freq = (unsigned int)((u64)pol->cpuinfo.max_freq *
 						   max_uclamp_min / max_cap);
-			unsigned int uclamp_cap = prime ?
-				rfx_pct(fceil, RFX_D_SWEET_CAP_PRIME_PCT) : fceil;
+			unsigned int uclamp_cap;
+
+			if (demand_pct >= RFX_D_BURST_UNLOCK_PCT)
+				uclamp_cap = fceil;
+			else if (prime)
+				uclamp_cap = rfx_pct(fceil, RFX_D_SWEET_CAP_PRIME_PCT);
+			else if (little)
+				uclamp_cap = rfx_pct(fceil, RFX_D_LITTLE_CAP_PCT);
+			else
+				uclamp_cap = rfx_pct(fceil, RFX_D_SWEET_CAP_BIG_PCT);
 
 			uclamp_freq = clamp(uclamp_freq, fmin, uclamp_cap);
 			if (freq < uclamp_freq)
@@ -1864,7 +1872,7 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 		if (uc_min > max_uclamp_min)
 			max_uclamp_min = uc_min;
 		je = max(jc->util, jb);
-		if (gaming || touch || uc_min >= (max_cap * 20 / 100)) {
+		if (gaming || touch || uc_min >= (max_cap * 35 / 100)) {
 			if (uc_min > je)
 				je = min(uc_min, max_cap);
 		}
@@ -1906,61 +1914,64 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 		unsigned int park_thresh =
 			(unsigned int)(max_cap * RFX_D_IDLE_FLOOR_SNAP_PCT / 100);
 
-		/*
-		 * Aggressive Idle Ramp-Down:
-		 * When load drops below idle threshold, immediately park policy
-		 * and bypass down-rate delays to allow rapid deep C-state entry.
-		 */
-		if (p->filt_util < park_thresh && !touch) {
-			p->parked = true;
-			p->park_exit_count = 0;
-			p->pending_raw_freq = fmin;
-			return fmin;
-		}
-
-		if (p->is_little) {
-			/* Little cluster: park to fmin when idle to enable 120ms eval delay */
+		if (p->is_prime) {
+			/*
+			 * Daily Mode Prime Core Conservation:
+			 * Keep Cortex-X2 parked at fmin unless sustained heavy workload
+			 * demand (>= 85%). Daily UI touch does not wake Prime.
+			 */
+			if (p->filt_util < (max_cap * 85 / 100)) {
+				p->parked = true;
+				p->park_exit_count = 0;
+				p->pending_raw_freq = fmin;
+				return fmin;
+			}
+			if (++p->park_exit_count >= RFX_D_PARK_EXIT_EVALS)
+				p->parked = false;
+		} else if (!p->is_little) {
+			/*
+			 * Daily Mode Big Cluster Conservation:
+			 * When not interacting with touch and demand is under 22%,
+			 * park Big cluster to fmin so Little cores handle background loads.
+			 */
+			if (!touch && p->filt_util < (max_cap * 22 / 100)) {
+				p->parked = true;
+				p->park_exit_count = 0;
+				p->pending_raw_freq = fmin;
+				return fmin;
+			}
+			if (touch) {
+				p->parked = false;
+				p->park_exit_count = RFX_D_PARK_EXIT_EVALS;
+			} else if (p->parked) {
+				if (p->filt_util >= (max_cap * 28 / 100)) {
+					if (++p->park_exit_count >= 2)
+						p->parked = false;
+				} else {
+					p->park_exit_count = 0;
+				}
+			}
+		} else {
+			/* Little cluster: park to fmin when true idle */
 			if (!touch && p->filt_util < park_thresh) {
 				p->parked = true;
 				p->park_exit_count = 0;
-			} else {
-				unsigned int exit_evals = touch ? 1 : RFX_D_PARK_EXIT_EVALS;
-
-				if (++p->park_exit_count >= exit_evals)
-					p->parked = false;
+				p->pending_raw_freq = fmin;
+				return fmin;
 			}
-		} else if (touch && !p->is_prime) {
-			p->parked = false;
-			p->park_exit_count = RFX_D_PARK_EXIT_EVALS;
-		} else if (p->is_prime) {
-			/*
-			 * Daily Mode Prime Core Conservation:
-			 * Prime cluster is a high-drain execution tier. In daily mode,
-			 * UI interaction and touches are handled smoothly by Little and
-			 * Big clusters. Keep Prime parked at fmin unless there is sustained,
-			 * heavy workload demand (>= 75%).
-			 */
-			if (p->filt_util < (max_cap * 75 / 100)) {
-				p->parked = true;
-				p->park_exit_count = 0;
-			} else {
-				if (++p->park_exit_count >= RFX_D_PARK_EXIT_EVALS)
-					p->parked = false;
-			}
-		} else if (p->filt_util < park_thresh) {
-			p->parked = true;
-			p->park_exit_count = 0;
-		} else if (p->parked) {
-			unsigned int exit_evals = touch ? 1 : 2;
-
-			if (p->filt_util >=
-			    (max_cap * RFX_D_PARK_EXIT_PCT / 100)) {
-				if (++p->park_exit_count >= exit_evals)
-					p->parked = false;
-			} else {
-				p->park_exit_count = 0;
+			if (touch) {
+				p->parked = false;
+				p->park_exit_count = RFX_D_PARK_EXIT_EVALS;
+			} else if (p->parked) {
+				if (p->filt_util >= (max_cap * RFX_D_PARK_EXIT_PCT / 100)) {
+					if (++p->park_exit_count >= RFX_D_PARK_EXIT_EVALS)
+						p->parked = false;
+				} else {
+					p->park_exit_count = 0;
+				}
 			}
 		}
+
 		if (p->parked) {
 			p->pending_raw_freq = fmin;
 			return fmin;
@@ -2806,6 +2817,17 @@ static void rfx_input_event(struct input_handle *handle, unsigned int type,
 	unsigned long flags;
 	u64 now, last_ts;
 
+	if (type == EV_ABS) {
+		if (code != ABS_MT_POSITION_X && code != ABS_MT_POSITION_Y &&
+		    code != ABS_X && code != ABS_Y)
+			return;
+	} else if (type == EV_KEY) {
+		if (code != BTN_TOUCH || value != 1)
+			return;
+	} else {
+		return;
+	}
+
 	now = (u64)sched_clock();
 	last_ts = (u64)atomic64_xchg(&rfx_input_ts, (s64)now);
 
@@ -2878,10 +2900,6 @@ static const struct input_device_id rfx_input_ids[] = {
 		.evbit = { BIT_MASK(EV_KEY) },
 		.keybit = { [BIT_WORD(BTN_TOUCH)] =
 				BIT_MASK(BTN_TOUCH) },
-	},
-	{
-		.flags = INPUT_DEVICE_ID_MATCH_EVBIT,
-		.evbit = { BIT_MASK(EV_KEY) },
 	},
 	{ },
 };
