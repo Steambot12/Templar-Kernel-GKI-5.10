@@ -67,7 +67,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * the frequency.
  */
 #define RFX_G_GAMING_UP_RATE_US		1000
-#define RFX_GAMING_DOWN_OVERRIDE_US	12000
+#define RFX_GAMING_DOWN_OVERRIDE_US	16000
 
 /* Asymmetric EMA filter for gaming mode: a raw sample above the filtered
  * value attacks fast (alpha 78/22), a sample at or below decays slower
@@ -80,22 +80,22 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_PRIME_FLOOR_PCT		38
 #define RFX_G_BIG_FLOOR_PCT		42
 #define RFX_G_LITTLE_FLOOR_PCT		30
-#define RFX_G_LITTLE_CAP_PCT		68
+#define RFX_G_LITTLE_CAP_PCT		80
 
 /* Soft ceiling: transient spikes in gaming mode hold the cluster at this
  * percentage of the thermal ceiling instead of jumping to the top OPP.
  * 100% is released only after sustained saturation (see sat_count).
  */
-#define RFX_G_SOFT_CEIL_PRIME_PCT	68
-#define RFX_G_SOFT_CEIL_BIG_PCT		72
+#define RFX_G_SOFT_CEIL_PRIME_PCT	78
+#define RFX_G_SOFT_CEIL_BIG_PCT		82
 
 /* Saturation gate: demand windows held at/above these counts release the
  * top OPP; below the release count the counter decays to zero.
  */
-#define RFX_G_SAT_ENTER_PCT		92
-#define RFX_G_SAT_RAW_PCT		94
-#define RFX_G_SAT_UNLOCK_COUNT		8
-#define RFX_G_SAT_COUNT_MAX		12
+#define RFX_G_SAT_ENTER_PCT		85
+#define RFX_G_SAT_RAW_PCT		88
+#define RFX_G_SAT_UNLOCK_COUNT		4
+#define RFX_G_SAT_COUNT_MAX		8
 
 /* Anti-sawtooth step-down cap: after a big/prime frequency drop in gaming
  * mode, the governor descends at most this percentage of max frequency
@@ -104,8 +104,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * latches across evaluation periods so the drop steps down steadily
  * instead of oscillating.
  */
-#define RFX_G_STEP_DOWN_PCT		5
-#define RFX_G_STEP_DOWN_HOLD_NS		(36 * NSEC_PER_MSEC)
+#define RFX_G_STEP_DOWN_PCT		8
+#define RFX_G_STEP_DOWN_HOLD_NS		(24 * NSEC_PER_MSEC)
 
 /* Proactive hysteretic thermal dampening in gaming mode. The stage input
  * is the rfx_cool_depth thermal-pressure depth (0-100) of the
@@ -115,24 +115,24 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * the SoC runs hot; pressure that recovers after a frequency drop
  * cannot re-escalate a released stage within its dwell window.
  */
-#define RFX_THERMAL_WARM_ARM_DEPTH	10
-#define RFX_THERMAL_WARM_CLEAR_DEPTH	5
+#define RFX_THERMAL_WARM_ARM_DEPTH	18
+#define RFX_THERMAL_WARM_CLEAR_DEPTH	10
 #define RFX_THERMAL_WARM_DWELL_NS	((u64)2000 * NSEC_PER_MSEC)
 
-#define RFX_THERMAL_HOT_ARM_DEPTH	25
-#define RFX_THERMAL_HOT_CLEAR_DEPTH	16
+#define RFX_THERMAL_HOT_ARM_DEPTH	35
+#define RFX_THERMAL_HOT_CLEAR_DEPTH	22
 #define RFX_THERMAL_HOT_DWELL_NS	((u64)3000 * NSEC_PER_MSEC)
 
-#define RFX_THERMAL_CRIT_ARM_DEPTH	45
-#define RFX_THERMAL_CRIT_CLEAR_DEPTH	30
+#define RFX_THERMAL_CRIT_ARM_DEPTH	55
+#define RFX_THERMAL_CRIT_CLEAR_DEPTH	38
 #define RFX_THERMAL_CRIT_DWELL_NS	((u64)4000 * NSEC_PER_MSEC)
 
-#define RFX_THERMAL_WARM_CAP_PRIME_PCT	64
-#define RFX_THERMAL_WARM_CAP_BIG_PCT	68
-#define RFX_THERMAL_HOT_CAP_PRIME_PCT	58
-#define RFX_THERMAL_HOT_CAP_BIG_PCT	62
-#define RFX_THERMAL_CRIT_CAP_PRIME_PCT	52
-#define RFX_THERMAL_CRIT_CAP_BIG_PCT	56
+#define RFX_THERMAL_WARM_CAP_PRIME_PCT	75
+#define RFX_THERMAL_WARM_CAP_BIG_PCT	80
+#define RFX_THERMAL_HOT_CAP_PRIME_PCT	66
+#define RFX_THERMAL_HOT_CAP_BIG_PCT	72
+#define RFX_THERMAL_CRIT_CAP_PRIME_PCT	56
+#define RFX_THERMAL_CRIT_CAP_BIG_PCT	62
 
 /* Gaming floor-band hysteresis (demand pct of capacity). The floor is
  * armed when smoothed demand crosses ARM; it only disarms when demand
@@ -160,9 +160,9 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_PRIME_TURBO_CAP_PCT	100
 #define RFX_G_PRIME_COOL_CAP_PCT	100
 
-#define RFX_G_SURGE_UTIL_PCT		90
-#define RFX_G_FRAME_HOLD_NS		(10000ULL * NSEC_PER_USEC)
-#define RFX_G_DOWN_RATE_LIMIT_NS	(10000ULL * NSEC_PER_USEC)
+#define RFX_G_SURGE_UTIL_PCT		82
+#define RFX_G_FRAME_HOLD_NS		(18000ULL * NSEC_PER_USEC)
+#define RFX_G_DOWN_RATE_LIMIT_NS	(12000ULL * NSEC_PER_USEC)
 #define RFX_G_MIN_SAMPLE_NS		(8333ULL * NSEC_PER_USEC)
 
 #define RFX_G_EVAL_US_DEFAULT		500
@@ -171,8 +171,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_GO_HISPEED_PCT_DEFAULT	78
 #define RFX_G_HISPEED_HOLD_US_DEFAULT	16000
 
-#define RFX_D_LITTLE_CAP_PCT		35
-#define RFX_D_LITTLE_FLOOR_PCT		20
+#define RFX_D_LITTLE_CAP_PCT		36
+#define RFX_D_LITTLE_FLOOR_PCT		22
 #define RFX_D_LITTLE_FLOOR_ARM_PCT	12
 #define RFX_D_LITTLE_FLOOR_REARM_PCT	6
 #define RFX_D_LITTLE_FLOOR_NS		(16 * NSEC_PER_MSEC)
@@ -183,7 +183,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_BIG_LIFT_PCT		60
 #define RFX_D_BIG_DROP_PCT		38
 #define RFX_D_TOUCH_FLOOR_MIN_DEMAND	16
-#define RFX_D_BIG_TOUCH_FLOOR_PCT	14
+#define RFX_D_BIG_TOUCH_FLOOR_PCT	16
 
 /*
  * Daily Big/Prime efficiency shaping. Under normal baseline load the
@@ -191,7 +191,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * Prime). Raw demand >= 92% (app cold launch, camera burst) unlocks the
  * top OPP so launches stay snappy.
  */
-#define RFX_D_SWEET_CAP_BIG_PCT		46
+#define RFX_D_SWEET_CAP_BIG_PCT		48
 #define RFX_D_SWEET_CAP_PRIME_PCT	35
 #define RFX_D_BURST_UNLOCK_PCT		92
 
@@ -232,7 +232,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_IOWAIT_BIG_PCT	10
 #define RFX_D_IOWAIT_PRIME_PCT	0
 
-#define RFX_D_IDLE_EVAL_US		150000
+#define RFX_D_IDLE_EVAL_US		200000
 #define RFX_D_LIGHT_EVAL_OPP_PCT	30
 #define RFX_D_LIGHT_EVAL_US		60000
 #define RFX_D_LITTLE_MIN_SAMPLE_US	6000
@@ -318,7 +318,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * entry are lag-free.
  */
 #define RFX_ECO_INPUT_QUIET_NS		((u64)2000 * NSEC_PER_MSEC)
-#define RFX_ECO_DEEP_INPUT_QUIET_NS	((u64)6000 * NSEC_PER_MSEC)
+#define RFX_ECO_DEEP_INPUT_QUIET_NS	((u64)5000 * NSEC_PER_MSEC)
 #define RFX_ECO_LITTLE_CAP_PCT		30
 #define RFX_ECO_BIG_CAP_PCT		32
 #define RFX_ECO_DEEP_LITTLE_CAP_PCT	20
@@ -326,10 +326,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 /* Arm requires the max uclamp_min across the policy to sit under these
  * percents of capacity: a foreground RenderThread/video request keeps the
  * eco state disarmed. */
-#define RFX_ECO_UCMIN_PCT		25
-#define RFX_ECO_DEEP_UCMIN_PCT		12
+#define RFX_ECO_UCMIN_PCT		10
+#define RFX_ECO_DEEP_UCMIN_PCT		4
 /* Any uclamp_min at/over this percent of capacity wakes eco instantly. */
-#define RFX_ECO_EXIT_UCMIN_PCT		35
+#define RFX_ECO_EXIT_UCMIN_PCT		15
 /* Filtered-demand residency gates: stage 1 under 32% of capacity,
  * stage 2 under 10%. */
 #define RFX_ECO_LITE_DEMAND_PCT		32
@@ -1252,27 +1252,30 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		 * top of rfx_next_freq, so a paused game can never enter the
 		 * eco state.
 		 *
-		 * Instant exit on any touch (0 latency) or uclamp_min spike >= 35%.
+		 * Instant exit on touch, deadline bandwidth, or uclamp_min spike.
 		 */
-		if (touch || ucmin_pct >= RFX_ECO_EXIT_UCMIN_PCT ||
+		if (touch || p->dl_bw_exceeded || ucmin_pct >= RFX_ECO_EXIT_UCMIN_PCT ||
 		    rfx_input_quiet_ns(time) < RFX_ECO_INPUT_QUIET_NS) {
 			p->eco_lite_active = false;
 			p->eco_deep_active = false;
 		} else {
 			if (p->eco_deep_active) {
 				if (ucmin_pct >= RFX_ECO_DEEP_UCMIN_PCT ||
+				    p->dl_bw_exceeded ||
 				    ema_pct >= RFX_ECO_DEEP_DEMAND_PCT ||
 				    rfx_input_quiet_ns(time) <
 				    RFX_ECO_DEEP_INPUT_QUIET_NS)
 					p->eco_deep_active = false;
 			} else if (rfx_input_quiet_ns(time) >=
 				   RFX_ECO_DEEP_INPUT_QUIET_NS &&
+				   !p->dl_bw_exceeded &&
 				   ucmin_pct < RFX_ECO_DEEP_UCMIN_PCT &&
 				   ema_pct < RFX_ECO_DEEP_DEMAND_PCT) {
 				p->eco_deep_active = true;
 			}
 			if (p->eco_lite_active) {
 				if (ucmin_pct >= RFX_ECO_UCMIN_PCT ||
+				    p->dl_bw_exceeded ||
 				    ema_pct >= RFX_ECO_LITE_DEMAND_PCT ||
 				    rfx_input_quiet_ns(time) <
 				    RFX_ECO_INPUT_QUIET_NS)
@@ -1280,6 +1283,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			} else if (!p->eco_deep_active &&
 				   rfx_input_quiet_ns(time) >=
 				   RFX_ECO_INPUT_QUIET_NS &&
+				   !p->dl_bw_exceeded &&
 				   ucmin_pct < RFX_ECO_UCMIN_PCT &&
 				   ema_pct < RFX_ECO_LITE_DEMAND_PCT) {
 				p->eco_lite_active = true;
@@ -1314,10 +1318,12 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 			/*
 			 * Daily Little Cluster Audio & Background Floor:
-			 * Ensure Little cores maintain floor during touch interaction or active demand window
-			 * to prevent audio/video buffer underruns, while allowing full parking to fmin when idle.
+			 * Ensure Little cores maintain floor during touch interaction, active demand window,
+			 * or media playback (dl_bw_exceeded / audio uclamp_min) to prevent audio/video
+			 * buffer underruns, while allowing full parking to fmin when idle.
 			 */
-			if ((touch || (p->little_floor_end_ns && time < p->little_floor_end_ns)) &&
+			if ((touch || p->dl_bw_exceeded || ucmin_pct >= 4 ||
+			     (p->little_floor_end_ns && time < p->little_floor_end_ns)) &&
 			    freq < rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT))
 				freq = rfx_pct(fceil, RFX_D_LITTLE_FLOOR_PCT);
 
@@ -1452,6 +1458,17 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		if (freq > cap)
 			freq = cap;
+
+		if (max_uclamp_min) {
+			unsigned int uclamp_freq = (unsigned int)((u64)pol->cpuinfo.max_freq *
+						   max_uclamp_min / max_cap);
+			unsigned int uclamp_cap = prime ?
+				rfx_pct(fceil, RFX_D_SWEET_CAP_PRIME_PCT) : fceil;
+
+			uclamp_freq = clamp(uclamp_freq, fmin, uclamp_cap);
+			if (freq < uclamp_freq)
+				freq = uclamp_freq;
+		}
 	}
 
 	freq = clamp(freq, fmin, fceil);
