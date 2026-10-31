@@ -67,7 +67,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * the frequency.
  */
 #define RFX_G_GAMING_UP_RATE_US		1000
-#define RFX_GAMING_DOWN_OVERRIDE_US	12000
+#define RFX_GAMING_DOWN_OVERRIDE_US	8000
 
 /* Asymmetric EMA filter for gaming mode: a raw sample above the filtered
  * value attacks fast (alpha 78/22), a sample at or below decays slower
@@ -77,35 +77,33 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_G_EMA_ATTACK_PCT		78
 #define RFX_G_EMA_DECAY_PCT		18
 
-#define RFX_G_PRIME_FLOOR_PCT		35
-#define RFX_G_BIG_FLOOR_PCT		40
-#define RFX_G_LITTLE_FLOOR_PCT		28
-#define RFX_G_LITTLE_CAP_PCT		72
+#define RFX_G_PRIME_FLOOR_PCT		25
+#define RFX_G_BIG_FLOOR_PCT		32
+#define RFX_G_LITTLE_FLOOR_PCT		24
+#define RFX_G_LITTLE_CAP_PCT		70
 
-/* Soft ceiling: transient spikes in gaming mode hold the cluster at this
- * percentage of the thermal ceiling instead of jumping to the top OPP.
- * 100% is released only after sustained saturation (see sat_count).
+/* Soft ceiling: baseline gaming hold caps cluster within optimal V/F
+ * efficiency knee to eliminate thermal runaway. Unlocked ceilings
+ * scale smoothly without binary cliff drops.
  */
-#define RFX_G_SOFT_CEIL_PRIME_PCT	64
-#define RFX_G_SOFT_CEIL_BIG_PCT		74
+#define RFX_G_SOFT_CEIL_PRIME_PCT	70
+#define RFX_G_SOFT_CEIL_BIG_PCT		78
 
-/* Saturation gate: demand windows held at/above these counts release the
- * top OPP; below the release count the counter decays to zero.
+/* Saturation gate: demand windows held at/above these counts release
+ * higher OPP headroom; below the release count the counter decays smoothly.
  */
-#define RFX_G_SAT_ENTER_PCT		92
-#define RFX_G_SAT_RAW_PCT		94
-#define RFX_G_SAT_UNLOCK_COUNT		8
-#define RFX_G_SAT_COUNT_MAX		12
+#define RFX_G_SAT_ENTER_PCT		90
+#define RFX_G_SAT_RAW_PCT		92
+#define RFX_G_SAT_UNLOCK_COUNT		16
+#define RFX_G_SAT_COUNT_MAX		24
 
 /* Anti-sawtooth step-down cap: after a big/prime frequency drop in gaming
  * mode, the governor descends at most this percentage of max frequency
- * per evaluation, so a brief thread migration cannot cliff the cluster
- * from the top OPP back to the floor in one tick. A short descent hold
- * latches across evaluation periods so the drop steps down steadily
- * instead of oscillating.
+ * per evaluation, preventing single-tick cliff drops while allowing
+ * prompt recovery to lower OPPs during GPU fence waits.
  */
-#define RFX_G_STEP_DOWN_PCT		6
-#define RFX_G_STEP_DOWN_HOLD_NS		(28 * NSEC_PER_MSEC)
+#define RFX_G_STEP_DOWN_PCT		14
+#define RFX_G_STEP_DOWN_HOLD_NS		(12 * NSEC_PER_MSEC)
 
 /* Proactive hysteretic thermal dampening in gaming mode. The stage input
  * is the rfx_cool_depth thermal-pressure depth (0-100) of the
@@ -127,10 +125,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_THERMAL_CRIT_CLEAR_DEPTH	32
 #define RFX_THERMAL_CRIT_DWELL_NS	((u64)4000 * NSEC_PER_MSEC)
 
-#define RFX_THERMAL_WARM_CAP_PRIME_PCT	62
-#define RFX_THERMAL_WARM_CAP_BIG_PCT	70
-#define RFX_THERMAL_HOT_CAP_PRIME_PCT	56
-#define RFX_THERMAL_HOT_CAP_BIG_PCT	64
+#define RFX_THERMAL_WARM_CAP_PRIME_PCT	65
+#define RFX_THERMAL_WARM_CAP_BIG_PCT	74
+#define RFX_THERMAL_HOT_CAP_PRIME_PCT	58
+#define RFX_THERMAL_HOT_CAP_BIG_PCT	66
 #define RFX_THERMAL_CRIT_CAP_PRIME_PCT	50
 #define RFX_THERMAL_CRIT_CAP_BIG_PCT	58
 
@@ -139,33 +137,33 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
  * stays below CLEAR, so a single low tick cannot release the band.
  */
 #define RFX_G_PRIME_GATE_ARM_PCT	16
-#define RFX_G_PRIME_GATE_CLEAR_PCT	8
-#define RFX_G_BIG_GATE_ARM_PCT		22
-#define RFX_G_BIG_GATE_CLEAR_PCT	12
-#define RFX_G_PRIME_GATE_HOLD_NS	(600 * NSEC_PER_MSEC)
-#define RFX_G_BIG_GATE_HOLD_NS		(800 * NSEC_PER_MSEC)
+#define RFX_G_PRIME_GATE_CLEAR_PCT	10
+#define RFX_G_BIG_GATE_ARM_PCT		20
+#define RFX_G_BIG_GATE_CLEAR_PCT	14
+#define RFX_G_PRIME_GATE_HOLD_NS	(60 * NSEC_PER_MSEC)
+#define RFX_G_BIG_GATE_HOLD_NS		(80 * NSEC_PER_MSEC)
 
 /* Warmup/entry ramps for gaming mode */
 #define RFX_G_WARMUP_FLOOR_PCT		44
-#define RFX_G_TOUCH_PCT_DEFAULT		48
+#define RFX_G_TOUCH_PCT_DEFAULT		40
 #define RFX_G_TOUCH_MS_DEFAULT		100
-#define RFX_G_MIN_SAMPLE_US_DEFAULT	8333
+#define RFX_G_MIN_SAMPLE_US_DEFAULT	6000
 #define RFX_G_DOWN_FAST_PCT_DEFAULT	2
 #define RFX_G_DOWN_FAST_MS_DEFAULT	24
 #define RFX_G_ENERGY_AWARE_DEFAULT	0
-#define RFX_G_IDLE_FLOOR_PCT		22
+#define RFX_G_IDLE_FLOOR_PCT		18
 
-#define RFX_G_PRIME_TOUCH_PCT		42
+#define RFX_G_PRIME_TOUCH_PCT		35
 #define RFX_G_PRIME_CAP_PCT		100
 #define RFX_G_PRIME_TURBO_CAP_PCT	100
 #define RFX_G_PRIME_COOL_CAP_PCT	100
 
-#define RFX_G_SURGE_UTIL_PCT		86
-#define RFX_G_FRAME_HOLD_NS		(12000ULL * NSEC_PER_USEC)
-#define RFX_G_DOWN_RATE_LIMIT_NS	(10000ULL * NSEC_PER_USEC)
-#define RFX_G_MIN_SAMPLE_NS		(8333ULL * NSEC_PER_USEC)
+#define RFX_G_SURGE_UTIL_PCT		85
+#define RFX_G_FRAME_HOLD_NS		(10000ULL * NSEC_PER_USEC)
+#define RFX_G_DOWN_RATE_LIMIT_NS	(6000ULL * NSEC_PER_USEC)
+#define RFX_G_MIN_SAMPLE_NS		(6000ULL * NSEC_PER_USEC)
 
-#define RFX_G_EVAL_US_DEFAULT		500
+#define RFX_G_EVAL_US_DEFAULT		1500
 #define RFX_G_HISPEED_PCT_DEFAULT	64
 
 #define RFX_G_GO_HISPEED_PCT_DEFAULT	78
@@ -1041,6 +1039,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		unsigned int top_cap_pct;
 		unsigned int floor_gate_on;
 		unsigned int boost_fl = 0;
+		bool is_2tier = (rfx_ntiers() == 2);
+		unsigned int soft_cap, max_sat_cap;
 
 		demand_pct = (unsigned int)(raw_util * 100 / max_cap);
 		ema_pct = (unsigned int)(util * 100 / max_cap);
@@ -1063,10 +1063,10 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			rfx_thermal_stage_update(p, depth, time);
 
 		/*
-		 * Sustained saturation gate. A cluster only earns the top OPP
-		 * after two consecutive evaluation windows of heavy demand
+		 * Sustained saturation gate. A cluster only earns higher OPPs
+		 * after sustained evaluation windows of heavy demand
 		 * (filtered util >= 90% or raw util >= 92%); the count caps at
-		 * 10 and decays one step per evaluation below release, so a
+		 * 24 and decays one step per evaluation below release, so a
 		 * single spike cannot hold the unlock open.
 		 */
 		if (!little) {
@@ -1082,24 +1082,22 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		/*
 		 * Sweet-spot floor band with hysteresis. The floor is armed
 		 * only while smoothed demand holds above the tier arm
-		 * threshold (22% Prime / 35% Big), and is released only
-		 * after demand stays below the tier release threshold
-		 * (14% Prime / 25% Big) for the hold window, so a single
-		 * low tick does not release the band.
+		 * threshold, and is released after demand stays below the tier
+		 * release threshold for the hold window.
 		 */
 		rfx_floor_gate_update(p, ema_pct, time);
 		floor_gate_on = p->floor_gate_active;
 
 		/*
-		 * Target 1: Smart Dynamic Floor (Sweet Spot OPP).
-		 * Prime: 56% gated band; Big: 48% gated band; Little: 40%
+		 * Smart Dynamic Floor (Sweet Spot OPP).
+		 * Prime: 25% gated band; Big: 32% (or 30% for 2-tier); Little: 24%
 		 * unconditional. Gating keeps idle cores free to drop to
 		 * fmin when demand is genuinely low in gaming mode.
 		 */
 		if (prime && floor_gate_on)
 			fl = rfx_pct(fceil, RFX_G_PRIME_FLOOR_PCT);
 		else if (!little && floor_gate_on)
-			fl = rfx_pct(fceil, RFX_G_BIG_FLOOR_PCT);
+			fl = rfx_pct(fceil, is_2tier ? 30 : RFX_G_BIG_FLOOR_PCT);
 		else if (little)
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
 		else
@@ -1119,15 +1117,31 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		/*
 		 * Effective top cap. In gaming mode Big/Prime are clamped to
-		 * the tier soft ceiling (84% Prime / 88% Big) unless the
-		 * saturation gate has released 100% of the ceiling. The
-		 * active thermal stage cap is always applied, so the
-		 * effective ceiling is min(soft_or_unlocked, thermal_stage).
+		 * the tier soft ceiling (70% Prime / 78% Big on 3-tier, 74% Big
+		 * on 2-tier). Sustained saturation unlocks higher OPP headroom
+		 * proportionally (up to 80% Prime / 86% Big), strictly bounding
+		 * the top OPP to prevent exponential V/F thermal runaway.
 		 */
-		top_cap_pct = prime ? RFX_G_SOFT_CEIL_PRIME_PCT :
-				     RFX_G_SOFT_CEIL_BIG_PCT;
-		if (!little && p->sat_count >= RFX_G_SAT_UNLOCK_COUNT)
-			top_cap_pct = 100;
+		if (prime) {
+			soft_cap = RFX_G_SOFT_CEIL_PRIME_PCT;
+			max_sat_cap = 80;
+		} else if (is_2tier) {
+			soft_cap = 74;
+			max_sat_cap = 80;
+		} else {
+			soft_cap = RFX_G_SOFT_CEIL_BIG_PCT;
+			max_sat_cap = 86;
+		}
+
+		if (!little && p->sat_count >= RFX_G_SAT_UNLOCK_COUNT) {
+			unsigned int sat_span = RFX_G_SAT_COUNT_MAX - RFX_G_SAT_UNLOCK_COUNT;
+			unsigned int sat_prog = p->sat_count - RFX_G_SAT_UNLOCK_COUNT;
+
+			top_cap_pct = soft_cap + (max_sat_cap - soft_cap) * sat_prog / sat_span;
+		} else {
+			top_cap_pct = soft_cap;
+		}
+
 		top_cap_pct = min(top_cap_pct, rfx_thermal_cap_pct(p));
 		if (!little)
 			fceil = rfx_pct(fceil, top_cap_pct);
@@ -1136,13 +1150,9 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		/*
 		 * Fast Burst Ramp-Up & Frame-Time Aligned Hold:
-		 * When demand on Big/Prime exceeds the surge threshold (> 82%),
-		 * immediately scale to the effective ceiling and latch a 2-frame
-		 * window (~16.6ms) to bridge the 120Hz inter-frame render gap
-		 * and GPU synchronization wait without sawtooth jitter. The
-		 * surge floor respects the same effective ceiling as the
-		 * transient load path above, so it can never overshoot the
-		 * soft ceiling or an active thermal stage cap.
+		 * When demand on Big/Prime exceeds the surge threshold (> 85%),
+		 * immediately scale to the effective ceiling and latch a frame
+		 * window to bridge GPU synchronization wait without jitter.
 		 */
 		if (!little && demand_pct >= RFX_G_SURGE_UTIL_PCT) {
 			p->surge_hold_end_ns = time + RFX_G_FRAME_HOLD_NS;
@@ -1161,21 +1171,29 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			boost_fl = max(boost_fl, hs_fl);
 		}
 
-		/* Interactive touch boost across all clusters */
+		/*
+		 * Interactive touch boost in gaming mode.
+		 * Little cores boost to 28% floor for instant input dispatch.
+		 * Big/Prime cores boost only if demand >= 40% to avoid pegging
+		 * high frequencies from continuous thumb contact during gaming.
+		 */
 #if RFX_G_TOUCH_PCT_DEFAULT && RFX_G_TOUCH_MS_DEFAULT
 		if (rfx_touch_active(time, (u64)RFX_G_TOUCH_MS_DEFAULT * NSEC_PER_MSEC)) {
 			unsigned int touch_pct;
 
-			if (prime)
-				touch_pct = RFX_G_PRIME_TOUCH_PCT;
-			else if (!little)
-				touch_pct = RFX_G_TOUCH_PCT_DEFAULT;
-			else
-				touch_pct = 34;
+			if (little) {
+				touch_pct = 28;
+				boost_fl = max(boost_fl,
+					       min(rfx_pct(fceil, touch_pct), fceil));
+			} else if (demand_pct >= 40) {
+				if (prime)
+					touch_pct = RFX_G_PRIME_TOUCH_PCT;
+				else
+					touch_pct = is_2tier ? 36 : RFX_G_TOUCH_PCT_DEFAULT;
 
-			/* Touch boost also respects the effective ceiling */
-			boost_fl = max(boost_fl,
-				       min(rfx_pct(fceil, touch_pct), fceil));
+				boost_fl = max(boost_fl,
+					       min(rfx_pct(fceil, touch_pct), fceil));
+			}
 		}
 #endif
 
@@ -1187,6 +1205,10 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (max_uclamp_min) {
 			unsigned int uclamp_freq = (unsigned int)((u64)pol->cpuinfo.max_freq *
 						   max_uclamp_min / max_cap);
+
+			if (!little && demand_pct < 40 && uclamp_freq > rfx_pct(fceil, 60))
+				uclamp_freq = rfx_pct(fceil, 60);
+
 			uclamp_freq = clamp(uclamp_freq, fmin, fceil);
 			if (freq < uclamp_freq)
 				freq = uclamp_freq;
@@ -1198,11 +1220,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		/*
 		 * Anti-sawtooth step-down cap. When the target drops below
 		 * the cached frequency, the governor may descend at most
-		 * RFX_G_STEP_DOWN_PCT of policy->max per evaluation. The
-		 * 36ms descent hold re-arms the cap across consecutive
-		 * evaluations, so a brief thread migration can only step
-		 * the frequency down in small increments instead of
-		 * cliffing it to the floor in one tick.
+		 * RFX_G_STEP_DOWN_PCT of policy->max per evaluation.
 		 */
 		if (!little && p->policy->max && freq < p->next_freq) {
 			unsigned int max_drop = rfx_pct(p->policy->max,
@@ -1740,7 +1758,7 @@ static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming, u64 tim
 	if (gaming) {
 		p->freq_update_delay_ns = p->policy->fast_switch_enabled ?
 			(s64)RFX_G_EVAL_US_DEFAULT * NSEC_PER_USEC :
-			(s64)max_t(unsigned int, RFX_G_EVAL_US_DEFAULT, 1000U) * NSEC_PER_USEC;
+			(s64)max_t(unsigned int, RFX_G_EVAL_US_DEFAULT, 2500U) * NSEC_PER_USEC;
 		return;
 	}
 	base = (s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
@@ -1885,11 +1903,12 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	p->max_dl_bw = max_dl_bw;
 
 	/*
-	 * Prime Cluster Utilisation Smoothing in Gaming Mode:
-	 * Dampen micro-transient spikes while retaining instant response
-	 * for heavy render thread migrations (>= 85% capacity).
+	 * Utilisation Smoothing in Gaming Mode:
+	 * Dampen micro-transient spikes on Prime and 2-tier Big clusters
+	 * while retaining instant response for heavy render threads.
 	 */
-	if (gaming && p->is_prime && max_util > p->filt_util && p->filt_util > 0) {
+	if (gaming && (p->is_prime || (!p->is_little && rfx_ntiers() == 2)) &&
+	    max_util > p->filt_util && p->filt_util > 0) {
 		if (max_util < (max_cap * 88 / 100))
 			max_util = (p->filt_util + max_util * 3) / 4;
 	}
@@ -2264,8 +2283,9 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 						p->tunables->up_rate_limit_us) *
 						NSEC_PER_USEC;
 			p->min_sample_ns = (s64)RFX_G_MIN_SAMPLE_NS;
-			p->freq_update_delay_ns =
-				(s64)RFX_G_EVAL_US_DEFAULT * NSEC_PER_USEC;
+			p->freq_update_delay_ns = p->policy->fast_switch_enabled ?
+				(s64)RFX_G_EVAL_US_DEFAULT * NSEC_PER_USEC :
+				(s64)max_t(unsigned int, RFX_G_EVAL_US_DEFAULT, 2500U) * NSEC_PER_USEC;
 
 			p->prev_gaming_mode = true;
 			p->need_freq_update = true;
