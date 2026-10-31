@@ -8010,19 +8010,32 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 		goto fail;
 
 	if (!task_util_est(p) && p_util_min == 0) {
-		int idle_cpu = -1;
+		int idle_cpu = -1, best_little_cpu = -1;
+		unsigned long max_spare = 0;
 
 		for_each_cpu_and(cpu, perf_domain_span(pd), sched_domain_span(sd)) {
+			unsigned long spare;
+
 			if (!cpumask_test_cpu(cpu, p->cpus_ptr))
 				continue;
 			if (available_idle_cpu(cpu)) {
 				idle_cpu = cpu;
 				break;
 			}
+			spare = capacity_of(cpu);
+			lsub_positive(&spare, cpu_util(cpu));
+			if (spare > max_spare) {
+				max_spare = spare;
+				best_little_cpu = cpu;
+			}
 		}
 		if (idle_cpu >= 0) {
 			rcu_read_unlock();
 			return idle_cpu;
+		}
+		if (best_little_cpu >= 0) {
+			rcu_read_unlock();
+			return best_little_cpu;
 		}
 		goto unlock;
 	}
