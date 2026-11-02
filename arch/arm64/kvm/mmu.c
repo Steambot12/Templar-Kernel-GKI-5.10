@@ -1740,6 +1740,7 @@ static int pkvm_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t *fault_ipa,
 	}
 
 	pfn = page_to_pfn(page);
+	*fault_ipa = ALIGN_DOWN(*fault_ipa, PAGE_SIZE);
 
 	read_lock(&kvm->mmu_lock);
 	if (!kvm_pinned_pages_iter_first(&vcpu->kvm->arch.pkvm.pinned_pages,
