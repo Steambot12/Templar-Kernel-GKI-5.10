@@ -606,6 +606,9 @@ DECLARE_HOOK(android_vh_madvise_cold_or_pageout_abort,
 DECLARE_HOOK(android_vh_zs_shrinker_adjust,
 	TP_PROTO(unsigned long *pages_to_free),
 	TP_ARGS(pages_to_free));
+DECLARE_HOOK(android_vh_adjust_nr_reclaimed,
+	TP_PROTO(struct folio *folio, unsigned int *nr_reclaimed),
+	TP_ARGS(folio, nr_reclaimed));
 DECLARE_HOOK(android_vh_zs_shrinker_bypass,
 	TP_PROTO(bool *bypass),
 	TP_ARGS(bypass));

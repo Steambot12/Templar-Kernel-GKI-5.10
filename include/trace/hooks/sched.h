@@ -489,6 +489,10 @@ DECLARE_RESTRICTED_HOOK(android_rvh_update_rt_rq_load_avg,
 	TP_PROTO(u64 now, struct rq *rq, struct task_struct *tsk, int running),
 	TP_ARGS(now, rq, tsk, running), 1);
 
+DECLARE_RESTRICTED_HOOK(android_rvh_update_rq_clock_pelt,
+	TP_PROTO(struct rq *rq, s64 delta, int *ret),
+	TP_ARGS(rq, delta, ret), 1);
+
 DECLARE_HOOK(android_vh_prio_inheritance,
 	TP_PROTO(struct task_struct *p, int *saved_prio, bool *prio_inherited),
 	TP_ARGS(p, saved_prio, prio_inherited));

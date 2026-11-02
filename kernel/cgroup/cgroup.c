@@ -5479,6 +5479,7 @@ static void css_free_rwork_fn(struct work_struct *work)
 			kernfs_put(cgrp->kn);
 			psi_cgroup_free(cgrp);
 			cgroup_rstat_exit(cgrp);
+			kfree(cgrp->kmi_ext_info);
 			kfree(cgrp);
 		} else {
 			/*
@@ -5721,15 +5722,17 @@ static struct cgroup *cgroup_create(struct cgroup *parent, const char *name,
 	if (ret)
 		goto out_kernfs_remove;
 
+	cgrp->kmi_ext_info = kzalloc(sizeof(*cgrp->kmi_ext_info), GFP_KERNEL);
+	if (!cgrp->kmi_ext_info) {
+		ret = -ENOMEM;
+		goto out_psi_free;
+	}
+
 	if (cgrp->root == &cgrp_dfl_root) {
 		ret = cgroup_bpf_inherit(cgrp);
 		if (ret)
-			goto out_psi_free;
+			goto out_kmi_ext_free;
 	}
-
-	cgrp->kmi_ext_info = kzalloc(sizeof(*cgrp->kmi_ext_info), GFP_KERNEL);
-	if (!cgrp->kmi_ext_info)
-		goto out_psi_free;
 
 	/*
 	 * New cgroup inherits effective freeze counter, and
@@ -5791,6 +5794,8 @@ static struct cgroup *cgroup_create(struct cgroup *parent, const char *name,
 
 	return cgrp;
 
+out_kmi_ext_free:
+	kfree(cgrp->kmi_ext_info);
 out_psi_free:
 	psi_cgroup_free(cgrp);
 out_kernfs_remove:
@@ -6021,7 +6026,6 @@ static int cgroup_destroy_locked(struct cgroup *cgrp)
 	spin_lock_irq(&css_set_lock);
 	list_for_each_entry(link, &cgrp->cset_links, cset_link)
 		link->cset->dead = true;
-	kfree(cgrp->kmi_ext_info);
 	spin_unlock_irq(&css_set_lock);
 
 	/* initiate massacre of all css's */

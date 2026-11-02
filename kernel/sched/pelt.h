@@ -1,5 +1,6 @@
 #ifdef CONFIG_SMP
 #include "sched-pelt.h"
+#include <trace/hooks/sched.h>
 
 int __update_load_avg_blocked_se(u64 now, struct sched_entity *se);
 int __update_load_avg_se(u64 now, struct cfs_rq *cfs_rq, struct sched_entity *se);
@@ -102,6 +103,12 @@ static inline void _update_idle_rq_clock_pelt(struct rq *rq)
  */
 static inline void update_rq_clock_pelt(struct rq *rq, s64 delta)
 {
+	int ret = 0;
+
+	trace_android_rvh_update_rq_clock_pelt(rq, delta, &ret);
+	if (ret)
+		return;
+
 	if (unlikely(is_idle_task(rq->curr))) {
 		_update_idle_rq_clock_pelt(rq);
 		return;

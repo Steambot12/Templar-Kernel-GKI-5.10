@@ -1648,6 +1648,11 @@ bool cpu_busy_with_softirqs(int cpu)
 	return softirqs & LONG_SOFTIRQ_MASK;
 }
 EXPORT_SYMBOL_GPL(cpu_busy_with_softirqs);
+
+bool local_rt_runnable(void)
+{
+	return sched_rt_runnable(this_rq());
+}
 #endif /* CONFIG_RT_SOFTIRQ_AWARE_SCHED */
 
 static bool rt_task_fits_cpu(struct task_struct *p, int cpu)

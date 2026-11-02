@@ -1,0 +1,15 @@
+[abi_symbol_list]
+  tty_termios_hw_change
+  usb_bus_idr
+  usb_bus_idr_lock
+  phy_device_free
+  phy_save_page
+  phy_ethtool_ksettings_get
+  phy_ethtool_ksettings_set
+  irq_domain_create_simple
+  fixed_phy_unregister
+  phy_register_fixup_for_uid
+  phy_unregister_fixup_for_uid
+  video_device_pipeline_alloc_start
+  v4l2_pipeline_pm_get
+  v4l2_pipeline_pm_put
