@@ -28,6 +28,62 @@ config ZRAM_WRITEBACK
 
 	 See Documentation/admin-guide/blockdev/zram.rst for more information.
 
+choice
+	prompt "Default zram compressor"
+	default ZRAM_DEF_COMP_LZ4 if CRYPTO_LZ4
+	default ZRAM_DEF_COMP_ZSTDN_O if CRYPTO_ZSTDN
+	default ZRAM_DEF_COMP_LZORLE
+	depends on ZRAM
+
+config ZRAM_DEF_COMP_LZORLE
+	bool "lzo-rle"
+	depends on CRYPTO_LZO
+
+config ZRAM_DEF_COMP_ZSTD
+	bool "zstd"
+	depends on CRYPTO_ZSTD
+
+config ZRAM_DEF_COMP_LZ4
+	bool "lz4"
+	depends on CRYPTO_LZ4
+
+config ZRAM_DEF_COMP_LZO
+	bool "lzo"
+	depends on CRYPTO_LZO
+
+config ZRAM_DEF_COMP_LZ4HC
+	bool "lz4hc"
+	depends on CRYPTO_LZ4HC
+
+config ZRAM_DEF_COMP_842
+	bool "842"
+	depends on CRYPTO_842
+
+config ZRAM_DEF_COMP_ZSTDN
+	bool "zstdn"
+	depends on CRYPTO_ZSTDN
+
+config ZRAM_DEF_COMP_ZSTDN_O
+	bool "zstdn_o"
+	depends on CRYPTO_ZSTDN
+
+endchoice
+
+config ZRAM_DEF_COMP
+	string "Default zram compressor"
+	depends on ZRAM
+	default "zstdn_o" if ZRAM_DEF_COMP_ZSTDN_O
+	default "zstdn" if ZRAM_DEF_COMP_ZSTDN
+	default "zstd" if ZRAM_DEF_COMP_ZSTD
+	default "lz4" if ZRAM_DEF_COMP_LZ4
+	default "lzo" if ZRAM_DEF_COMP_LZO
+	default "lz4hc" if ZRAM_DEF_COMP_LZ4HC
+	default "842" if ZRAM_DEF_COMP_842
+	default "lzo-rle"
+	help
+	  The default compression algorithm for zram block device.
+	  Can be overridden via sysfs (comp_algorithm) before disksize is set.
+
 config ZRAM_MEMORY_TRACKING
 	bool "Track zRam block status"
 	depends on ZRAM && DEBUG_FS

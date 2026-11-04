@@ -1835,6 +1835,19 @@ config CRYPTO_ZSTD
 	help
 	  This is the zstd algorithm.
 
+config CRYPTO_ZSTDN
+	tristate "ZSTD-N / ZSTD-N_O fast compression algorithm"
+	select CRYPTO_ALGAPI
+	select CRYPTO_ACOMP2
+	select ZSTD_COMPRESS
+	select ZSTD_DECOMPRESS
+	default y
+	help
+	  This is the fast Zstandard-N (zstdn / zstdn_o) compression algorithm
+	  optimized specifically for mobile ZRAM page swapping using negative
+	  compression levels and page-bounded workspace parameters.
+
+
 comment "Random Number Generation"
 
 config CRYPTO_ANSI_CPRNG
