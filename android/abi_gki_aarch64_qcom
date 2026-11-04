@@ -1162,6 +1162,7 @@
   mbox_request_channel
   mbox_send_message
   mdiobus_c45_modify
+  __mdiobus_write
   media_device_cleanup
   media_device_init
   __media_device_register
@@ -1476,7 +1477,10 @@
   phy_power_on
   phy_resolve_aneg_linkmode
   phy_restart_aneg
+  phy_restore_page
+  phy_select_page
   phy_set_mode_ext
+  phy_write_paged
   pick_highest_pushable_task
   pick_migrate_task
   pid_nr_ns
