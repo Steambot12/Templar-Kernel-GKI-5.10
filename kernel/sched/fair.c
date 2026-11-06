@@ -591,7 +591,7 @@ u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_inherit_type     = 2;
 u8   __read_mostly sched_burst_protect_slice_lv = 1;
 u8   __read_mostly sched_burst_smoothness       = 1;
-u8   __read_mostly sched_burst_penalty_offset   = 24;
+u8   __read_mostly sched_burst_penalty_offset   = 28;
 uint __read_mostly sched_burst_penalty_scale    = 1024;
 uint __read_mostly sched_burst_cache_lifetime   = 75000000;
 uint __read_mostly sched_credit_cap_us          = 2000;
@@ -624,6 +624,23 @@ static inline u32 calc_burst_penalty(u64 burst_time)
 
 	/* 7.0.0: saturate at the nice-40 boundary, no local cap. */
 	return scaled_penalty - (overflow & ~(overflow >> 31));
+}
+
+static inline bool task_is_bore_eligible(struct task_struct *p)
+{
+	if (!p || p->sched_class != &fair_sched_class || p->exit_state)
+		return false;
+
+	/*
+	 * Protect latency-sensitive, boosted, and high-priority tasks (e.g. Android top-app
+	 * foreground gaming threads, RenderThread, and SurfaceFlinger) from BORE burst demotion.
+	 * Demoting continuous render/game threads collapses their CFS weight,
+	 * causing background preemption spikes, missed VSYNCs, and frame stutters.
+	 */
+	if (uclamp_latency_sensitive(p) || uclamp_boosted(p) || task_nice(p) < 0)
+		return false;
+
+	return true;
 }
 
 void reweight_task(struct task_struct *p, const struct load_weight *lw);
@@ -673,7 +690,7 @@ static void apply_burst_penalty(struct sched_entity *se, struct task_struct *p)
 	se->burst_penalty = max(se->prev_burst_penalty, se->curr_burst_penalty);
 
 	/* 7.0.0: kernel threads do not accrue a demotion score. */
-	if (p->flags & PF_KTHREAD)
+	if ((p->flags & PF_KTHREAD) || !task_is_bore_eligible(p))
 		se->burst_score = 0;
 	else
 		se->burst_score = se->burst_penalty >> 8;
@@ -692,6 +709,18 @@ static void update_curr_bore(struct task_struct *p, u64 delta_exec)
 
 	if (unlikely(READ_ONCE(p->stop_bore_update)))
 		return;
+
+	if (!task_is_bore_eligible(p)) {
+		if (se->burst_score || se->burst_penalty || se->curr_burst_penalty) {
+			se->burst_score = 0;
+			se->burst_penalty = 0;
+			se->curr_burst_penalty = 0;
+			se->prev_burst_penalty = 0;
+			se->burst_time = 0;
+			reweight_task_by_prio(p, effective_prio_bore(p));
+		}
+		return;
+	}
 
 	se->burst_time += delta_exec;
 	se->curr_burst_penalty = calc_burst_penalty(se->burst_time);
@@ -785,11 +814,6 @@ u64 bore_credit_ns(struct task_struct *p)
 	}
 
 	return credit;
-}
-
-static inline bool task_is_bore_eligible(struct task_struct *p)
-{
-	return p && p->sched_class == &fair_sched_class && !p->exit_state;
 }
 
 static inline u32 count_children_upto2(struct task_struct *p)
