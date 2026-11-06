@@ -267,6 +267,7 @@ int kcompressd(void *p)
 	pg_data_t *pgdat = (pg_data_t *)p;
 	int node_id = pgdat->node_id;
 	struct page *page;
+	unsigned int batch = 0;
 	struct writeback_control wbc = {
 		.sync_mode = WB_SYNC_NONE,
 		.nr_to_write = SWAP_CLUSTER_MAX,
@@ -291,11 +292,15 @@ int kcompressd(void *p)
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(kcompress_data[node_id].kcompressd_wait,
-				!kfifo_is_empty(&kcompress_data[node_id].kcompress_fifo));
+				!kfifo_is_empty(&kcompress_data[node_id].kcompress_fifo) ||
+				kthread_should_stop());
 
-		while (!kfifo_is_empty(&kcompress_data[node_id].kcompress_fifo)) {
-			if (kfifo_out(&kcompress_data[node_id].kcompress_fifo, &page, sizeof(page))) {
-				__swap_writepage(page, &wbc, end_swap_bio_write);
+		batch = 0;
+		while (kfifo_out(&kcompress_data[node_id].kcompress_fifo, &page, sizeof(page))) {
+			__swap_writepage(page, &wbc, end_swap_bio_write);
+			if (++batch >= SWAP_CLUSTER_MAX) {
+				batch = 0;
+				cond_resched();
 			}
 		}
 	}

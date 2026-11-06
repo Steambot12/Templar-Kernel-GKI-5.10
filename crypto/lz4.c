@@ -24,6 +24,7 @@ static void *lz4_alloc_ctx(struct crypto_scomp *tfm)
 	if (!ctx)
 		return ERR_PTR(-ENOMEM);
 
+	LZ4_initStream(ctx, sizeof(LZ4_stream_t));
 	return ctx;
 }
 
@@ -53,8 +54,8 @@ static void lz4_exit(struct crypto_tfm *tfm)
 static int __lz4_compress_crypto(const u8 *src, unsigned int slen,
 				 u8 *dst, unsigned int *dlen, void *ctx)
 {
-	int out_len = LZ4_compress_default(src, dst,
-		slen, *dlen, ctx);
+	int out_len = LZ4_compress_fast_extState_fastReset(ctx, src, dst,
+		slen, *dlen, LZ4_ACCELERATION_DEFAULT);
 
 	if (!out_len)
 		return -EINVAL;
