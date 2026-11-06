@@ -1045,4 +1045,14 @@ unsigned int cpufreq_generic_get(unsigned int cpu);
 void cpufreq_generic_init(struct cpufreq_policy *policy,
 		struct cpufreq_frequency_table *table,
 		unsigned int transition_latency);
+
+#if IS_ENABLED(CONFIG_CPU_FREQ_GOV_VORPAL)
+bool vorpal_is_gaming_mode(void);
+#else
+static inline bool vorpal_is_gaming_mode(void)
+{
+	return false;
+}
+#endif
+
 #endif /* _LINUX_CPUFREQ_H */

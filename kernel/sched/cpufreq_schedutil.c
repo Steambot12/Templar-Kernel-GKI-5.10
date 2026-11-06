@@ -1030,7 +1030,10 @@ void rfx_get_util_gki510(int cpu, unsigned long boost,
 		util = max_cap;
 		goto boosted;
 	}
-	util = uclamp_rq_util_with(rq, cpu_util_cfs(rq) + cpu_util_rt(rq), NULL);
+	if (rq->cfs.h_nr_running || rq->rt.rt_nr_running)
+		util = uclamp_rq_util_with(rq, cpu_util_cfs(rq) + cpu_util_rt(rq), NULL);
+	else
+		util = cpu_util_cfs(rq) + cpu_util_rt(rq);
 	dl_util = cpu_util_dl(rq);
 	/* Real saturation: no idle time left, fmax is correct here. */
 	if (util + dl_util >= max_cap) {
@@ -1045,12 +1048,48 @@ boosted:
 	if (boost > util)
 		util = boost;
 
-	/* 25% DVFS headroom — equivalent to map_util_perf() in newer kernels */
-	util = util + (util >> 2);
-
+	/*
+	 * Return the un-inflated utilization directly to Vorpal so that
+	 * Vorpal's rfx_apply_headroom() can apply its calibrated per-tier
+	 * headroom margins (6% Little, 0% Big/Prime daily, 10% gaming)
+	 * without double-headroom inflation driving clusters to fmax.
+	 */
 	*out_util = min(util, max_cap);
 }
 EXPORT_SYMBOL_GPL(rfx_get_util_gki510);
+
+/**
+ * rfx_get_uclamp_min_gki510 - get UCLAMP_MIN value of the CPU runqueue for Vorpal.
+ */
+unsigned long rfx_get_uclamp_min_gki510(int cpu)
+{
+#ifdef CONFIG_UCLAMP_TASK
+	struct rq *rq = cpu_rq(cpu);
+
+	if (static_branch_likely(&sched_uclamp_used))
+		return uclamp_rq_get(rq, UCLAMP_MIN);
+#endif
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rfx_get_uclamp_min_gki510);
+
+/**
+ * rfx_get_uclamp_max_gki510 - get UCLAMP_MAX value of the CPU runqueue for Vorpal.
+ */
+unsigned long rfx_get_uclamp_max_gki510(int cpu)
+{
+#ifdef CONFIG_UCLAMP_TASK
+	struct rq *rq = cpu_rq(cpu);
+
+	if (static_branch_likely(&sched_uclamp_used)) {
+		if (uclamp_rq_is_idle(rq))
+			return SCHED_CAPACITY_SCALE;
+		return uclamp_rq_get(rq, UCLAMP_MAX);
+	}
+#endif
+	return SCHED_CAPACITY_SCALE;
+}
+EXPORT_SYMBOL_GPL(rfx_get_uclamp_max_gki510);
 
 /**
  * rfx_dl_bw_exceeded_gki510 - DL bandwidth check for Vorpal.
