@@ -950,7 +950,7 @@ unsigned int sysctl_sched_uclamp_util_max = SCHED_CAPACITY_SCALE;
  * This knob will not override the system default sched_util_clamp_min defined
  * above.
  */
-unsigned int sysctl_sched_uclamp_util_min_rt_default = SCHED_CAPACITY_SCALE;
+unsigned int sysctl_sched_uclamp_util_min_rt_default = 0;
 
 /* All clamps are required to be less or equal than these values */
 static struct uclamp_se uclamp_default[UCLAMP_CNT];
@@ -1475,6 +1475,25 @@ done:
 
 	return result;
 }
+
+#ifdef CONFIG_UCLAMP_TASK
+static int __init setup_sched_util_clamp_min_rt_default(char *str)
+{
+	unsigned long val;
+
+	if (kstrtoul(str, 0, &val))
+		return 0;
+
+	if (val <= SCHED_CAPACITY_SCALE) {
+		sysctl_sched_uclamp_util_min_rt_default = val;
+		if (val > 0)
+			static_branch_enable(&sched_uclamp_used);
+	}
+
+	return 1;
+}
+__setup("sched_util_clamp_min_rt_default=", setup_sched_util_clamp_min_rt_default);
+#endif
 
 static int uclamp_validate(struct task_struct *p,
 			   const struct sched_attr *attr)

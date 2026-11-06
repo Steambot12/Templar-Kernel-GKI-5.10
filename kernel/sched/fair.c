@@ -8169,6 +8169,20 @@ unlock:
 	if (prev_delta == ULONG_MAX)
 		return best_energy_cpu;
 
+	/*
+	 * BACKPORT: asymmetric energy margin for down-migration:
+	 * If best_energy_cpu is in a lower-capacity domain (e.g. Little core)
+	 * than prev_cpu, and the task fits comfortably on best_energy_cpu,
+	 * allow down-migration without the large base_energy margin penalty.
+	 * This prevents lightweight wakees from being trapped on Big/Prime cores
+	 * and drives deep C-state residency on high-capacity clusters.
+	 */
+	if (arch_scale_cpu_capacity(best_energy_cpu) < arch_scale_cpu_capacity(prev_cpu) &&
+	    task_fits_cpu(p, best_energy_cpu)) {
+		if (prev_delta > best_delta)
+			return best_energy_cpu;
+	}
+
 	{
 		unsigned long margin = (prev_delta + base_energy) >> 4;
 		unsigned long task_util = task_util_est(p);
