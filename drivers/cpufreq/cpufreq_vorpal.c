@@ -114,8 +114,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 
 #define RFX_D_BIG_LIFT_PCT		52
 #define RFX_D_BIG_DROP_PCT		32
-#define RFX_D_TOUCH_FLOOR_MIN_DEMAND	15
-#define RFX_D_BIG_TOUCH_FLOOR_PCT	22
+#define RFX_D_TOUCH_FLOOR_MIN_DEMAND	25
+#define RFX_D_BIG_TOUCH_FLOOR_PCT	18
 #define RFX_D_BIG_SUSTAINED_CAP_PCT	68
 
 /* Daily sweet-spot efficiency shaping: Big 48%, Prime 38%, unlock at >= 82% */
@@ -138,8 +138,8 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_TIME_DECAY_SNAP_UTIL_PCT	16
 
 /* Fast downward rate limits for daily mode */
-#define RFX_D_DOWN_US			2000
-#define RFX_D_TOUCH_DOWN_US		2500
+#define RFX_D_DOWN_US			1000
+#define RFX_D_TOUCH_DOWN_US		1500
 
 /* Baseline iowait boost caps per cluster tier */
 #define RFX_D_IOWAIT_LITTLE_PCT	25
@@ -854,7 +854,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			(unsigned int)(max_uclamp_min * 100 / max_cap);
 		unsigned int ema_pct =
 			(unsigned int)((u64)p->filt_util * 100 / max_cap);
-		unsigned int big_cap_pct = touch ? 58 : RFX_D_SWEET_CAP_BIG_PCT;
+		unsigned int big_cap_pct = touch ? 52 : RFX_D_SWEET_CAP_BIG_PCT;
 		unsigned int prime_cap_pct = touch ? 40 : RFX_D_SWEET_CAP_PRIME_PCT;
 		unsigned int little_cap_pct = touch ? 48 : RFX_D_LITTLE_CAP_PCT;
 
@@ -962,7 +962,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 				unsigned int target_cap_pct = prime ? prime_cap_pct : big_cap_pct;
 
 				if (!prime && (p->big_cap_lifted || (touch && demand_pct >= 40)))
-					target_cap_pct = (rfx_ntiers() == 2) ? 72 : RFX_D_BIG_SUSTAINED_CAP_PCT;
+					target_cap_pct = (rfx_ntiers() == 2) ? 56 : RFX_D_BIG_SUSTAINED_CAP_PCT;
 
 				cap = rfx_pct(fceil, target_cap_pct);
 			}
@@ -1418,7 +1418,7 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 		if (uc_max > max_uclamp_max)
 			max_uclamp_max = uc_max;
 		je = max(jc->util, jb);
-		if (gaming || touch || uc_min >= (max_cap * 20 / 100)) {
+		if (gaming) {
 			if (uc_min > je)
 				je = min(uc_min, max_cap);
 		}
@@ -1501,13 +1501,13 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 				return fmin;
 			}
 			if (touch) {
-				/* Unpark immediately on touch if there is active demand or uclamp */
-				if (max_uclamp_min > 0 || max_util >= (max_cap * RFX_D_TOUCH_FLOOR_MIN_DEMAND / 100) ||
-				    p->filt_util >= (max_cap * RFX_D_TOUCH_FLOOR_MIN_DEMAND / 100)) {
+				/* Unpark on touch only if there is genuine active demand on Big */
+				if (max_util >= (max_cap * 20 / 100) ||
+				    p->filt_util >= (max_cap * 20 / 100)) {
 					p->parked = false;
 					p->park_exit_count = RFX_D_PARK_EXIT_EVALS;
 				} else if (p->parked) {
-					/* Completely idle during touch: stay parked at fmin */
+					/* Completely idle or light during touch: stay parked at fmin */
 					p->pending_raw_freq = fmin;
 					return fmin;
 				}
