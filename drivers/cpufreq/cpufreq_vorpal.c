@@ -58,15 +58,15 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_BIG_UP_US			3500
 #define RFX_BIG_DOWN_US			2500
 
-/* Asymmetric EMA filter for gaming mode: attack 65%, decay 25% */
-#define RFX_G_EMA_ATTACK_PCT		65
+/* Asymmetric EMA filter for gaming mode: attack 90%, decay 25% */
+#define RFX_G_EMA_ATTACK_PCT		90
 #define RFX_G_EMA_DECAY_PCT		25
 
 /* Sustained gaming baseline floors & efficiency ceilings */
-#define RFX_G_PRIME_FLOOR_PCT		20
-#define RFX_G_BIG_FLOOR_PCT		28
-#define RFX_G_LITTLE_FLOOR_PCT		20
-#define RFX_G_LITTLE_CAP_PCT		68
+#define RFX_G_PRIME_FLOOR_PCT		24
+#define RFX_G_BIG_FLOOR_PCT		32
+#define RFX_G_LITTLE_FLOOR_PCT		22
+#define RFX_G_LITTLE_CAP_PCT		78
 
 /* Proactive hysteretic thermal dampening stages based on thermal pressure */
 #define RFX_THERMAL_WARM_ARM_DEPTH	14
@@ -81,27 +81,27 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_THERMAL_CRIT_CLEAR_DEPTH	32
 #define RFX_THERMAL_CRIT_DWELL_NS	((u64)5000 * NSEC_PER_MSEC)
 
-#define RFX_THERMAL_WARM_CAP_PRIME_PCT	58
-#define RFX_THERMAL_WARM_CAP_BIG_PCT	72
-#define RFX_THERMAL_HOT_CAP_PRIME_PCT	52
-#define RFX_THERMAL_HOT_CAP_BIG_PCT	66
-#define RFX_THERMAL_CRIT_CAP_PRIME_PCT	46
-#define RFX_THERMAL_CRIT_CAP_BIG_PCT	58
+#define RFX_THERMAL_WARM_CAP_PRIME_PCT	74
+#define RFX_THERMAL_WARM_CAP_BIG_PCT	82
+#define RFX_THERMAL_HOT_CAP_PRIME_PCT	66
+#define RFX_THERMAL_HOT_CAP_BIG_PCT	74
+#define RFX_THERMAL_CRIT_CAP_PRIME_PCT	58
+#define RFX_THERMAL_CRIT_CAP_BIG_PCT	66
 
 /* Warmup/entry ramps for gaming mode */
 #define RFX_G_TOUCH_PCT_DEFAULT		40
 #define RFX_G_TOUCH_MS_DEFAULT		100
 #define RFX_G_ENERGY_AWARE_DEFAULT	0
 
-#define RFX_G_PRIME_TOUCH_PCT		28
-#define RFX_G_PRIME_CAP_PCT		64
-#define RFX_G_BIG_CAP_PCT		76
-#define RFX_G_BURST_UNLOCK_PCT		85
+#define RFX_G_PRIME_TOUCH_PCT		32
+#define RFX_G_PRIME_CAP_PCT		82
+#define RFX_G_BIG_CAP_PCT		88
+#define RFX_G_BURST_UNLOCK_PCT		72
 
 #define RFX_G_EVAL_US_DEFAULT		1200
-#define RFX_G_HISPEED_PCT_DEFAULT	56
+#define RFX_G_HISPEED_PCT_DEFAULT	65
 
-#define RFX_G_GO_HISPEED_PCT_DEFAULT	78
+#define RFX_G_GO_HISPEED_PCT_DEFAULT	68
 #define RFX_G_HISPEED_HOLD_US_DEFAULT	16000
 
 #define RFX_D_LITTLE_CAP_PCT		38
@@ -753,13 +753,13 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		p->dbg_demand_pct = demand_pct;
 		depth = rfx_cool_depth(fceil_pct);
 
-		/* Gaming sweet-spot efficiency ceilings: Prime 70%, Big 76% (78% 2-tier), Little 68% */
+		/* Gaming efficiency ceilings: Prime 82%, Big 88% (90% 2-tier), Little 78% */
 		if (demand_pct >= RFX_G_BURST_UNLOCK_PCT)
 			tier_cap = 100;
 		else if (prime)
 			tier_cap = RFX_G_PRIME_CAP_PCT;
 		else if (!little)
-			tier_cap = is_2tier ? 78 : RFX_G_BIG_CAP_PCT;
+			tier_cap = is_2tier ? 90 : RFX_G_BIG_CAP_PCT;
 		else
 			tier_cap = RFX_G_LITTLE_CAP_PCT;
 
@@ -773,14 +773,14 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (!little) {
 			rfx_thermal_stage_update(p, depth, time);
 			if (p->thermal_stage)
-				fceil = rfx_pct(fceil, rfx_thermal_cap_pct(p));
+				fceil = min(fceil, rfx_pct(fmax, rfx_thermal_cap_pct(p)));
 		}
 
-		/* Sustained sweet-spot gaming floors: Prime 22%, Big 28% (26% 2-tier), Little 20% */
+		/* Sustained sweet-spot gaming floors: Prime 24%, Big 32% (28% 2-tier), Little 22% */
 		if (prime)
 			fl = rfx_pct(fceil, RFX_G_PRIME_FLOOR_PCT);
 		else if (!little)
-			fl = rfx_pct(fceil, is_2tier ? 26 : RFX_G_BIG_FLOOR_PCT);
+			fl = rfx_pct(fceil, is_2tier ? 28 : RFX_G_BIG_FLOOR_PCT);
 		else
 			fl = rfx_pct(fceil, RFX_G_LITTLE_FLOOR_PCT);
 
@@ -808,14 +808,14 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			unsigned int touch_pct;
 
 			if (little) {
-				touch_pct = 24;
+				touch_pct = 28;
 				boost_fl = max(boost_fl,
 					       min(rfx_pct(fceil, touch_pct), fceil));
-			} else if (demand_pct >= 25) {
+			} else if (demand_pct >= 20) {
 				if (prime)
 					touch_pct = RFX_G_PRIME_TOUCH_PCT;
 				else
-					touch_pct = is_2tier ? 30 : 32;
+					touch_pct = is_2tier ? 34 : 36;
 
 				boost_fl = max(boost_fl,
 					       min(rfx_pct(fceil, touch_pct), fceil));
@@ -839,8 +839,8 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		/* Thermal Pressure Jump Smoothing */
 		if (!little && th_pct >= 10 && freq > p->next_freq) {
-			unsigned int max_up_step = (demand_pct >= 88) ?
-				rfx_pct(fmax, 28) : rfx_pct(fmax, 15);
+			unsigned int max_up_step = (demand_pct >= RFX_G_BURST_UNLOCK_PCT) ?
+				rfx_pct(fmax, 40) : rfx_pct(fmax, 25);
 
 			if (freq > p->next_freq + max_up_step)
 				freq = p->next_freq + max_up_step;
@@ -1227,11 +1227,11 @@ static inline void rfx_set_down_delay(struct rfx_policy *p, bool gaming, u64 tim
 static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming, unsigned int demand_pct)
 {
 	if (gaming) {
-		/* Instant ramp-up (0us) for frame bursts (>= 50%); 500us for micro-bursts */
-		if (demand_pct >= 50)
+		/* Instant ramp-up (0us) in gaming mode for Big/Prime cores or demand >= 20% */
+		if (!p->is_little || demand_pct >= 20)
 			p->up_rate_delay_ns = 0;
 		else
-			p->up_rate_delay_ns = (s64)500 * NSEC_PER_USEC;
+			p->up_rate_delay_ns = (s64)250 * NSEC_PER_USEC;
 	} else {
 		bool touch = rfx_touch_active(sched_clock(), (u64)RFX_D_TOUCH_WINDOW_MS * NSEC_PER_MSEC);
 
@@ -1431,14 +1431,10 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	p->max_dl_bw = max_dl_bw;
 
 	/*
-	 * In Gaming Mode: dampen micro-transient noise (< 10% delta),
-	 * but grant immediate full attack for movement and render bursts.
+	 * In Gaming Mode, utilize the fast 90% EMA attack directly without
+	 * micro-transient dampening to ensure zero-lag response for 90/120 FPS
+	 * render bursts.
 	 */
-	if (gaming && !p->is_little &&
-	    max_util > p->filt_util && p->filt_util > 0) {
-		if ((max_util - p->filt_util) < (max_cap * 10 / 100))
-			max_util = (p->filt_util + max_util * 3) / 4;
-	}
 
 	p->filt_util = rfx_ema(p->filt_util, max_util, time, &p->last_ema_ns,
 			       true, gaming, max_cap);
