@@ -608,6 +608,7 @@ static const struct soc_id soc_id[] = {
 	{ qcom_board_id(QRB4210) },
 	{ qcom_board_id(QRB2210) },
 	{ qcom_board_id_named(SM8475, "CAPE") },
+	{ 591, "UKEE" }, /* SM7475 */
 	{ qcom_board_id(SA8775P) },
 	{ qcom_board_id(QRU1000) },
 	{ qcom_board_id(QDU1000) },
