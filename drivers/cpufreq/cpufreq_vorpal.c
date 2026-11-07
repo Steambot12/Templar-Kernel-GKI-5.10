@@ -38,7 +38,7 @@
 
 #define CPUFREQ_VORPAL_NAME     "vorpal"
 #define CPUFREQ_VORPAL_VERSION  "2.3"
-#define CPUFREQ_VORPAL_AUTHOR   "Templar Dev"
+#define CPUFREQ_VORPAL_AUTHOR   "Steambot12"
 
 extern void rfx_get_util_gki510(int cpu, unsigned long boost,
 				unsigned long *util, unsigned long *bwmin);
@@ -116,7 +116,7 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_BIG_DROP_PCT		32
 #define RFX_D_TOUCH_FLOOR_MIN_DEMAND	25
 #define RFX_D_BIG_TOUCH_FLOOR_PCT	18
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	68
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	52
 
 /* Daily sweet-spot efficiency shaping: Big 48%, Prime 38%, unlock at >= 82% */
 #define RFX_D_SWEET_CAP_BIG_PCT		48
@@ -153,7 +153,10 @@ extern int rfx_setattr_sugov_gki510(struct task_struct *t);
 #define RFX_D_ENERGY_AWARE_MIN_PCT	0
 #define RFX_D_PARK_EXIT_PCT		20
 #define RFX_D_PARK_EXIT_EVALS		2
-#define RFX_D_TOUCH_WINDOW_MS		64
+#define RFX_D_TOUCH_WINDOW_MS		48
+
+/* Standby / prolonged quiescence threshold (3.5s without touch in daily mode) */
+#define RFX_D_STANDBY_QUIET_NS		((u64)3500 * NSEC_PER_MSEC)
 
 #define RFX_EMA_DECAY_PERIOD_NS		250000
 
@@ -211,13 +214,6 @@ static inline bool rfx_gaming_enabled(void)
 static atomic64_t rfx_input_ts = ATOMIC64_INIT(0);
 static bool rfx_suspended;
 
-static inline bool rfx_touch_active(u64 time, u64 window_ns)
-{
-	u64 ts = (u64)atomic64_read(&rfx_input_ts);
-
-	return (ts != 0 && time >= ts && (time - ts) < window_ns);
-}
-
 /* Time since the last touch input event, 0 while input has not ever
  * been seen. Base of the eco-state quiet timers. */
 static inline u64 rfx_input_quiet_ns(u64 time)
@@ -227,6 +223,30 @@ static inline u64 rfx_input_quiet_ns(u64 time)
 	if (!ts || time < ts)
 		return 0;
 	return time - ts;
+}
+
+static inline bool rfx_is_standby(u64 time)
+{
+	if (unlikely(READ_ONCE(rfx_suspended)))
+		return true;
+
+	if (!rfx_gaming_enabled()) {
+		u64 quiet_ns = rfx_input_quiet_ns(time);
+		if (quiet_ns >= RFX_D_STANDBY_QUIET_NS)
+			return true;
+	}
+	return false;
+}
+
+static inline bool rfx_touch_active(u64 time, u64 window_ns)
+{
+	u64 ts;
+
+	if (rfx_is_standby(time))
+		return false;
+
+	ts = (u64)atomic64_read(&rfx_input_ts);
+	return (ts != 0 && time >= ts && (time - ts) < window_ns);
 }
 
 static LIST_HEAD(rfx_policy_list);
@@ -854,9 +874,9 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			(unsigned int)(max_uclamp_min * 100 / max_cap);
 		unsigned int ema_pct =
 			(unsigned int)((u64)p->filt_util * 100 / max_cap);
-		unsigned int big_cap_pct = touch ? 52 : RFX_D_SWEET_CAP_BIG_PCT;
-		unsigned int prime_cap_pct = touch ? 40 : RFX_D_SWEET_CAP_PRIME_PCT;
-		unsigned int little_cap_pct = touch ? 48 : RFX_D_LITTLE_CAP_PCT;
+		unsigned int big_cap_pct = touch ? 50 : RFX_D_SWEET_CAP_BIG_PCT;
+		unsigned int prime_cap_pct = touch ? 38 : RFX_D_SWEET_CAP_PRIME_PCT;
+		unsigned int little_cap_pct = touch ? 42 : RFX_D_LITTLE_CAP_PCT;
 
 		/* Universal quiescent eco state: stage 1 (light idle), stage 2 (deep idle) */
 		if (touch || p->dl_bw_exceeded || ucmin_pct >= RFX_ECO_EXIT_UCMIN_PCT ||
@@ -912,7 +932,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 			else if (demand_pct <= RFX_D_LITTLE_DROP_PCT || !touch)
 				p->little_cap_lifted = false;
 			if (p->little_cap_lifted || touch)
-				cap = rfx_pct(fceil, touch ? 48 :
+				cap = rfx_pct(fceil, touch ? 42 :
 					      RFX_D_LITTLE_SUSTAINED_CAP_PCT);
 
 			if (touch && demand_pct >= RFX_D_TOUCH_FLOOR_MIN_DEMAND)
@@ -1009,9 +1029,9 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 					freq = media_fl;
 			}
 
-			/* Eco stage Big/Prime capping under light demand */
+			/* Standby / Eco stage Big/Prime capping under light demand */
 			if (demand_pct < RFX_D_BURST_UNLOCK_PCT) {
-				if (p->eco_deep_active)
+				if (rfx_is_standby(time) || p->eco_deep_active)
 					cap = prime ? 0 : min(cap, rfx_pct(fceil,
 							RFX_ECO_DEEP_BIG_CAP_PCT));
 				else if (p->eco_lite_active)
@@ -1031,6 +1051,9 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 			if (demand_pct >= RFX_D_BURST_UNLOCK_PCT)
 				uclamp_cap = fceil;
+			else if (rfx_is_standby(time))
+				uclamp_cap = prime ? fmin : (little ? rfx_pct(fceil, RFX_ECO_DEEP_LITTLE_CAP_PCT) :
+							    rfx_pct(fceil, RFX_ECO_DEEP_BIG_CAP_PCT));
 			else if (prime)
 				uclamp_cap = rfx_pct(fceil, prime_cap_pct);
 			else if (little)
@@ -1038,7 +1061,7 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 						     RFX_D_LITTLE_SUSTAINED_CAP_PCT : little_cap_pct);
 			else
 				uclamp_cap = rfx_pct(fceil, (p->big_cap_lifted || touch) ?
-						     ((rfx_ntiers() == 2) ? 72 : RFX_D_BIG_SUSTAINED_CAP_PCT) : big_cap_pct);
+						     ((rfx_ntiers() == 2) ? 56 : RFX_D_BIG_SUSTAINED_CAP_PCT) : big_cap_pct);
 
 			uclamp_freq = clamp(uclamp_freq, fmin, uclamp_cap);
 			if (freq < uclamp_freq)
@@ -1259,6 +1282,15 @@ static inline void rfx_set_eval_delay(struct rfx_policy *p, bool gaming, u64 tim
 		p->freq_update_delay_ns = (s64)500000 * NSEC_PER_USEC;
 		return;
 	}
+
+	if (unlikely(rfx_is_standby(time))) {
+		if (p->parked) {
+			p->freq_update_delay_ns = p->is_little ?
+				(s64)100000 * NSEC_PER_USEC :
+				(s64)250000 * NSEC_PER_USEC;
+			return;
+		}
+	}
 	base = (s64)p->tunables->rate_limit_us * NSEC_PER_USEC;
 	if (!p->policy->fast_switch_enabled)
 		base = max_t(s64, base, (s64)2500 * NSEC_PER_USEC);
@@ -1447,13 +1479,28 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 		unsigned int park_thresh =
 			(unsigned int)(max_cap * RFX_D_IDLE_FLOOR_SNAP_PCT / 100);
 
-		/* Instant Suspend Park: when PM suspend is prepared, park immediately to fmin */
-		if (unlikely(READ_ONCE(rfx_suspended))) {
-			p->parked = true;
-			p->park_exit_count = 0;
-			p->pending_raw_freq = fmin;
-			p->down_rate_delay_ns = 0;
-			return fmin;
+		/* Instant Standby / Suspend Park: keep Big & Prime hard parked to fmin */
+		if (unlikely(rfx_is_standby(time))) {
+			if (!p->is_little) {
+				if (max_util >= (max_cap * 80 / 100) || p->dl_bw_exceeded) {
+					/* Genuine sustained heavy background task: allow unpark */
+				} else {
+					p->parked = true;
+					p->park_exit_count = 0;
+					p->pending_raw_freq = fmin;
+					p->down_rate_delay_ns = 0;
+					return fmin;
+				}
+			} else {
+				/* Little cluster in standby: snap to fmin on light activity (< 8%) */
+				if (max_util == 0 || p->filt_util < (max_cap * 8 / 100)) {
+					p->parked = true;
+					p->park_exit_count = 0;
+					p->pending_raw_freq = fmin;
+					p->down_rate_delay_ns = 0;
+					return fmin;
+				}
+			}
 		}
 
 		/* Fast Idle Snap to policy->min: park immediately when util drops to 0 */
@@ -1497,9 +1544,9 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 				return fmin;
 			}
 			if (touch) {
-				/* Unpark on touch only if there is genuine active demand on Big */
-				if (max_util >= (max_cap * 20 / 100) ||
-				    p->filt_util >= (max_cap * 20 / 100)) {
+				/* Unpark on touch only if there is genuine active demand on Big (>= 30%) */
+				if (max_util >= (max_cap * 30 / 100) ||
+				    p->filt_util >= (max_cap * 30 / 100)) {
 					p->parked = false;
 					p->park_exit_count = RFX_D_PARK_EXIT_EVALS;
 				} else if (p->parked) {
@@ -1508,11 +1555,14 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 					return fmin;
 				}
 			} else if (p->parked) {
-				if (p->filt_util >= (max_cap * 26 / 100)) {
+				/* Without touch, unpark Big only for genuine heavy load (>= 50%) */
+				if (p->filt_util >= (max_cap * 50 / 100)) {
 					if (++p->park_exit_count >= 2)
 						p->parked = false;
 				} else {
 					p->park_exit_count = 0;
+					p->pending_raw_freq = fmin;
+					return fmin;
 				}
 			}
 		} else {
@@ -2263,6 +2313,12 @@ static int rfx_pm_notifier(struct notifier_block *nb, unsigned long action, void
 		smp_wmb();
 		spin_lock_irqsave(&rfx_policy_list_lock, flags);
 		list_for_each_entry(p, &rfx_policy_list, gov_node) {
+			p->parked = true;
+			p->park_exit_count = 0;
+			p->pending_raw_freq = p->policy->min;
+			p->next_freq = p->policy->min;
+			p->down_rate_delay_ns = 0;
+			p->freq_update_delay_ns = (s64)500000 * NSEC_PER_USEC;
 			WRITE_ONCE(p->need_freq_update, true);
 		}
 		spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
@@ -2272,6 +2328,7 @@ static int rfx_pm_notifier(struct notifier_block *nb, unsigned long action, void
 		smp_wmb();
 		spin_lock_irqsave(&rfx_policy_list_lock, flags);
 		list_for_each_entry(p, &rfx_policy_list, gov_node) {
+			p->park_exit_count = 0;
 			WRITE_ONCE(p->need_freq_update, true);
 		}
 		spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
