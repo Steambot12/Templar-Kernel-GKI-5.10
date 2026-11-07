@@ -211,14 +211,13 @@ static inline bool rfx_gaming_enabled(void)
 	return vorpal_is_gaming_mode();
 }
 
-static atomic64_t rfx_input_ts = ATOMIC64_INIT(0);
+static atomic64_t rfx_interactive_ts = ATOMIC64_INIT(0);
 static bool rfx_suspended;
 
-/* Time since the last touch input event, 0 while input has not ever
- * been seen. Base of the eco-state quiet timers. */
+/* Time since the last interactive boost, 0 while no boost has been seen */
 static inline u64 rfx_input_quiet_ns(u64 time)
 {
-	u64 ts = (u64)atomic64_read(&rfx_input_ts);
+	u64 ts = (u64)atomic64_read(&rfx_interactive_ts);
 
 	if (!ts || time < ts)
 		return 0;
@@ -245,7 +244,7 @@ static inline bool rfx_touch_active(u64 time, u64 window_ns)
 	if (rfx_is_standby(time))
 		return false;
 
-	ts = (u64)atomic64_read(&rfx_input_ts);
+	ts = (u64)atomic64_read(&rfx_interactive_ts);
 	return (ts != 0 && time >= ts && (time - ts) < window_ns);
 }
 
@@ -1430,7 +1429,7 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	unsigned long max_dl_bw = 0;
 	bool dl_bw_exceeded = false;
 	unsigned int j;
-	bool touch = !gaming && rfx_touch_active(time, (u64)RFX_D_TOUCH_WINDOW_MS * NSEC_PER_MSEC);
+	bool touch;
 
 	for_each_cpu(j, policy->cpus) {
 		struct rfx_cpu *jc = per_cpu_ptr(&rfx_cpu, j);
@@ -1462,11 +1461,11 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 	p->dl_bw_exceeded = dl_bw_exceeded;
 	p->max_dl_bw = max_dl_bw;
 
-	/*
-	 * In Gaming Mode, utilize the fast 90% EMA attack directly without
-	 * micro-transient dampening to ensure zero-lag response for 90/120 FPS
-	 * render bursts.
-	 */
+	/* Detect interactive user touch / UI boost via standard Android UCLAMP */
+	if (max_uclamp_min >= (max_cap * 8 / 100))
+		atomic64_set(&rfx_interactive_ts, (s64)time);
+
+	touch = !gaming && rfx_touch_active(time, (u64)RFX_D_TOUCH_WINDOW_MS * NSEC_PER_MSEC);
 
 	p->filt_util = rfx_ema(p->filt_util, max_util, time, &p->last_ema_ns,
 			       true, gaming, max_cap);
@@ -1479,10 +1478,19 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 		unsigned int park_thresh =
 			(unsigned int)(max_cap * RFX_D_IDLE_FLOOR_SNAP_PCT / 100);
 
-		/* Instant Standby / Suspend Park: keep Big & Prime hard parked to fmin */
+		/* Instant Suspend Park: keep all clusters parked to fmin during PM suspend */
+		if (unlikely(READ_ONCE(rfx_suspended))) {
+			p->parked = true;
+			p->park_exit_count = 0;
+			p->pending_raw_freq = fmin;
+			p->down_rate_delay_ns = 0;
+			return fmin;
+		}
+
+		/* Instant Standby / Quiescent Park: keep Big & Prime hard parked to fmin */
 		if (unlikely(rfx_is_standby(time))) {
 			if (!p->is_little) {
-				if (max_util >= (max_cap * 80 / 100) || p->dl_bw_exceeded) {
+				if (max_util >= (max_cap * 75 / 100) || p->dl_bw_exceeded) {
 					/* Genuine sustained heavy background task: allow unpark */
 				} else {
 					p->parked = true;
@@ -1492,8 +1500,8 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 					return fmin;
 				}
 			} else {
-				/* Little cluster in standby: snap to fmin on light activity (< 8%) */
-				if (max_util == 0 || p->filt_util < (max_cap * 8 / 100)) {
+				/* Little cluster in standby: snap to fmin on light activity (< 10%) */
+				if (max_util == 0 || p->filt_util < (max_cap * 10 / 100)) {
 					p->parked = true;
 					p->park_exit_count = 0;
 					p->pending_raw_freq = fmin;
@@ -1504,7 +1512,7 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 		}
 
 		/* Fast Idle Snap to policy->min: park immediately when util drops to 0 */
-		if (max_util == 0 || p->filt_util < (max_cap * 2 / 100)) {
+		if (max_util == 0 || (p->filt_util < (max_cap * 3 / 100) && max_uclamp_min == 0)) {
 			p->parked = true;
 			p->park_exit_count = 0;
 			p->pending_raw_freq = fmin;
@@ -1524,10 +1532,10 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 		}
 
 		if (p->is_prime) {
-			/* Prime conservation: keep Cortex-X parked unless heavy demand >= 90% */
-			unsigned int prime_snap = (cpumask_weight(p->policy->cpus) > 1 && p->is_prime) ? 80 : 90;
+			/* Prime conservation: keep Cortex-X parked unless heavy demand >= 75% */
+			unsigned int prime_snap = (cpumask_weight(p->policy->cpus) > 1 && p->is_prime) ? 70 : 80;
 
-			if (p->filt_util < (max_cap * prime_snap / 100)) {
+			if (p->filt_util < (max_cap * prime_snap / 100) && max_uclamp_min < (max_cap * 50 / 100)) {
 				p->parked = true;
 				p->park_exit_count = 0;
 				p->pending_raw_freq = fmin;
@@ -1537,7 +1545,7 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 				p->parked = false;
 		} else if (!p->is_little) {
 			/* Big conservation: park when idle (< 20%) or keep parked if no touch activity */
-			if (!touch && p->filt_util < (max_cap * 20 / 100)) {
+			if (!touch && p->filt_util < (max_cap * 20 / 100) && max_uclamp_min < (max_cap * 20 / 100)) {
 				p->parked = true;
 				p->park_exit_count = 0;
 				p->pending_raw_freq = fmin;
@@ -1567,7 +1575,7 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 			}
 		} else {
 			/* Little cluster: park to fmin when true idle */
-			if (!touch && p->filt_util < park_thresh) {
+			if (!touch && p->filt_util < park_thresh && max_uclamp_min == 0) {
 				p->parked = true;
 				p->park_exit_count = 0;
 				p->pending_raw_freq = fmin;
@@ -2267,41 +2275,6 @@ static void __init rfx_selfcheck(void)
 	WARN_ON(rfx_ceil_rise_filter(&p, 90, t + 24 * NSEC_PER_MSEC) != 90);
 }
 
-static bool rfx_input_registered;
-
-static void rfx_input_event(struct input_handle *handle, unsigned int type,
-			    unsigned int code, int value)
-{
-	struct rfx_policy *p;
-	unsigned long flags;
-	u64 now, last_ts;
-
-	if (type == EV_ABS) {
-		if (code != ABS_MT_POSITION_X && code != ABS_MT_POSITION_Y &&
-		    code != ABS_X && code != ABS_Y)
-			return;
-	} else if (type == EV_KEY) {
-		if (code != BTN_TOUCH || value != 1)
-			return;
-	} else {
-		return;
-	}
-
-	now = (u64)sched_clock();
-	last_ts = (u64)atomic64_xchg(&rfx_input_ts, (s64)now);
-
-	if ((type == EV_KEY && code == BTN_TOUCH && value == 1) ||
-	    (last_ts == 0 || (now - last_ts) >= (u64)RFX_D_TOUCH_WINDOW_MS * NSEC_PER_MSEC)) {
-		if (spin_trylock_irqsave(&rfx_policy_list_lock, flags)) {
-			list_for_each_entry(p, &rfx_policy_list, gov_node) {
-				WRITE_ONCE(p->need_freq_update, true);
-			}
-			smp_wmb();
-			spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
-		}
-	}
-}
-
 static int rfx_pm_notifier(struct notifier_block *nb, unsigned long action, void *data)
 {
 	struct rfx_policy *p;
@@ -2320,6 +2293,8 @@ static int rfx_pm_notifier(struct notifier_block *nb, unsigned long action, void
 			p->down_rate_delay_ns = 0;
 			p->freq_update_delay_ns = (s64)500000 * NSEC_PER_USEC;
 			WRITE_ONCE(p->need_freq_update, true);
+			if (p->policy->fast_switch_enabled)
+				cpufreq_driver_fast_switch(p->policy, p->policy->min);
 		}
 		spin_unlock_irqrestore(&rfx_policy_list_lock, flags);
 		break;
@@ -2341,76 +2316,6 @@ static int rfx_pm_notifier(struct notifier_block *nb, unsigned long action, void
 
 static struct notifier_block rfx_pm_nb = {
 	.notifier_call = rfx_pm_notifier,
-};
-
-static int rfx_input_connect(struct input_handler *handler,
-			     struct input_dev *dev,
-			     const struct input_device_id *id)
-{
-	struct input_handle *handle;
-	int error;
-
-	handle = kzalloc(sizeof(*handle), GFP_KERNEL);
-	if (!handle)
-		return -ENOMEM;
-
-	handle->dev = dev;
-	handle->handler = handler;
-	handle->name = "vorpal";
-
-	error = input_register_handle(handle);
-	if (error)
-		goto err_free;
-	error = input_open_device(handle);
-	if (error)
-		goto err_unregister;
-	return 0;
-
-err_unregister:
-	input_unregister_handle(handle);
-err_free:
-	kfree(handle);
-	return error;
-}
-
-static void rfx_input_disconnect(struct input_handle *handle)
-{
-	input_close_device(handle);
-	input_unregister_handle(handle);
-	kfree(handle);
-}
-
-static const struct input_device_id rfx_input_ids[] = {
-	{
-		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
-			 INPUT_DEVICE_ID_MATCH_ABSBIT,
-		.evbit = { BIT_MASK(EV_ABS) },
-		.absbit = { [BIT_WORD(ABS_MT_POSITION_X)] =
-				BIT_MASK(ABS_MT_POSITION_X) },
-	},
-	{
-		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
-			 INPUT_DEVICE_ID_MATCH_ABSBIT,
-		.evbit = { BIT_MASK(EV_ABS) },
-		.absbit = { [BIT_WORD(ABS_X)] =
-				BIT_MASK(ABS_X) },
-	},
-	{
-		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
-			 INPUT_DEVICE_ID_MATCH_KEYBIT,
-		.evbit = { BIT_MASK(EV_KEY) },
-		.keybit = { [BIT_WORD(BTN_TOUCH)] =
-				BIT_MASK(BTN_TOUCH) },
-	},
-	{ },
-};
-
-static struct input_handler rfx_input_handler = {
-	.event		= rfx_input_event,
-	.connect	= rfx_input_connect,
-	.disconnect	= rfx_input_disconnect,
-	.name		= "vorpal",
-	.id_table	= rfx_input_ids,
 };
 
 static int __init vorpal_gov_init(void)
@@ -2510,11 +2415,6 @@ static int __init vorpal_gov_init(void)
 	if (ret)
 		return ret;
 
-	if (!input_register_handler(&rfx_input_handler))
-		rfx_input_registered = true;
-	else
-		pr_warn("Vorpal: input handler registration failed\n");
-
 	register_pm_notifier(&rfx_pm_nb);
 
 	return 0;
@@ -2523,8 +2423,6 @@ static int __init vorpal_gov_init(void)
 static void __exit vorpal_gov_exit(void)
 {
 	unregister_pm_notifier(&rfx_pm_nb);
-	if (rfx_input_registered)
-		input_unregister_handler(&rfx_input_handler);
 	cpufreq_unregister_governor(&vorpal_gov);
 }
 
