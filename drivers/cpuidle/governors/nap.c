@@ -35,7 +35,11 @@
 #include <linux/string.h>
 #include <linux/tick.h>
 
-#define NAP_VERSION		"0.5.0"
+#define NAP_VERSION		"0.5.1"
+
+#ifndef RESIDENCY_THRESHOLD_NS
+#define RESIDENCY_THRESHOLD_NS		(15 * NSEC_PER_USEC)
+#endif
 
 #define NAP_INPUT_SIZE		8
 #define NAP_HIDDEN_SIZE		8
@@ -676,19 +680,24 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	idx = nap_decide(d, drv, dev, latency_req);
 
 	/*
-	 * Don't stop the tick for a polling state or an idle shorter than the
-	 * tick period; if it stays running, keep the target residency within
-	 * the time to the closest timer.
+	 * Stopping the tick saves nothing when the next timer is closer
+	 * than one tick period, and the slow restart delays the wakeup
+	 * (about 100 us on average in a 1 ms periodic-timer test).
+	 * Furthermore, avoid stopping the tick for polling states or shallow
+	 * states below RESIDENCY_THRESHOLD_NS.
 	 */
-	if (((drv->states[idx].flags & CPUIDLE_FLAG_POLLING) ||
-	     sleep_length_ns < TICK_NSEC) && !tick_nohz_tick_stopped()) {
+	if ((drv->states[idx].flags & CPUIDLE_FLAG_POLLING) ||
+	    sleep_length_ns < TICK_NSEC ||
+	    drv->states[idx].target_residency_ns <= RESIDENCY_THRESHOLD_NS) {
 		*stop_tick = false;
 
-		while (idx > 0 &&
-		       drv->states[idx].target_residency_ns > delta_tick) {
-			idx--;
-			while (idx > 0 && dev->states_usage[idx].disable)
+		if (!tick_nohz_tick_stopped()) {
+			while (idx > 0 &&
+			       drv->states[idx].target_residency_ns > delta_tick) {
 				idx--;
+				while (idx > 0 && dev->states_usage[idx].disable)
+					idx--;
+			}
 		}
 	} else {
 		*stop_tick = true;
