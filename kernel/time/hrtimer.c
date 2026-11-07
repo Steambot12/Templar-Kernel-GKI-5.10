@@ -1133,6 +1133,18 @@ static int __hrtimer_start_range_ns(struct hrtimer *timer, ktime_t tim,
 
 	tim = hrtimer_update_lowres(timer, tim, mode);
 
+	/*
+	 * BACKPORT (Linux 6.12 timer slack coalescing):
+	 * For normal non-realtime, non-pinned tasks in process context, if no explicit
+	 * slack was passed, use task's timer_slack_ns (or default 50us) to coalesce
+	 * nearby timer interrupts. This reduces frequent CPU wakeups and allows
+	 * cores to stay longer in low-power idle C-states (WFI).
+	 */
+	if (!delta_ns && !in_interrupt() && !rt_task(current) && !dl_task(current) &&
+	    !(mode & HRTIMER_MODE_PINNED)) {
+		delta_ns = current->timer_slack_ns ?: 50000;
+	}
+
 	hrtimer_set_expires_range_ns(timer, tim, delta_ns);
 
 	/* Switch the timer base, if necessary: */
