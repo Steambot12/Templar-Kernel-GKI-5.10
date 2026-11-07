@@ -372,6 +372,19 @@ static const struct llcc_slice_config sm8450_data[] =  {
 	{LLCC_AENPU,     8, 2048, 1, 1, 0xFFFF, 0x0,   0, 0, 0, 0, 0, 0, 0 },
 };
 
+static const struct llcc_slice_config ukee_data[] =  {
+	{LLCC_CPUSS,     1, 1792, 0, 0, 0xFF, 0x0,   0, 0, 0, 1, 1, 0, 0 },
+	{LLCC_VIDSC0,    2,  512, 3, 1, 0xFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_MDMHPGRW,  7,  512, 3, 1, 0xFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_GPUHTW,   11,  256, 1, 1, 0xFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_GPU,      12, 1024, 1, 1, 0xFF, 0x0,   0, 0, 0, 1, 0, 1, 0 },
+	{LLCC_MMUHWT,   13,  256, 1, 1, 0xFF, 0x0,   0, 0, 0, 0, 1, 0, 0 },
+	{LLCC_DISP,     16, 2048, 1, 1, 0xFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_MDMPNG,   21, 1024, 0, 1, 0xF0, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_MODPE,    29,   64, 1, 1, 0xF0, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_WRCACHE,  31,  256, 1, 1, 0xFF, 0x0,   0, 0, 0, 0, 1, 0, 0 },
+};
+
 static const struct llcc_slice_config sm8550_data[] =  {
 	{LLCC_CPUSS,     1, 5120, 1, 0, 0xFFFFFF, 0x0,   0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, },
 	{LLCC_VIDSC0,    2,  512, 4, 1, 0xFFFFFF, 0x0,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, },
@@ -883,6 +896,14 @@ static const struct qcom_llcc_config sm8350_cfg = {
 static const struct qcom_llcc_config sm8450_cfg = {
 	.sct_data       = sm8450_data,
 	.size           = ARRAY_SIZE(sm8450_data),
+	.need_llcc_cfg	= true,
+	.reg_offset	= llcc_v2_1_reg_offset,
+	.edac_reg_offset = &llcc_v2_1_edac_reg_offset,
+};
+
+static const struct qcom_llcc_config ukee_cfg = {
+	.sct_data       = ukee_data,
+	.size           = ARRAY_SIZE(ukee_data),
 	.need_llcc_cfg	= true,
 	.reg_offset	= llcc_v2_1_reg_offset,
 	.edac_reg_offset = &llcc_v2_1_edac_reg_offset,
@@ -1838,6 +1859,7 @@ static const struct of_device_id qcom_llcc_of_match[] = {
 	{ .compatible = "qcom,sm8250-llcc", .data = &sm8250_cfg },
 	{ .compatible = "qcom,sm8350-llcc", .data = &sm8350_cfg },
 	{ .compatible = "qcom,sm8450-llcc", .data = &sm8450_cfg },
+	{ .compatible = "qcom,ukee-llcc", .data = &ukee_cfg },
 	{ .compatible = "qcom,sm8550-llcc", .data = &sm8550_cfg },
 	{ .compatible = "qcom,pineapple-llcc", .data = &pineapple_cfg },
 	{ .compatible = "qcom,sun-llcc", .data = &sun_cfg },
