@@ -834,6 +834,14 @@ static struct binder_node *binder_get_node(struct binder_proc *proc,
 {
 	struct binder_node *node;
 
+	/*
+	 * BACKPORT (Linux 6.12):
+	 * Fast-path check: avoid inner_proc_lock acquisition if the process
+	 * has no registered binder nodes in its tree.
+	 */
+	if (!READ_ONCE(proc->nodes.rb_node))
+		return NULL;
+
 	binder_inner_proc_lock(proc);
 	node = binder_get_node_ilocked(proc, ptr);
 	binder_inner_proc_unlock(proc);
