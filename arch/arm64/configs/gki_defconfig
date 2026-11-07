@@ -22,7 +22,7 @@ CONFIG_IKHEADERS=y
 CONFIG_LOG_BUF_SHIFT=14
 CONFIG_UCLAMP_TASK=y
 CONFIG_UCLAMP_BUCKETS_COUNT=20
-CONFIG_PELT_UTIL_HALFLIFE_16=y
+CONFIG_PELT_UTIL_HALFLIFE_DEFAULT=y
 CONFIG_CGROUPS=y
 CONFIG_MEMCG=y
 CONFIG_BLK_CGROUP=y
@@ -78,7 +78,7 @@ CONFIG_SETEND_EMULATION=y
 CONFIG_RANDOMIZE_BASE=y
 # CONFIG_RANDOMIZE_MODULE_REGION_FULL is not set
 # CONFIG_STACKPROTECTOR_PER_TASK is not set
-CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cgroup.memory=nokmem noirqdebug audit=0 loglevel=3 rcu_nocbs=all timer_migration=1 nohz=on transparent_hugepage=madvise cpuidle.off=0 workqueue.power_efficient=1 sched_util_clamp_min_rt_default=0 cpuidle.governor=teo"
+CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cgroup.memory=nokmem noirqdebug audit=0 loglevel=3 timer_migration=0 nohz=on transparent_hugepage=madvise cpuidle.off=0 workqueue.power_efficient=1 sched_util_clamp_min_rt_default=0 cpuidle.governor=menu"
 CONFIG_CMDLINE_EXTEND=y
 # CONFIG_DMI is not set
 CONFIG_HIBERNATION=y
