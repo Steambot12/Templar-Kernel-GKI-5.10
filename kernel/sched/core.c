@@ -7680,6 +7680,7 @@ unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
 
 	return min(max, util);
 }
+EXPORT_SYMBOL_GPL(effective_cpu_util);
 
 unsigned long sched_cpu_util(int cpu)
 {
