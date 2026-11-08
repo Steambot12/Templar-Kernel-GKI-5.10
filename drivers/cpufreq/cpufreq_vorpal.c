@@ -57,13 +57,13 @@
 
 /*
  * Optional sched helpers for in-tree optimization.
- * Weak linkage allows Vorpal to compile cleanly as a 100% standalone governor
- * on any kernel tree without requiring out-of-tree modifications.
+ * In Linux 6.6+, Vorpal uses native effective_cpu_util & cpu_util_cfs_boost.
+ * 5.10 legacy helpers are mapped to NULL to prevent unexpected GOT/PLT
+ * entries during relocatable arm64 linking.
  */
-extern void rfx_get_util_gki510(int cpu, unsigned long boost,
-				unsigned long *util, unsigned long *bwmin) __attribute__((weak));
-extern bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bwmin) __attribute__((weak));
-extern int rfx_setattr_sugov_gki510(struct task_struct *t) __attribute__((weak));
+#define rfx_get_util_gki510 ((void (*)(int, unsigned long, unsigned long *, unsigned long *))0)
+#define rfx_dl_bw_exceeded_gki510 ((bool (*)(int, unsigned long))0)
+#define rfx_setattr_sugov_gki510 ((int (*)(struct task_struct *))0)
 
 enum cpu_util_type {
 	FREQUENCY_UTIL,
