@@ -654,7 +654,7 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 			dev->poll_limit_ns = max_t(u64, sleep_length_ns,
 						   NAP_POLL_LIMIT_MIN_NS);
 
-		*stop_tick = !(drv->states[0].flags & CPUIDLE_FLAG_POLLING);
+		*stop_tick = false;
 		d->short_circuited = true;
 		d->stats.total_selects++;
 		return 0;
