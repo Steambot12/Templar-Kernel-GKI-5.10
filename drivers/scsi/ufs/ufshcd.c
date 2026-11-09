@@ -4963,6 +4963,17 @@ static int ufshcd_slave_configure(struct scsi_device *sdev)
 
 	ufshcd_crypto_setup_rq_keyslot_manager(hba, q);
 
+	/*
+	 * Tune UFS request queue for minimal CPU overhead & high throughput:
+	 * - Disable iostats accounting overhead
+	 * - Disable contributing to random entropy pool
+	 * - Force completions on the requesting CPU (rq_affinity = 2) for cache locality
+	 */
+	blk_queue_flag_clear(QUEUE_FLAG_IO_STAT, q);
+	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, q);
+	blk_queue_flag_set(QUEUE_FLAG_SAME_COMP, q);
+	blk_queue_flag_set(QUEUE_FLAG_SAME_FORCE, q);
+
 	trace_android_vh_ufs_update_sdev(sdev);
 
 	return 0;

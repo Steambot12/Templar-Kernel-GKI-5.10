@@ -3229,13 +3229,14 @@ static int sd_revalidate_disk(struct gendisk *disk)
 		sd_read_capacity(sdkp, buffer);
 
 		/*
-		 * set the default to rotational.  All non-rotational devices
-		 * support the block characteristics VPD page, which will
-		 * cause this to be updated correctly and any device which
-		 * doesn't support it should be treated as rotational.
+		 * Mobile devices use solid-state flash (UFS/eMMC/SSD);
+		 * do not contribute to random pool and disable iostats.
 		 */
 		blk_queue_flag_clear(QUEUE_FLAG_NONROT, q);
-		blk_queue_flag_set(QUEUE_FLAG_ADD_RANDOM, q);
+		blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, q);
+		blk_queue_flag_clear(QUEUE_FLAG_IO_STAT, q);
+		blk_queue_flag_set(QUEUE_FLAG_SAME_COMP, q);
+		blk_queue_flag_set(QUEUE_FLAG_SAME_FORCE, q);
 
 		if (scsi_device_supports_vpd(sdp)) {
 			sd_read_block_provisioning(sdkp);
@@ -3293,6 +3294,12 @@ static int sd_revalidate_disk(struct gendisk *disk)
 		logical_to_sectors(sdp, sdkp->capacity), false);
 	sd_config_write_same(sdkp);
 	kfree(buffer);
+
+	/* Ensure solid-state queue flags persist after revalidation */
+	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, q);
+	blk_queue_flag_clear(QUEUE_FLAG_IO_STAT, q);
+	blk_queue_flag_set(QUEUE_FLAG_SAME_COMP, q);
+	blk_queue_flag_set(QUEUE_FLAG_SAME_FORCE, q);
 
 	/*
 	 * For a zoned drive, revalidating the zones can be done only once
