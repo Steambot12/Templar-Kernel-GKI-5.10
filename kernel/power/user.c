@@ -274,9 +274,7 @@ static long snapshot_ioctl(struct file *filp, unsigned int cmd,
 		if (data->frozen)
 			break;
 
-		error = pm_sleep_fs_sync();
-		if (error)
-			break;
+		ksys_sync_helper();
 
 		error = freeze_processes();
 		if (error)

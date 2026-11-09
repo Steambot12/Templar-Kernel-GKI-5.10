@@ -582,11 +582,7 @@ static int enter_state(suspend_state_t state)
 
 	if (sync_on_suspend_enabled) {
 		trace_suspend_resume(TPS("sync_filesystems"), 0, true);
-
-		error = pm_sleep_fs_sync();
-		if (error)
-			goto Unlock;
-
+		ksys_sync_helper();
 		trace_suspend_resume(TPS("sync_filesystems"), 0, false);
 	}
 
@@ -619,7 +615,8 @@ static int enter_state(suspend_state_t state)
  Finish:
 	events_check_enabled = false;
 #ifdef CONFIG_POWERSUSPEND
-	set_power_suspend_state(POWER_SUSPEND_INACTIVE);
+	if (pm_autosleep_state() <= PM_SUSPEND_ON)
+		set_power_suspend_state(POWER_SUSPEND_INACTIVE);
 #endif
 	pm_pr_dbg("Finishing wakeup.\n");
 	suspend_finish();

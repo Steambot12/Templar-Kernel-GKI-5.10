@@ -757,9 +757,7 @@ int hibernate(void)
 	if (error)
 		goto Restore;
 
-	error = pm_sleep_fs_sync();
-	if (error)
-		goto Exit;
+	ksys_sync_helper();
 
 	error = freeze_processes();
 	if (error)

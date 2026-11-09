@@ -168,23 +168,28 @@ bool power_suspended = false;
 void set_power_suspend_state(int new_state)
 {
 	unsigned long irqflags;
+	bool changed = false;
 
+	spin_lock_irqsave(&state_lock, irqflags);
 	if (state != new_state) {
-		spin_lock_irqsave(&state_lock, irqflags);
 		if (state == POWER_SUSPEND_INACTIVE && new_state == POWER_SUSPEND_ACTIVE) {
 			dprintk("[POWERSUSPEND] state activated.\n");
 			state = new_state;
 			power_suspended = true;
+			changed = true;
 			schedule_work(&power_suspend_work);
 		} else if (state == POWER_SUSPEND_ACTIVE && new_state == POWER_SUSPEND_INACTIVE) {
 			dprintk("[POWERSUSPEND] state deactivated.\n");
 			state = new_state;
 			power_suspended = false;
+			changed = true;
 			schedule_work(&power_resume_work);
 		}
-		spin_unlock_irqrestore(&state_lock, irqflags);
-	} else {
-		pr_info("[POWERSUSPEND] state change requested, but unchanged ?! Ignored !\n");
+	}
+	spin_unlock_irqrestore(&state_lock, irqflags);
+
+	if (!changed) {
+		dprintk("[POWERSUSPEND] state change requested, but unchanged ?! Ignored !\n");
 	}
 }
 
@@ -201,8 +206,8 @@ EXPORT_SYMBOL(set_power_suspend_state_autosleep_hook);
 void set_power_suspend_state_panel_hook(int new_state)
 {
 	dprintk("[POWERSUSPEND] panel resquests %s.\n", new_state == POWER_SUSPEND_ACTIVE ? "sleep" : "wakeup");
-	// Only allow autosleep hook changes in autosleep & hybrid mode
-	if (mode == POWER_SUSPEND_AUTOSLEEP || mode == POWER_SUSPEND_HYBRID)
+	// Only allow panel hook changes in panel & hybrid mode
+	if (mode == POWER_SUSPEND_PANEL || mode == POWER_SUSPEND_HYBRID)
 		set_power_suspend_state(new_state);
 }
 
@@ -255,9 +260,10 @@ static ssize_t power_suspend_mode_store(struct kobject *kobj,
 	switch (data) {
 		case POWER_SUSPEND_AUTOSLEEP:
 		case POWER_SUSPEND_PANEL:
-		case POWER_SUSPEND_USERSPACE:	mode = data;
-		case POWER_SUSPEND_HYBRID:	mode = data;
-						return count;
+		case POWER_SUSPEND_USERSPACE:
+		case POWER_SUSPEND_HYBRID:
+			mode = data;
+			return count;
 		default:
 			return -EINVAL;
 	}
