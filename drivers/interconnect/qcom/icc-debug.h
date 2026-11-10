@@ -6,7 +6,12 @@
 
 #include <linux/interconnect-provider.h>
 
+#if IS_ENABLED(CONFIG_INTERCONNECT_QCOM_DEBUG)
 int qcom_icc_debug_register(struct icc_provider *provider);
 int qcom_icc_debug_unregister(struct icc_provider *provider);
+#else
+static inline int qcom_icc_debug_register(struct icc_provider *provider) { return 0; }
+static inline int qcom_icc_debug_unregister(struct icc_provider *provider) { return 0; }
+#endif
 
 #endif
