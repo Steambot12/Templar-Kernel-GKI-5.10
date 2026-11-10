@@ -40,7 +40,9 @@
 	"a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;" \
 	"IPA_WS;IPA_CLIENT_APPS_WAN_COAL_CONS;IPA_CLIENT_APPS_WAN_LOW_LAT_CONS;" \
 	"IPA_CLIENT_APPS_LAN_CONS;rmnet_ipa%d;rmnet_ctl;RMNET_SHS;" \
-	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;mgmt_txrx"
+	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;mgmt_txrx;" \
+	"sensor_ind;wlan_wake;wlan_active_wakelock;" \
+	"fpc_ttw_wl;smp2p-sleepstate"
 
 #define LENGTH_LIST_WL				1024
 /* Both lists are sysfs-writable, so both get the full capacity. Deriving this

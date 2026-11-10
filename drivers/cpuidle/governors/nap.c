@@ -654,7 +654,7 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 			dev->poll_limit_ns = max_t(u64, sleep_length_ns,
 						   NAP_POLL_LIMIT_MIN_NS);
 
-		*stop_tick = false;
+		*stop_tick = !(drv->states[0].flags & CPUIDLE_FLAG_POLLING);
 		d->short_circuited = true;
 		d->stats.total_selects++;
 		return 0;
@@ -683,21 +683,17 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	 * Stopping the tick saves nothing when the next timer is closer
 	 * than one tick period, and the slow restart delays the wakeup
 	 * (about 100 us on average in a 1 ms periodic-timer test).
-	 * Furthermore, avoid stopping the tick for polling states or shallow
-	 * states below RESIDENCY_THRESHOLD_NS.
+	 * If the tick is already stopped, keep it stopped to allow deep sleep.
 	 */
-	if ((drv->states[idx].flags & CPUIDLE_FLAG_POLLING) ||
-	    sleep_length_ns < TICK_NSEC ||
-	    drv->states[idx].target_residency_ns <= RESIDENCY_THRESHOLD_NS) {
+	if (((drv->states[idx].flags & CPUIDLE_FLAG_POLLING) ||
+	     sleep_length_ns < TICK_NSEC) && !tick_nohz_tick_stopped()) {
 		*stop_tick = false;
 
-		if (!tick_nohz_tick_stopped()) {
-			while (idx > 0 &&
-			       drv->states[idx].target_residency_ns > delta_tick) {
+		while (idx > 0 &&
+		       drv->states[idx].target_residency_ns > delta_tick) {
+			idx--;
+			while (idx > 0 && dev->states_usage[idx].disable)
 				idx--;
-				while (idx > 0 && dev->states_usage[idx].disable)
-					idx--;
-			}
 		}
 	} else {
 		*stop_tick = true;

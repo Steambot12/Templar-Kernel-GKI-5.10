@@ -51,7 +51,7 @@
 /*****************************************/
 
 char list_wl[LENGTH_LIST_WL] = {0};
-char list_wl_default[LENGTH_LIST_WL_DEFAULT] = {0};
+char list_wl_default[LENGTH_LIST_WL_DEFAULT] = LIST_WL_DEFAULT;
 
 extern char list_wl_search[LENGTH_LIST_WL_SEARCH];
 extern bool wl_blocker_active;
@@ -215,10 +215,16 @@ static struct attribute_group boeffla_wl_blocker_control_group = {
 	.attrs = boeffla_wl_blocker_attributes,
 };
 
+static const struct attribute_group *boeffla_wl_blocker_groups[] = {
+	&boeffla_wl_blocker_control_group,
+	NULL
+};
+
 // define control device
 static struct miscdevice boeffla_wl_blocker_control_device = {
 	.minor = MISC_DYNAMIC_MINOR,
 	.name = "boeffla_wakelock_blocker",
+	.groups = boeffla_wl_blocker_groups,
 };
 
 
@@ -228,20 +234,19 @@ static struct miscdevice boeffla_wl_blocker_control_device = {
 
 static int boeffla_wl_blocker_init(void)
 {
-	// register boeffla wakelock blocker control device
-	misc_register(&boeffla_wl_blocker_control_device);
-	if (sysfs_create_group(&boeffla_wl_blocker_control_device.this_device->kobj,
-				&boeffla_wl_blocker_control_group) < 0) {
-		printk("Boeffla WL blocker: failed to create sys fs object.\n");
-		return 0;
-	}
+	int ret;
 
-	// initialize default list
-	strcpy(list_wl_default, LIST_WL_DEFAULT);
+	// initialize default list and search string first
+	if (list_wl_default[0] == '\0')
+		strcpy(list_wl_default, LIST_WL_DEFAULT);
 	build_search_string(list_wl_default, list_wl);
 
-	// Print debug info
-	printk("Boeffla WL blocker: driver version %s started\n", BOEFFLA_WL_BLOCKER_VERSION);
+	// register boeffla wakelock blocker control device with attribute groups
+	ret = misc_register(&boeffla_wl_blocker_control_device);
+	if (ret)
+		pr_err("Boeffla WL blocker: misc_register failed: %d\n", ret);
+	else
+		pr_info("Boeffla WL blocker: driver version %s started\n", BOEFFLA_WL_BLOCKER_VERSION);
 
 	return 0;
 }
@@ -249,12 +254,8 @@ static int boeffla_wl_blocker_init(void)
 
 static void boeffla_wl_blocker_exit(void)
 {
-	// remove boeffla wakelock blocker control device
-	sysfs_remove_group(&boeffla_wl_blocker_control_device.this_device->kobj,
-                           &boeffla_wl_blocker_control_group);
-
-	// Print debug info
-	printk("Boeffla WL blocker: driver stopped\n");
+	misc_deregister(&boeffla_wl_blocker_control_device);
+	pr_info("Boeffla WL blocker: driver stopped\n");
 }
 
 

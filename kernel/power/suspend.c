@@ -615,8 +615,7 @@ static int enter_state(suspend_state_t state)
  Finish:
 	events_check_enabled = false;
 #ifdef CONFIG_POWERSUSPEND
-	if (pm_autosleep_state() <= PM_SUSPEND_ON)
-		set_power_suspend_state(POWER_SUSPEND_INACTIVE);
+	set_power_suspend_state(POWER_SUSPEND_INACTIVE);
 #endif
 	pm_pr_dbg("Finishing wakeup.\n");
 	suspend_finish();

@@ -8049,21 +8049,17 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 		const char *name = css->cgroup->kn->name;
 
 		if (!strcmp(name, "top-app")) {
-			/* Foreground UI app: latency-sensitive and minimum CPU boost */
+			/*
+			 * Foreground UI app: mark latency-sensitive so EAS targets the lowest
+			 * exit-latency idle CPU immediately without synthetic clamp floor inflating
+			 * idle utilization or delaying deep sleep.
+			 */
 			tg->latency_sensitive = 1;
-			static_branch_enable(&sched_uclamp_used);
-			uclamp_se_set(&tg->uclamp_req[UCLAMP_MIN], 102, false);
-			tg->uclamp_pct[UCLAMP_MIN] = 1000;
 		} else if (!strcmp(name, "background") || !strcmp(name, "system-background")) {
 			/* Background work: capped to avoid burning power and heating CPU */
 			static_branch_enable(&sched_uclamp_used);
 			uclamp_se_set(&tg->uclamp_req[UCLAMP_MAX], 307, false);
 			tg->uclamp_pct[UCLAMP_MAX] = 3000;
-		} else if (!strcmp(name, "foreground")) {
-			/* Foreground: light minimum boost */
-			static_branch_enable(&sched_uclamp_used);
-			uclamp_se_set(&tg->uclamp_req[UCLAMP_MIN], 51, false);
-			tg->uclamp_pct[UCLAMP_MIN] = 500;
 		}
 	}
 
