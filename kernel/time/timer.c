@@ -1826,15 +1826,16 @@ void run_local_timers(void)
 	hrtimer_run_queues();
 	/*
 	 * BACKPORT (Linux 6.12):
-	 * Raise the softirq only if timers are actually pending and expired.
-	 * Avoids triggering spurious timer softirqs on idle or lightly loaded CPUs.
+	 * Raise the softirq only if timers have expired.
+	 * Avoids triggering spurious timer softirqs on idle CPUs while ensuring
+	 * all expired timers execute without missed wakeups or sleep lockups.
 	 */
-	if (!READ_ONCE(base->timers_pending) || time_before(jiffies, base->next_expiry)) {
+	if (time_before(jiffies, base->next_expiry)) {
 		if (!IS_ENABLED(CONFIG_NO_HZ_COMMON))
 			return;
 		/* CPU is awake, so check the deferrable base. */
 		base++;
-		if (!READ_ONCE(base->timers_pending) || time_before(jiffies, base->next_expiry))
+		if (time_before(jiffies, base->next_expiry))
 			return;
 	}
 	raise_softirq(TIMER_SOFTIRQ);

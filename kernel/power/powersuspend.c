@@ -125,7 +125,7 @@ static void power_suspend(struct work_struct *work)
 			pos->suspend(pos);
 		}
 	}
-	pr_info("[POWERSUSPEND] suspend completed.\n");
+	dprintk("[POWERSUSPEND] suspend completed.\n");
 #ifdef CONFIG_STATE_NOTIFIER
 	state_suspend();
 #endif
@@ -155,7 +155,7 @@ static void power_resume(struct work_struct *work)
 			pos->resume(pos);
 		}
 	}
-	pr_info("[POWERSUSPEND] resume completed.\n");
+	dprintk("[POWERSUSPEND] resume completed.\n");
 	#ifdef CONFIG_STATE_NOTIFIER
 		state_resume();
 	#endif
