@@ -950,7 +950,15 @@ unsigned int sysctl_sched_uclamp_util_max = SCHED_CAPACITY_SCALE;
  * This knob will not override the system default sched_util_clamp_min defined
  * above.
  */
-unsigned int sysctl_sched_uclamp_util_min_rt_default = SCHED_CAPACITY_SCALE;
+/*
+ * Mobile default: leave RT uclamp_min unclamped (0).  Android's audio,
+ * vsync and haptic RT tasks run on SCHED_SPORADIC/SCHED_DEADLINE with
+ * short bursts; a default util_min floor of SCHED_CAPACITY_SCALE (1024,
+ * the upstream value) would pin them near 100% capacity and block deep
+ * sleep plus keep frequency floors high during screen-off.  Raise it via
+ * /proc/sys/kernel/sched_sched_uclamp_util_min_rt_default if needed.
+ */
+unsigned int sysctl_sched_uclamp_util_min_rt_default = 0;
 
 /* All clamps are required to be less or equal than these values */
 static struct uclamp_se uclamp_default[UCLAMP_CNT];
