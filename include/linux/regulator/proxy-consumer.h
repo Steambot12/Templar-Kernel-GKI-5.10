@@ -31,7 +31,7 @@ static inline int devm_regulator_proxy_consumer_register(struct device *dev,
 { return 0; }
 static inline void devm_regulator_proxy_consumer_unregister(struct device *dev)
 { }
-void regulator_proxy_consumer_sync_state(struct device *dev)
+static inline void regulator_proxy_consumer_sync_state(struct device *dev)
 { }
 
 #endif
