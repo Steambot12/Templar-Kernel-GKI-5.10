@@ -3,7 +3,7 @@
 #
 
 # for cleaning
-subdir- := devicetree/bindings
+subdir- := $(if $(wildcard $(srctree)/Documentation/devicetree/bindings/Makefile),devicetree/bindings)
 
 # Check for broken documentation file references
 ifeq ($(CONFIG_WARN_MISSING_DOCUMENTS),y)
