@@ -226,14 +226,11 @@ static ssize_t power_suspend_state_store(struct kobject *kobj,
 {
 	int new_state = 0;
 
-	// Yank555.lu : Only allow sysfs changes from userspace mode
-	if (mode != POWER_SUSPEND_USERSPACE)
+	if (kstrtoint(buf, 10, &new_state))
 		return -EINVAL;
 
-	sscanf(buf, "%d\n", &new_state);
-
-	dprintk("[POWERSUSPEND] userspace resquests %s.\n", new_state == POWER_SUSPEND_ACTIVE ? "sleep" : "wakeup");
-	if(new_state == POWER_SUSPEND_ACTIVE || new_state == POWER_SUSPEND_INACTIVE)
+	dprintk("[POWERSUSPEND] userspace requests %s.\n", new_state == POWER_SUSPEND_ACTIVE ? "sleep" : "wakeup");
+	if (new_state == POWER_SUSPEND_ACTIVE || new_state == POWER_SUSPEND_INACTIVE)
 		set_power_suspend_state(new_state);
 
 	return count;

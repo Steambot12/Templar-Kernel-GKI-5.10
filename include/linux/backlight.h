@@ -13,6 +13,9 @@
 #include <linux/fb.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
+#ifdef CONFIG_POWERSUSPEND
+#include <linux/powersuspend.h>
+#endif
 
 /**
  * enum backlight_update_reason - what method was used to update backlight
@@ -341,54 +344,6 @@ struct backlight_device {
 };
 
 /**
- * backlight_update_status - force an update of the backlight device status
- * @bd: the backlight device
- */
-static inline int backlight_update_status(struct backlight_device *bd)
-{
-	int ret = -ENOENT;
-
-	mutex_lock(&bd->update_lock);
-	if (bd->ops && bd->ops->update_status)
-		ret = bd->ops->update_status(bd);
-	mutex_unlock(&bd->update_lock);
-
-	return ret;
-}
-
-/**
- * backlight_enable - Enable backlight
- * @bd: the backlight device to enable
- */
-static inline int backlight_enable(struct backlight_device *bd)
-{
-	if (!bd)
-		return 0;
-
-	bd->props.power = FB_BLANK_UNBLANK;
-	bd->props.fb_blank = FB_BLANK_UNBLANK;
-	bd->props.state &= ~BL_CORE_FBBLANK;
-
-	return backlight_update_status(bd);
-}
-
-/**
- * backlight_disable - Disable backlight
- * @bd: the backlight device to disable
- */
-static inline int backlight_disable(struct backlight_device *bd)
-{
-	if (!bd)
-		return 0;
-
-	bd->props.power = FB_BLANK_POWERDOWN;
-	bd->props.fb_blank = FB_BLANK_POWERDOWN;
-	bd->props.state |= BL_CORE_FBBLANK;
-
-	return backlight_update_status(bd);
-}
-
-/**
  * backlight_is_blank - Return true if display is expected to be blank
  * @bd: the backlight device
  *
@@ -424,6 +379,63 @@ static inline int backlight_get_brightness(const struct backlight_device *bd)
 		return 0;
 	else
 		return bd->props.brightness;
+}
+
+/**
+ * backlight_update_status - force an update of the backlight device status
+ * @bd: the backlight device
+ */
+static inline int backlight_update_status(struct backlight_device *bd)
+{
+	int ret = -ENOENT;
+
+	mutex_lock(&bd->update_lock);
+	if (bd->ops && bd->ops->update_status)
+		ret = bd->ops->update_status(bd);
+	mutex_unlock(&bd->update_lock);
+
+#ifdef CONFIG_POWERSUSPEND
+	if (bd && bd->props.type <= BACKLIGHT_PLATFORM) {
+		if (backlight_get_brightness(bd) == 0)
+			set_power_suspend_state_panel_hook(POWER_SUSPEND_ACTIVE);
+		else
+			set_power_suspend_state_panel_hook(POWER_SUSPEND_INACTIVE);
+	}
+#endif
+
+	return ret;
+}
+
+/**
+ * backlight_enable - Enable backlight
+ * @bd: the backlight device to enable
+ */
+static inline int backlight_enable(struct backlight_device *bd)
+{
+	if (!bd)
+		return 0;
+
+	bd->props.power = FB_BLANK_UNBLANK;
+	bd->props.fb_blank = FB_BLANK_UNBLANK;
+	bd->props.state &= ~BL_CORE_FBBLANK;
+
+	return backlight_update_status(bd);
+}
+
+/**
+ * backlight_disable - Disable backlight
+ * @bd: the backlight device to disable
+ */
+static inline int backlight_disable(struct backlight_device *bd)
+{
+	if (!bd)
+		return 0;
+
+	bd->props.power = FB_BLANK_POWERDOWN;
+	bd->props.fb_blank = FB_BLANK_POWERDOWN;
+	bd->props.state |= BL_CORE_FBBLANK;
+
+	return backlight_update_status(bd);
 }
 
 struct backlight_device *
