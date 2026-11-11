@@ -8055,19 +8055,32 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 		goto fail;
 
 	if (!task_util_est(p) && p_util_min == 0) {
-		int idle_cpu = -1;
+		int idle_cpu = -1, best_little_cpu = -1;
+		unsigned long max_spare = 0;
 
 		for_each_cpu_and(cpu, perf_domain_span(pd), sched_domain_span(sd)) {
+			unsigned long spare;
+
 			if (!cpumask_test_cpu(cpu, p->cpus_ptr))
 				continue;
 			if (available_idle_cpu(cpu)) {
 				idle_cpu = cpu;
 				break;
 			}
+			spare = capacity_of(cpu);
+			lsub_positive(&spare, cpu_util(cpu));
+			if (spare > max_spare) {
+				max_spare = spare;
+				best_little_cpu = cpu;
+			}
 		}
 		if (idle_cpu >= 0) {
 			rcu_read_unlock();
 			return idle_cpu;
+		}
+		if (best_little_cpu >= 0) {
+			rcu_read_unlock();
+			return best_little_cpu;
 		}
 		goto unlock;
 	}
@@ -8192,6 +8205,17 @@ unlock:
 	 * CPU clusters over tiny marginal energy deltas.
 	 */
 	if (prev_delta == ULONG_MAX)
+		return best_energy_cpu;
+
+	/*
+	 * Unpenalized down-migration: when best_energy_cpu is in a lower-capacity
+	 * performance domain than prev_cpu (e.g. migrating from Big/Prime down to Little)
+	 * and task_fits_cpu() confirms the task fits comfortably, don't penalize it
+	 * with system base_energy margin. Any positive energy savings (prev_delta > best_delta)
+	 * immediately returns best_energy_cpu, eliminating core trapping for light wakees.
+	 */
+	if (arch_scale_cpu_capacity(best_energy_cpu) < arch_scale_cpu_capacity(prev_cpu) &&
+	    task_fits_cpu(p, best_energy_cpu) && prev_delta > best_delta)
 		return best_energy_cpu;
 
 	{
