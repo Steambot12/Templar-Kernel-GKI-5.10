@@ -1677,8 +1677,14 @@ static void wake_nocb_gp(struct rcu_data *rdp, bool force,
  * could be flushed much earlier for a number of other reasons
  * however, LAZY_FLUSH_JIFFIES will ensure no lazy callbacks are
  * left unsubmitted to RCU after those many jiffies.
+ *
+ * Mobile default: 60 seconds instead of upstream's 10 * HZ.  On an
+ * HZ=300 build the upstream value is 10s, waking each rcuog kthread
+ * ~6 times/hour while the device is idle.  Memory pressure still
+ * flushes promptly via lazy_rcu_shrinker, so the longer default is
+ * safe; override at boot with rcu_lazy_flush_ms= if needed.
  */
-#define LAZY_FLUSH_JIFFIES (10 * HZ)
+#define LAZY_FLUSH_JIFFIES (60 * HZ)
 static unsigned long jiffies_lazy_flush = LAZY_FLUSH_JIFFIES;
 
 // To be called only from test code.
@@ -1693,6 +1699,28 @@ unsigned long rcu_get_jiffies_lazy_flush(void)
 	return jiffies_lazy_flush;
 }
 EXPORT_SYMBOL(rcu_get_jiffies_lazy_flush);
+
+/*
+ * Runtime knob for the lazy flush interval.  LAZY_FLUSH_JIFFIES is
+ * 10 * HZ, tuned for desktop; on an HZ=300 mobile build that is only
+ * 10 seconds, waking the NOCB kthread ~6 times/hour while idle.  Set
+ * via rcu_lazy_flush_ms=60000 to stretch it to one minute without
+ * rebuilding.
+ */
+static int __init setup_rcu_lazy_flush_ms(char *str)
+{
+	unsigned long ms;
+
+	if (kstrtoul(str, 0, &ms))
+		return 0;
+	jiffies_lazy_flush = msecs_to_jiffies(ms);
+	if (!jiffies_lazy_flush)
+		jiffies_lazy_flush = LAZY_FLUSH_JIFFIES;
+	pr_info("rcu lazy flush interval set to %lu jiffies\n",
+		jiffies_lazy_flush);
+	return 1;
+}
+__setup("rcu_lazy_flush_ms=", setup_rcu_lazy_flush_ms);
 #endif
 
 /*
