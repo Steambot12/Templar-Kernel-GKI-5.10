@@ -633,6 +633,8 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	}
 
 	latency_req = cpuidle_governor_latency_req(dev->cpu);
+	if (latency_req < 0)
+		latency_req = PM_QOS_LATENCY_ANY_NS;
 	sleep_length_ns = ktime_to_ns(tick_nohz_get_sleep_length(&delta_tick));
 	min_state = nap_get_min_valid_state(d, drv, dev, latency_req);
 
@@ -641,6 +643,11 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	 * within the predicted sleep length the answer is deterministically
 	 * the shallowest state, so skip inference entirely.  nap_reflect drops
 	 * these events, keeping them out of the training distribution.
+	 *
+	 * Maintain tick on State 0 (WFI) unless tick is already stopped.
+	 * Stopping the tick on WFI when State 0 lacks CPUIDLE_FLAG_TIMER_STOP
+	 * stops the local arch timer without arming the broadcast timer,
+	 * causing the CPU to enter an indefinite hang (sleep-of-death) on AOSP/AOSPA.
 	 */
 	if (min_state == 0 ||
 	    sleep_length_ns < drv->states[min_state].target_residency_ns) {
@@ -651,7 +658,7 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 			dev->poll_limit_ns = max_t(u64, sleep_length_ns,
 						   NAP_POLL_LIMIT_MIN_NS);
 
-		*stop_tick = !(drv->states[0].flags & CPUIDLE_FLAG_POLLING);
+		*stop_tick = tick_nohz_tick_stopped();
 		d->short_circuited = true;
 		d->stats.total_selects++;
 		return 0;
@@ -681,9 +688,14 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	 * than one tick period, and the slow restart delays the wakeup
 	 * (about 100 us on average in a 1 ms periodic-timer test).
 	 * If the tick is already stopped, keep it stopped to allow deep sleep.
+	 * Also preserve tick for State 0 (WFI) or shallow states <= 15us
+	 * to prevent CPU wakeup stalls.
 	 */
 	if (((drv->states[idx].flags & CPUIDLE_FLAG_POLLING) ||
-	     sleep_length_ns < TICK_NSEC) && !tick_nohz_tick_stopped()) {
+	     sleep_length_ns < TICK_NSEC ||
+	     idx == 0 ||
+	     drv->states[idx].target_residency_ns <= RESIDENCY_THRESHOLD_NS) &&
+	    !tick_nohz_tick_stopped()) {
 		*stop_tick = false;
 
 		while (idx > 0 &&
@@ -986,7 +998,7 @@ static inline void nap_selftest(void) { }
 
 static struct cpuidle_governor nap_governor = {
 	.name	= "nap",
-	.rating	= 18,
+	.rating	= 22,
 	.enable	= nap_enable_device,
 	.select	= nap_select,
 	.reflect = nap_reflect,
