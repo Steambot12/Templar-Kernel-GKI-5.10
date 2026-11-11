@@ -594,7 +594,14 @@ u8   __read_mostly sched_burst_smoothness       = 1;
 u8   __read_mostly sched_burst_penalty_offset   = 28;
 uint __read_mostly sched_burst_penalty_scale    = 1024;
 uint __read_mostly sched_burst_cache_lifetime   = 75000000;
-uint __read_mostly sched_credit_cap_us          = 16000;
+/*
+ * 2ms sleep credit: a woken task may advance its deadline by at most one
+ * 90/120Hz frame budget.  The previous 16ms cap let a background thread
+ * sleep for 16ms and wake up with enough credit to preempt the foreground
+ * render thread for a full frame, which showed up as periodical frame-time
+ * spikes and frequency blips under BORE.
+ */
+uint __read_mostly sched_credit_cap_us          = 2000;
 
 #define BURST_INHERIT_SCAN_LIMIT 63
 
@@ -805,7 +812,17 @@ u64 bore_credit_ns(struct task_struct *p)
 		slept = rq_clock(task_rq(p)) - p->credit_sleep;
 		if ((s64)slept > 0) {
 			p->credit_sleep = 0;
-			credit = slept < cap ? slept : cap;
+			/*
+			 * BORE 7.0.0 credit guard: only non-idle policies earn
+			 * deadline credit.  SCHED_IDLE background threads
+			 * (kswapd, logd, etc.) were waking with up to 16ms of
+			 * slept time credited, letting them preempt and steal
+			 * capacity from foreground UI/render threads in the
+			 * equal-weight wakeup race.
+			 */
+			if (!task_has_idle_policy(p) &&
+			    p->se.load.weight >= scale_load(WEIGHT_IDLEPRIO))
+				credit = slept < cap ? slept : cap;
 		} else {
 			slept = 0;
 		}
@@ -1224,9 +1241,14 @@ static inline bool do_preempt_weight(struct cfs_rq *cfs_rq,
 	if (!static_branch_likely(&sched_burst_protect_slice_cond_key))
 		return false;
 
+	/*
+	 * With prefer_key off (level 1, the default) a wakee must be strictly
+	 * heavier than current to preempt; `<=` would let equal-weight
+	 * pairs (UI vs RenderThread) bypass wakeup granularity and ping-pong.
+	 */
 	if (static_branch_unlikely(&sched_burst_protect_slice_prefer_key) ?
-	    (pse->load.weight <= se->load.weight) :
-	    (pse->load.weight <  se->load.weight))
+	    (pse->load.weight <  se->load.weight) :
+	    (pse->load.weight <= se->load.weight))
 		return false;
 
 	if (!entity_eligible(cfs_rq, pse))
