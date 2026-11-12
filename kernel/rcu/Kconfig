@@ -261,11 +261,12 @@ config RCU_LAZY
 	default y
 	help
 	  To save power, batch RCU callbacks and flush after delay, memory
-	  pressure, or callback list growing too big.
+	  pressure, or callback list growing too big.  Works with partial
+	  offload (e.g. rcu_nocbs=0-3): lazy batching is applied on
+	  offloaded cores, while non-offloaded cores keep immediate
+	  submission.
 
-	  Requires rcu_nocbs=all to be set.
-
-	  Use rcutree.enable_rcu_lazy=0 to turn it off at boot time.
+	  Use enable_rcu_lazy=0 to turn it off at boot time.
 
 config RCU_LAZY_DEFAULT_OFF
 	bool "Turn RCU lazy invocation off by default"

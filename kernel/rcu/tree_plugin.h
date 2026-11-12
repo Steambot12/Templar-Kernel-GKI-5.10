@@ -1678,21 +1678,14 @@ static void wake_nocb_gp(struct rcu_data *rdp, bool force,
  * however, LAZY_FLUSH_JIFFIES will ensure no lazy callbacks are
  * left unsubmitted to RCU after those many jiffies.
  *
- * Mobile default: 60 seconds instead of upstream's 10 * HZ.  On an
- * HZ=300 build the upstream value is 10s, waking each rcuog kthread
- * ~6 times/hour while the device is idle.  Memory pressure still
- * flushes promptly via lazy_rcu_shrinker, so the longer default is
- * safe; override at boot with rcu_lazy_flush_ms= if needed.
+ * Defaults to upstream's 10 * HZ.  A 60s default once caused
+ * rcu_barrier() stalls in container runtimes because offloaded
+ * barriers rely on the lazy flush timer to schedule grace periods.
+ * Memory pressure still flushes promptly via lazy_rcu_shrinker;
+ * override at boot with rcu_lazy_flush_ms= if needed.
  */
-#define LAZY_FLUSH_JIFFIES (60 * HZ)
+#define LAZY_FLUSH_JIFFIES (10 * HZ)
 static unsigned long jiffies_lazy_flush = LAZY_FLUSH_JIFFIES;
-
-// To be called only from test code.
-void rcu_set_jiffies_lazy_flush(unsigned long jif)
-{
-	jiffies_lazy_flush = jif;
-}
-EXPORT_SYMBOL(rcu_set_jiffies_lazy_flush);
 
 unsigned long rcu_get_jiffies_lazy_flush(void)
 {
@@ -1701,11 +1694,11 @@ unsigned long rcu_get_jiffies_lazy_flush(void)
 EXPORT_SYMBOL(rcu_get_jiffies_lazy_flush);
 
 /*
- * Runtime knob for the lazy flush interval.  LAZY_FLUSH_JIFFIES is
- * 10 * HZ, tuned for desktop; on an HZ=300 mobile build that is only
- * 10 seconds, waking the NOCB kthread ~6 times/hour while idle.  Set
- * via rcu_lazy_flush_ms=60000 to stretch it to one minute without
- * rebuilding.
+ * Runtime knob for the lazy flush interval, letting a build pin a
+ * longer batch window (e.g. 60s) without rebuilding.  Keep it short
+ * on offloaded (NOCB) cores: lazy-flush timers there are also the
+ * deadline that schedules grace periods for entrained callbacks,
+ * including rcu_barrier().
  */
 static int __init setup_rcu_lazy_flush_ms(char *str)
 {
@@ -2678,6 +2671,12 @@ static void rcu_nocb_unlock_irqrestore(struct rcu_data *rdp,
 				       unsigned long flags)
 {
 	local_irq_restore(flags);
+}
+
+static void wake_nocb_gp(struct rcu_data *rdp, bool force,
+			 unsigned long flags)
+{
+	rcu_nocb_unlock_irqrestore(rdp, flags);
 }
 
 /* Lockdep check that ->cblist may be safely accessed. */
