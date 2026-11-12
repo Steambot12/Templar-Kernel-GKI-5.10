@@ -2186,6 +2186,10 @@ static void nocb_gp_wait(struct rcu_data *my_rdp)
 		raw_spin_lock_irqsave(&my_rdp->nocb_gp_lock, flags);
 		if (bypass)
 			del_timer(&my_rdp->nocb_bypass_timer);
+		if (my_rdp->nocb_defer_wakeup > RCU_NOCB_WAKE_NOT) {
+			WRITE_ONCE(my_rdp->nocb_defer_wakeup, RCU_NOCB_WAKE_NOT);
+			del_timer(&my_rdp->nocb_timer);
+		}
 		WRITE_ONCE(my_rdp->nocb_gp_sleep, true);
 		raw_spin_unlock_irqrestore(&my_rdp->nocb_gp_lock, flags);
 	}
@@ -2278,19 +2282,19 @@ static int rcu_nocb_cb_kthread(void *arg)
 }
 
 /* Is a deferred wakeup of rcu_nocb_kthread() required? */
-static int rcu_nocb_need_deferred_wakeup(struct rcu_data *rdp)
+static int rcu_nocb_need_deferred_wakeup(struct rcu_data *rdp, int level)
 {
-	return READ_ONCE(rdp->nocb_defer_wakeup);
+	return READ_ONCE(rdp->nocb_defer_wakeup) >= level;
 }
 
 /* Do a deferred wakeup of rcu_nocb_kthread(). */
-static void do_nocb_deferred_wakeup_common(struct rcu_data *rdp)
+static void do_nocb_deferred_wakeup_common(struct rcu_data *rdp, int level)
 {
 	unsigned long flags;
 	int ndw;
 
 	rcu_nocb_lock_irqsave(rdp, flags);
-	if (!rcu_nocb_need_deferred_wakeup(rdp)) {
+	if (!rcu_nocb_need_deferred_wakeup(rdp, level)) {
 		rcu_nocb_unlock_irqrestore(rdp, flags);
 		return;
 	}
@@ -2304,7 +2308,7 @@ static void do_nocb_deferred_wakeup_timer(struct timer_list *t)
 {
 	struct rcu_data *rdp = from_timer(rdp, t, nocb_timer);
 
-	do_nocb_deferred_wakeup_common(rdp);
+	do_nocb_deferred_wakeup_common(rdp, RCU_NOCB_WAKE_BYPASS);
 }
 
 /*
@@ -2314,8 +2318,8 @@ static void do_nocb_deferred_wakeup_timer(struct timer_list *t)
  */
 static void do_nocb_deferred_wakeup(struct rcu_data *rdp)
 {
-	if (rcu_nocb_need_deferred_wakeup(rdp))
-		do_nocb_deferred_wakeup_common(rdp);
+	if (rcu_nocb_need_deferred_wakeup(rdp, RCU_NOCB_WAKE))
+		do_nocb_deferred_wakeup_common(rdp, RCU_NOCB_WAKE);
 }
 
 void rcu_nocb_flush_deferred_wakeup(void)
@@ -2718,7 +2722,7 @@ static void __init rcu_boot_init_nocb_percpu_data(struct rcu_data *rdp)
 {
 }
 
-static int rcu_nocb_need_deferred_wakeup(struct rcu_data *rdp)
+static int rcu_nocb_need_deferred_wakeup(struct rcu_data *rdp, int level)
 {
 	return false;
 }
