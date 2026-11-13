@@ -103,12 +103,12 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 #define RFX_PRIME_CAP_THRESHOLD		1000
 
 /* ---- Daily Profile Cadence (gaming_mode=0) ---- */
-#define RFX_LITTLE_RATE_US		2000	/* 2ms evaluation cadence */
+#define RFX_LITTLE_RATE_US		1000	/* 1ms evaluation cadence: match Big for screen-on bursts */
 #define RFX_LITTLE_UP_US		500	/* 500us up-ramp: smooth UI, eliminates micro-glitches */
 #define RFX_LITTLE_DOWN_US		2500
 
-#define RFX_BIG_RATE_US			2000	/* 2ms evaluation cadence for fluid 120Hz/90Hz UI */
-#define RFX_BIG_UP_US			1000	/* 1ms up-ramp for Big: filters transient micro-spikes */
+#define RFX_BIG_RATE_US			1000	/* 1ms eval: 120Hz UI needs faster reaction than 2ms */
+#define RFX_BIG_UP_US			300	/* 300us up-ramp: big cluster must not lag screen-on bursts */
 #define RFX_BIG_DOWN_US			3000	/* 3ms paced descent for fluid UI */
 
 #define RFX_D_IDLE_EVAL_US		8000	/* Parked evaluation cadence (8ms) */
@@ -1531,8 +1531,18 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 					p->park_since_ns = 0;
 				}
 			} else if (!p->is_little && (p->parked || p->dormant)) {
-				/* Big cluster (Cortex-A710): unpark on resume window or UI interaction (>= 16%) */
-				if (in_resume_window || max_util >= (max_cap * 16 / 100)) {
+				/*
+				 * Big cluster: unpark on resume window or UI
+				 * interaction. A single touch-down sample spikes
+				 * per-CPU util but policy-wide max stays below
+				 * 16% for ~2 evals, and up-rate-limit (300us on
+				 * Big) then stretches the rise to ~5ms -- the
+				 * lockscreen/control-center stutter. 8% unparks
+				 * on the first sample after a tap; little keeps
+				 * the strict 12.5% park threshold for its idle
+				 * path, so battery cost is bounded.
+				 */
+				if (in_resume_window || max_util >= (max_cap * 8 / 100)) {
 					p->park_enter_count = 0;
 					p->parked = false;
 					p->dormant = false;
@@ -1542,7 +1552,8 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 				p->park_enter_count = 0;
 				p->parked = false;
 				p->park_since_ns = 0;
-				if (p->dormant && (in_resume_window || max_util >= (max_cap * 25 / 100)))
+				if (p->dormant && (in_resume_window ||
+						max_util >= (max_cap * 25 / 100)))
 					p->dormant = false;
 			}
 		}
