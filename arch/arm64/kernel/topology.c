@@ -16,7 +16,10 @@
 #include <linux/cacheinfo.h>
 #include <linux/cpufreq.h>
 #include <linux/init.h>
+#include <linux/jiffies.h>
 #include <linux/percpu.h>
+#include <linux/sched.h>
+#include <linux/sched/isolation.h>
 
 #include <asm/cpu.h>
 #include <asm/cputype.h>
@@ -88,18 +91,33 @@ int __init parse_acpi_topology(void)
 #undef pr_fmt
 #define pr_fmt(fmt) "AMU: " fmt
 
-static DEFINE_PER_CPU_READ_MOSTLY(unsigned long, arch_max_freq_scale);
-static DEFINE_PER_CPU(u64, arch_const_cycles_prev);
-static DEFINE_PER_CPU(u64, arch_core_cycles_prev);
+static DEFINE_PER_CPU_READ_MOSTLY(unsigned long, arch_max_freq_scale) =  1UL << (2 * SCHED_CAPACITY_SHIFT);
+static DEFINE_PER_CPU_READ_MOSTLY(unsigned long, arch_max_freq_ref);
 static cpumask_var_t amu_fie_cpus;
 
-/* Initialize counter reference per-cpu variables for the current CPU */
+/*
+ * Upstream 16d1e27475f6 ("arm64: Provide an AMU-based version of
+ * arch_freq_get_on_cpu") samples the AMU cycle counters into one
+ * coherent struct. Backported: the 5.10 tree updates the FIE counters
+ * in init_cpu_freq_invariance_counters() instead of
+ * update_freq_counters_refs(), so both refs are stored there.
+ */
+struct amu_cntr_sample {
+	u64		arch_const_cycles_prev;
+	u64		arch_core_cycles_prev;
+	unsigned long	last_scale_update;
+};
+
+static DEFINE_PER_CPU_SHARED_ALIGNED(struct amu_cntr_sample, cpu_amu_samples);
+
 void init_cpu_freq_invariance_counters(void)
 {
-	this_cpu_write(arch_core_cycles_prev,
-		       read_sysreg_s(SYS_AMEVCNTR0_CORE_EL0));
-	this_cpu_write(arch_const_cycles_prev,
-		       read_sysreg_s(SYS_AMEVCNTR0_CONST_EL0));
+	struct amu_cntr_sample *amu_sample = this_cpu_ptr(&cpu_amu_samples);
+
+	amu_sample->arch_core_cycles_prev =
+		read_sysreg_s(SYS_AMEVCNTR0_CORE_EL0);
+	amu_sample->arch_const_cycles_prev =
+		read_sysreg_s(SYS_AMEVCNTR0_CONST_EL0);
 }
 
 static int validate_cpu_freq_invariance_counters(int cpu)
@@ -111,10 +129,16 @@ static int validate_cpu_freq_invariance_counters(int cpu)
 		return -EINVAL;
 	}
 
-	if (unlikely(!per_cpu(arch_const_cycles_prev, cpu) ||
-		     !per_cpu(arch_core_cycles_prev, cpu))) {
-		pr_debug("CPU%d: cycle counters are not enabled.\n", cpu);
-		return -EINVAL;
+	init_cpu_freq_invariance_counters();
+
+	{
+		struct amu_cntr_sample *amu_sample = per_cpu_ptr(&cpu_amu_samples, cpu);
+
+		if (unlikely(!amu_sample->arch_const_cycles_prev ||
+			     !amu_sample->arch_core_cycles_prev)) {
+			pr_debug("CPU%d: cycle counters are not enabled.\n", cpu);
+			return -EINVAL;
+		}
 	}
 
 	/* Convert maximum frequency from KHz to Hz and validate */
@@ -145,6 +169,12 @@ static int validate_cpu_freq_invariance_counters(int cpu)
 	}
 
 	per_cpu(arch_max_freq_scale, cpu) = (unsigned long)ratio;
+
+	/*
+	 * Reference (maximum) frequency in KHz, used to convert the
+	 * frequency scale factor back into a concrete frequency.
+	 */
+	per_cpu(arch_max_freq_ref, cpu) = cpufreq_get_hw_max_freq(cpu);
 
 	return 0;
 }
@@ -230,6 +260,7 @@ bool arch_freq_counters_available(const struct cpumask *cpus)
 
 void topology_scale_freq_tick(void)
 {
+	struct amu_cntr_sample *amu_sample = this_cpu_ptr(&cpu_amu_samples);
 	u64 prev_core_cnt, prev_const_cnt;
 	u64 core_cnt, const_cnt, scale;
 	int cpu = smp_processor_id();
@@ -240,14 +271,21 @@ void topology_scale_freq_tick(void)
 	if (!cpumask_test_cpu(cpu, amu_fie_cpus))
 		return;
 
-	const_cnt = read_sysreg_s(SYS_AMEVCNTR0_CONST_EL0);
-	core_cnt = read_sysreg_s(SYS_AMEVCNTR0_CORE_EL0);
-	prev_const_cnt = this_cpu_read(arch_const_cycles_prev);
-	prev_core_cnt = this_cpu_read(arch_core_cycles_prev);
+	prev_const_cnt = amu_sample->arch_const_cycles_prev;
+	prev_core_cnt = amu_sample->arch_core_cycles_prev;
 
+	init_cpu_freq_invariance_counters();
+
+	const_cnt = amu_sample->arch_const_cycles_prev;
+	core_cnt = amu_sample->arch_core_cycles_prev;
+
+	/*
+	 * This should not happen unless the AMUs have been reset and the
+	 * counter values have not been restored - unlikely
+	 */
 	if (unlikely(core_cnt <= prev_core_cnt ||
 		     const_cnt <= prev_const_cnt))
-		goto store_and_exit;
+		return;
 
 	/*
 	 *	    /\core    arch_max_freq_scale
@@ -265,8 +303,71 @@ void topology_scale_freq_tick(void)
 	scale = min_t(unsigned long, scale, SCHED_CAPACITY_SCALE);
 	this_cpu_write(freq_scale, (unsigned long)scale);
 
-store_and_exit:
-	this_cpu_write(arch_core_cycles_prev, core_cnt);
-	this_cpu_write(arch_const_cycles_prev, const_cnt);
+	amu_sample->last_scale_update = jiffies;
+}
+
+#define AMU_SAMPLE_EXP_MS	20
+
+static unsigned int arch_scale_freq_ref(int cpu)
+{
+	return per_cpu(arch_max_freq_ref, cpu);
+}
+
+unsigned int arch_freq_get_on_cpu(int cpu)
+{
+	struct amu_cntr_sample *amu_sample;
+	u64 prev_const_cnt, prev_core_cnt;
+	u64 core_cnt, const_cnt, scale;
+	unsigned long last_update;
+	unsigned int freq = 0;
+
+	/*
+	 * 5.10 API returns 0 when the average frequency cannot be read
+	 * (upstream 38e480d4fca changed the prototype to signed int for
+	 * error codes; that prerequisite is not part of this tree).
+	 */
+	if (!amu_freq_invariant() || !cpumask_test_cpu(cpu, amu_fie_cpus) ||
+	    !arch_scale_freq_ref(cpu))
+		return 0;
+
+	amu_sample = per_cpu_ptr(&cpu_amu_samples, cpu);
+	last_update = amu_sample->last_scale_update;
+
+	/*
+	 * For those CPUs that are in full dynticks mode, or those that have
+	 * not seen tick for a while, sample the counters directly instead
+	 * of waiting for the next tick (upstream walks to an active CPU in
+	 * the same freq domain; 5.10 has no NOHZ_FULL here, so reading
+	 * AMU registers in place is equivalent and cheaper).
+	 */
+	if (!housekeeping_cpu(cpu, HK_FLAG_TICK) ||
+	    time_is_before_jiffies(last_update + msecs_to_jiffies(AMU_SAMPLE_EXP_MS))) {
+		prev_const_cnt = amu_sample->arch_const_cycles_prev;
+		prev_core_cnt = amu_sample->arch_core_cycles_prev;
+
+		init_cpu_freq_invariance_counters();
+
+		const_cnt = amu_sample->arch_const_cycles_prev;
+		core_cnt = amu_sample->arch_core_cycles_prev;
+
+		if (unlikely(core_cnt <= prev_core_cnt ||
+			     const_cnt <= prev_const_cnt))
+			return 0;
+
+		/*
+		 * Reversed computation to the one used in
+		 * topology_scale_freq_tick() to determine freq_scale.
+		 */
+		scale = core_cnt - prev_core_cnt;
+		scale *= per_cpu(arch_max_freq_scale, cpu);
+		scale = div64_u64(scale >> SCHED_CAPACITY_SHIFT,
+				  const_cnt - prev_const_cnt);
+	} else {
+		scale = topology_get_freq_scale(cpu);
+	}
+
+	freq = scale * arch_scale_freq_ref(cpu);
+	freq >>= SCHED_CAPACITY_SHIFT;
+	return freq;
 }
 #endif /* CONFIG_ARM64_AMU_EXTN */
