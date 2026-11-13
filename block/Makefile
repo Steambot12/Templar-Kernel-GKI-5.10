@@ -46,4 +46,7 @@ obj-$(CONFIG_BLK_PM)		+= blk-pm.o
 obj-$(CONFIG_BLK_INLINE_ENCRYPTION)	+= keyslot-manager.o blk-crypto.o
 obj-$(CONFIG_BLK_INLINE_ENCRYPTION_FALLBACK)	+= blk-crypto-fallback.o
 
-CFLAGS_adios.o := -Wno-declaration-after-statement -Wno-gcc-compat
+# adios.c uses C99 for-loop declarations and cleanup.h scoped_guard(), so it
+# must be compiled past the tree-wide gnu89 default; the trailing -std=gnu11
+# overrides it for this object only.
+CFLAGS_adios.o := -std=gnu11 -Wno-declaration-after-statement -Wno-gcc-compat
