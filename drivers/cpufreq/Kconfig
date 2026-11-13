@@ -239,10 +239,11 @@ config CPU_FREQ_GOV_VORPAL
 	select CPU_FREQ_GOV_ATTR_SET
 	select IRQ_WORK
 	help
-	  Vorpal CPUFreq Governor v2.3.1 (GKI 5.10).
+	  Vorpal CPUFreq Governor v2.3 (GKI 5.10).
 	  Schedutil-derived governor with dual-profile gaming/daily modes,
-	  tri-cluster awareness, zero-jitter UI, proactive thermal pacing,
-	  and a live skin-thermal pressure probe.
+	  tri-cluster awareness, zero-jitter UI, and proactive thermal pacing
+	  driven by the cpufreq cooling device's thermal pressure
+	  (CONFIG_CPU_FREQ_THERMAL).
 	  If in doubt, say Y.
 
 comment "CPU frequency scaling drivers"

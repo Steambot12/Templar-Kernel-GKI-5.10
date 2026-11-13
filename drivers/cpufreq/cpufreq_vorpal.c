@@ -60,8 +60,6 @@
 #include <linux/atomic.h>
 #include <linux/list.h>
 #include <linux/suspend.h>
-#include <linux/thermal.h>
-#include <linux/cpufreq.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vorpal.h>
@@ -71,7 +69,7 @@
  * ===================================================================== */
 
 #define CPUFREQ_VORPAL_NAME	"vorpal"
-#define CPUFREQ_VORPAL_VERSION	"2.3.1"
+#define CPUFREQ_VORPAL_VERSION	"2.3"
 #define CPUFREQ_VORPAL_AUTHOR	"Templar Dev"
 
 #ifndef SCHED_FLAG_SUGOV
@@ -524,127 +522,14 @@ static unsigned int rfx_ceil_rise_filter(struct rfx_policy *p,
 	return p->ceil_rise_pct;
 }
 
-/* =====================================================================
- * Section 4b: Live Skin Thermal Pressure Probe
- *
- * GKI's only in-kernel caller of topology_set_thermal_pressure() is the
- * cpufreq cooling device, and it only publishes a non-zero value when a
- * thermal governor has actively throttled a policy.  With no cpufreq
- * cooling device bound to a skin zone, arch_scale_thermal_pressure()
- * stays 0: rfx_thermal_headroom_pct() then reports 100% headroom and the
- * governor runs at full power until the SoC's hardware trip point
- * (observed 47C+ with gaming_mode=1 on SM8450).
- *
- * Poll a vendor "skin" thermal zone (falling back to the first readable
- * sensor zone) and publish its temperature through
- * topology_set_thermal_pressure() -- the same primitive
- * cpufreq_cooling.c uses -- so the existing ceiling filter and the
- * proactive cooling walk bound the clusters ahead of any trip.  The poll
- * runs on a system workqueue: vendor get_temp() takes tz->lock and may
- * block, and the per-CPU pressure words make the hot path a single
- * read-mostly read.
- *
- * The probe is purely additive in one direction: below 42C it publishes
- * zero (no effect), and above it only raises reported pressure, which can
- * only lower the effective ceiling.  When the cpufreq cooling device also
- * publishes a cap for the same CPUs, the stricter value wins inside
- * rfx_thermal_headroom_pct().
- * ===================================================================== */
-
-#define RFX_THERMAL_POLL_MS	500
-#define RFX_THERMAL_RETRY_MS	5000	/* re-scan for a late-registered zone */
-#define RFX_THERMAL_PRESSURE_MAX	512	/* clamp to ~half of a cluster */
-#define RFX_THERMAL_K0	42000	/* 42C: below this, zero pressure */
-#define RFX_THERMAL_KFULL	58000	/* 58C: at/above, full pressure */
-
-struct rfx_thermal_zone {
-	struct thermal_zone_device *tz;
-	int temp;		/* last good reading, millideg C */
-	int pressure;		/* last published pressure value */
-};
-static struct rfx_thermal_zone rfx_thermal;
-static struct delayed_work rfx_thermal_work;
-
-/* Not in a public header; built-in linkage only (CONFIG_CPU_FREQ_GOV_VORPAL=y). */
-int for_each_thermal_zone(int (*cb)(struct thermal_zone_device *, void *),
-			  void *data);
-
-static int rfx_thermal_pick_zone(struct thermal_zone_device *tz, void *data)
-{
-	static const char * const pref[] = { "skin", "cpu" };
-	int i;
-
-	/*
-	 * Prefer a vendor "skin" (user-facing) zone, then a CPU-die zone;
-	 * otherwise keep the first readable zone as a last resort.  A zone
-	 * without a sensor attached cannot be read.
-	 */
-	if (!tz->ops->get_temp)
-		return 0;
-	for (i = 0; i < ARRAY_SIZE(pref); i++) {
-		if (strstr(tz->type, pref[i])) {
-			rfx_thermal.tz = tz;
-			return 1;	/* stop scanning: best source found */
-		}
-	}
-	if (!rfx_thermal.tz)
-		rfx_thermal.tz = tz;
-	return 0;
-}
-
-static void rfx_thermal_sample(struct work_struct *work)
-{
-	struct rfx_thermal_zone *z = &rfx_thermal;
-	unsigned long delay_ms = RFX_THERMAL_POLL_MS;
-	int temp, ret;
-
-	/* Zones register as late-initcall/platform drivers: re-scan until found. */
-	if (!z->tz) {
-		for_each_thermal_zone(rfx_thermal_pick_zone, NULL);
-		if (!z->tz) {
-			schedule_delayed_work(&rfx_thermal_work,
-					      msecs_to_jiffies(RFX_THERMAL_RETRY_MS));
-			return;
-		}
-		pr_info("vorpal: probing zone %s every %dms\n",
-			z->tz->type, RFX_THERMAL_POLL_MS);
-	}
-
-	ret = thermal_zone_get_temp(z->tz, &temp);
-	if (!ret) {
-		/*
-		 * Linear ramp: 0 at 42C up to PRESSURE_MAX at 58C.  Below
-		 * 42C the cap is fully released; a colder reading publishes
-		 * zero again so the ceiling recovers.
-		 */
-		unsigned int pressure = 0;
-
-		if (temp > RFX_THERMAL_K0) {
-			int t = min(temp, RFX_THERMAL_KFULL);
-
-			pressure = (unsigned int)(t - RFX_THERMAL_K0) *
-				   RFX_THERMAL_PRESSURE_MAX /
-				   (RFX_THERMAL_KFULL - RFX_THERMAL_K0);
-		}
-		z->pressure = pressure;
-		z->temp = temp;
-
-		topology_set_thermal_pressure(cpu_possible_mask, pressure);
-	} else {
-		/* Stale/invalid reading: hold last pressure, never unlock upward. */
-		delay_ms = RFX_THERMAL_RETRY_MS;
-	}
-
-	schedule_delayed_work(&rfx_thermal_work, msecs_to_jiffies(delay_ms));
-}
-
-static int __init rfx_thermal_probe_init(void)
-{
-	INIT_DELAYED_WORK(&rfx_thermal_work, rfx_thermal_sample);
-	schedule_delayed_work(&rfx_thermal_work,
-			      msecs_to_jiffies(RFX_THERMAL_RETRY_MS));
-	return 0;
-}
+/*
+ * Thermal pacing: rfx_thermal_headroom_pct() reads arch_scale_thermal
+ * pressure() as published by the thermal framework's cpufreq cooling
+ * device (CONFIG_CPU_FREQ_THERMAL + step_wise), and the proactive
+ * cooling walk plus cluster caps bound the clusters ahead of any
+ * trip.  No in-governor polling is used, so the probe adds no idle
+ * wakeups.
+ */
 
 /* =====================================================================
  * Section 5: EMA Utilization Smoothing & Headroom
@@ -2537,7 +2422,6 @@ static int __init vorpal_gov_init(void)
 
 	rfx_selfcheck();
 
-	rfx_thermal_probe_init();
 	register_pm_notifier(&rfx_pm_nb);
 	return cpufreq_register_governor(&vorpal_gov);
 }
@@ -2553,4 +2437,4 @@ module_exit(vorpal_gov_exit);
 
 MODULE_AUTHOR("Steambot12");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Vorpal CPUFreq Governor v2.3.1");
+MODULE_DESCRIPTION("Vorpal CPUFreq Governor v2.3");
