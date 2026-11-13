@@ -60,6 +60,8 @@
 #include <linux/atomic.h>
 #include <linux/list.h>
 #include <linux/suspend.h>
+#include <linux/thermal.h>
+#include <linux/cpufreq.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vorpal.h>
@@ -69,7 +71,7 @@
  * ===================================================================== */
 
 #define CPUFREQ_VORPAL_NAME	"vorpal"
-#define CPUFREQ_VORPAL_VERSION	"2.3"
+#define CPUFREQ_VORPAL_VERSION	"2.3.1"
 #define CPUFREQ_VORPAL_AUTHOR	"Templar Dev"
 
 #ifndef SCHED_FLAG_SUGOV
@@ -160,12 +162,13 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 #define RFX_G_BIG_FLOOR_PCT		38	/* Render tier baseline floor (calibrated for SM8450) */
 #define RFX_G_LITTLE_FLOOR_PCT		25	/* Background cluster floor */
 #define RFX_G_IDLE_FLOOR_PCT		20	/* Gated idle floor */
-#define RFX_G_WARMUP_FLOOR_PCT		56	/* Warmup burst floor */
+#define RFX_G_WARMUP_FLOOR_PCT		54	/* Warmup burst floor (below hispeed 55 so F1 can win) */
 
-/* Gaming cluster caps (% of effective ceiling) - Tuned for <=43.5C thermal equilibrium on SM8450 */
+/* Gaming cluster caps (% of effective ceiling) - tuned for ~42C skin
+ * equilibrium on SM8450 (Samsung 4nm) with sustained open-world gaming */
 #define RFX_G_LITTLE_CAP_PCT		60
-#define RFX_G_PRIME_CAP_PCT		45	/* Sustained Prime sweet-spot cap (power efficient, <=43.5C) */
-#define RFX_G_BIG_CAP_PCT		65	/* Sustained Big render sweet-spot cap */
+#define RFX_G_PRIME_CAP_PCT		42	/* Sustained Prime sweet-spot cap */
+#define RFX_G_BIG_CAP_PCT		58	/* Sustained Big render sweet-spot cap */
 
 /* Gaming burst caps (prior to sustained load, <=120ms) */
 #define RFX_G_BIG_BURST_CAP_PCT		78	/* Controlled burst cap (no runaway voltage spike) */
@@ -174,12 +177,12 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 /* Gaming sustained thermal pacer */
 #define RFX_G_SUSTAINED_TRIGGER_PCT	72	/* Trigger sustained sweet spot */
 #define RFX_G_SUSTAINED_CLEAR_PCT	45	/* Hysteretic clear */
-#define RFX_G_SUSTAINED_WINDOW_MS	120	/* 120ms burst window before sustained clamping */
+#define RFX_G_SUSTAINED_WINDOW_MS	80	/* 80ms burst window before sustained clamping */
 
 /* Gaming feature defaults */
 #define RFX_G_HISPEED_PCT_DEFAULT	55	/* F1 hispeed render floor */
 #define RFX_G_GO_HISPEED_PCT_DEFAULT	86	/* F1 trigger threshold */
-#define RFX_G_HISPEED_HOLD_US_DEFAULT	6000	/* 6ms burst bridge */
+#define RFX_G_HISPEED_HOLD_US_DEFAULT	3000	/* 3ms burst bridge */
 
 /* Gaming demand gate & idle latch (fast thermal cool-down) */
 #define RFX_G_FLOOR_GATE_PCT		18
@@ -519,6 +522,128 @@ static unsigned int rfx_ceil_rise_filter(struct rfx_policy *p,
 		p->ceil_rise_pct += budget;
 	p->ceil_rise_ref_ns = time;
 	return p->ceil_rise_pct;
+}
+
+/* =====================================================================
+ * Section 4b: Live Skin Thermal Pressure Probe
+ *
+ * GKI's only in-kernel caller of topology_set_thermal_pressure() is the
+ * cpufreq cooling device, and it only publishes a non-zero value when a
+ * thermal governor has actively throttled a policy.  With no cpufreq
+ * cooling device bound to a skin zone, arch_scale_thermal_pressure()
+ * stays 0: rfx_thermal_headroom_pct() then reports 100% headroom and the
+ * governor runs at full power until the SoC's hardware trip point
+ * (observed 47C+ with gaming_mode=1 on SM8450).
+ *
+ * Poll a vendor "skin" thermal zone (falling back to the first readable
+ * sensor zone) and publish its temperature through
+ * topology_set_thermal_pressure() -- the same primitive
+ * cpufreq_cooling.c uses -- so the existing ceiling filter and the
+ * proactive cooling walk bound the clusters ahead of any trip.  The poll
+ * runs on a system workqueue: vendor get_temp() takes tz->lock and may
+ * block, and the per-CPU pressure words make the hot path a single
+ * read-mostly read.
+ *
+ * The probe is purely additive in one direction: below 42C it publishes
+ * zero (no effect), and above it only raises reported pressure, which can
+ * only lower the effective ceiling.  When the cpufreq cooling device also
+ * publishes a cap for the same CPUs, the stricter value wins inside
+ * rfx_thermal_headroom_pct().
+ * ===================================================================== */
+
+#define RFX_THERMAL_POLL_MS	500
+#define RFX_THERMAL_RETRY_MS	5000	/* re-scan for a late-registered zone */
+#define RFX_THERMAL_PRESSURE_MAX	512	/* clamp to ~half of a cluster */
+#define RFX_THERMAL_K0	42000	/* 42C: below this, zero pressure */
+#define RFX_THERMAL_KFULL	58000	/* 58C: at/above, full pressure */
+
+struct rfx_thermal_zone {
+	struct thermal_zone_device *tz;
+	int temp;		/* last good reading, millideg C */
+	int pressure;		/* last published pressure value */
+};
+static struct rfx_thermal_zone rfx_thermal;
+static struct delayed_work rfx_thermal_work;
+
+/* Not in a public header; built-in linkage only (CONFIG_CPU_FREQ_GOV_VORPAL=y). */
+int for_each_thermal_zone(int (*cb)(struct thermal_zone_device *, void *),
+			  void *data);
+
+static int rfx_thermal_pick_zone(struct thermal_zone_device *tz, void *data)
+{
+	static const char * const pref[] = { "skin", "cpu" };
+	int i;
+
+	/*
+	 * Prefer a vendor "skin" (user-facing) zone, then a CPU-die zone;
+	 * otherwise keep the first readable zone as a last resort.  A zone
+	 * without a sensor attached cannot be read.
+	 */
+	if (!tz->ops->get_temp)
+		return 0;
+	for (i = 0; i < ARRAY_SIZE(pref); i++) {
+		if (strstr(tz->type, pref[i])) {
+			rfx_thermal.tz = tz;
+			return 1;	/* stop scanning: best source found */
+		}
+	}
+	if (!rfx_thermal.tz)
+		rfx_thermal.tz = tz;
+	return 0;
+}
+
+static void rfx_thermal_sample(struct work_struct *work)
+{
+	struct rfx_thermal_zone *z = &rfx_thermal;
+	unsigned long delay_ms = RFX_THERMAL_POLL_MS;
+	int temp, ret;
+
+	/* Zones register as late-initcall/platform drivers: re-scan until found. */
+	if (!z->tz) {
+		for_each_thermal_zone(rfx_thermal_pick_zone, NULL);
+		if (!z->tz) {
+			schedule_delayed_work(&rfx_thermal_work,
+					      msecs_to_jiffies(RFX_THERMAL_RETRY_MS));
+			return;
+		}
+		pr_info("vorpal: probing zone %s every %dms\n",
+			z->tz->type, RFX_THERMAL_POLL_MS);
+	}
+
+	ret = thermal_zone_get_temp(z->tz, &temp);
+	if (!ret) {
+		/*
+		 * Linear ramp: 0 at 42C up to PRESSURE_MAX at 58C.  Below
+		 * 42C the cap is fully released; a colder reading publishes
+		 * zero again so the ceiling recovers.
+		 */
+		unsigned int pressure = 0;
+
+		if (temp > RFX_THERMAL_K0) {
+			int t = min(temp, RFX_THERMAL_KFULL);
+
+			pressure = (unsigned int)(t - RFX_THERMAL_K0) *
+				   RFX_THERMAL_PRESSURE_MAX /
+				   (RFX_THERMAL_KFULL - RFX_THERMAL_K0);
+		}
+		z->pressure = pressure;
+		z->temp = temp;
+
+		topology_set_thermal_pressure(cpu_possible_mask, pressure);
+	} else {
+		/* Stale/invalid reading: hold last pressure, never unlock upward. */
+		delay_ms = RFX_THERMAL_RETRY_MS;
+	}
+
+	schedule_delayed_work(&rfx_thermal_work, msecs_to_jiffies(delay_ms));
+}
+
+static int __init rfx_thermal_probe_init(void)
+{
+	INIT_DELAYED_WORK(&rfx_thermal_work, rfx_thermal_sample);
+	schedule_delayed_work(&rfx_thermal_work,
+			      msecs_to_jiffies(RFX_THERMAL_RETRY_MS));
+	return 0;
 }
 
 /* =====================================================================
@@ -2412,6 +2537,7 @@ static int __init vorpal_gov_init(void)
 
 	rfx_selfcheck();
 
+	rfx_thermal_probe_init();
 	register_pm_notifier(&rfx_pm_nb);
 	return cpufreq_register_governor(&vorpal_gov);
 }
@@ -2427,4 +2553,4 @@ module_exit(vorpal_gov_exit);
 
 MODULE_AUTHOR("Steambot12");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Vorpal CPUFreq Governor v2.3");
+MODULE_DESCRIPTION("Vorpal CPUFreq Governor v2.3.1");
