@@ -7885,9 +7885,24 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 {
 	struct cpumask *pd_mask = perf_domain_span(pd);
 	unsigned long cpu_cap = arch_scale_cpu_capacity(cpumask_first(pd_mask));
+	unsigned long allowed_cap = cpu_cap;
 	unsigned long max_util = 0, sum_util = 0;
 	unsigned long energy = 0;
 	int cpu;
+
+	/*
+	 * BACKPORT (v5.13 "sched/fair: Take thermal pressure into account
+	 * while estimating energy"): clamp the per-CPU utilization fed to the
+	 * energy model by the allowed CPU capacity, i.e. base capacity minus
+	 * arch_scale_thermal_pressure().  Without this, when the SoC is hot
+	 * and the effective frequency is capped, EAS overestimates the
+	 * frequency a cluster can actually run, mis-predicts energy, and
+	 * keeps placing tasks where the governor cannot serve them --
+	 * over-utilization and extra DVFS churn.  Under zero pressure
+	 * allowed_cap == cpu_cap so the expression is a no-op and cold
+	 * behavior is unchanged.
+	 */
+	allowed_cap -= arch_scale_thermal_pressure(cpumask_first(pd_mask));
 
 	/*
 	 * The capacity state of CPUs of the current rd can be driven by CPUs
@@ -7903,13 +7918,15 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 		struct task_struct *tsk = cpu == dst_cpu ? p : NULL;
 
 		/*
-		 * Busy time computation: utilization clamping is not
-		 * required since the ratio (sum_util / cpu_capacity)
-		 * is already enough to scale the EM reported power
-		 * consumption at the (eventually clamped) cpu_capacity.
+		 * Busy time computation: clamp the (eventually clamped)
+		 * cpu_capacity by the allowed capacity so the EM power
+		 * estimate reflects the frequency the cluster can actually
+		 * reach under thermal pressure.
 		 */
-		sum_util += schedutil_cpu_util(cpu, util_cfs, cpu_cap,
-					       ENERGY_UTIL, NULL);
+		cpu_util = schedutil_cpu_util(cpu, util_cfs, cpu_cap,
+					      ENERGY_UTIL, NULL);
+
+		sum_util += min(cpu_util, allowed_cap);
 
 		/*
 		 * Performance domain frequency: utilization clamping
@@ -7920,7 +7937,7 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 		 */
 		cpu_util = schedutil_cpu_util(cpu, util_cfs, cpu_cap,
 					      FREQUENCY_UTIL, tsk);
-		max_util = max(max_util, cpu_util);
+		max_util = max(max_util, min(cpu_util, allowed_cap));
 	}
 
 	trace_android_vh_em_cpu_energy(pd->em_pd, max_util, sum_util, &energy);
