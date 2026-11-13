@@ -37,10 +37,6 @@
 
 #define NAP_VERSION		"0.5.1"
 
-#ifndef RESIDENCY_THRESHOLD_NS
-#define RESIDENCY_THRESHOLD_NS		(15 * NSEC_PER_USEC)
-#endif
-
 #define NAP_INPUT_SIZE		8
 #define NAP_HIDDEN_SIZE		8
 #define NAP_NUM_CUTS		(CPUIDLE_STATE_MAX - 1)
@@ -688,13 +684,15 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	 * than one tick period, and the slow restart delays the wakeup
 	 * (about 100 us on average in a 1 ms periodic-timer test).
 	 * If the tick is already stopped, keep it stopped to allow deep sleep.
-	 * Also preserve tick for State 0 (WFI) or shallow states <= 15us
-	 * to prevent CPU wakeup stalls.
+	 * Also retain the tick on any state without CPUIDLE_FLAG_TIMER_STOP:
+	 * cpuidle only arms the broadcast timer for TIMER_STOP states, so
+	 * stopping the tick on a plain WFI/low-power state can leave the SoC
+	 * with no timer and no IPI source -- a system-wide idle hang when
+	 * every core stops its tick (sleep-of-death).
 	 */
-	if (((drv->states[idx].flags & CPUIDLE_FLAG_POLLING) ||
+	if ((drv->states[idx].flags & CPUIDLE_FLAG_POLLING ||
 	     sleep_length_ns < TICK_NSEC ||
-	     idx == 0 ||
-	     drv->states[idx].target_residency_ns <= RESIDENCY_THRESHOLD_NS) &&
+	     !(drv->states[idx].flags & CPUIDLE_FLAG_TIMER_STOP)) &&
 	    !tick_nohz_tick_stopped()) {
 		*stop_tick = false;
 
