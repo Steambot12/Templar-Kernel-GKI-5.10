@@ -140,9 +140,10 @@ static int psci_pd_init(struct device_node *np, bool use_osi)
 	pd->flags |= GENPD_FLAG_IRQ_SAFE | GENPD_FLAG_CPU_DOMAIN;
 
 	/* Allow power off when OSI has been successfully enabled. */
-	if (use_osi)
+	if (use_osi) {
 		pd->power_off = psci_pd_power_off;
-	else
+		pd->flags |= GENPD_FLAG_ACTIVE_WAKEUP;
+	} else
 		pd->flags |= GENPD_FLAG_ALWAYS_ON;
 
 	/* Use governor for CPU PM domains if it has some states to manage. */
