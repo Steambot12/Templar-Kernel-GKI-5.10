@@ -313,22 +313,21 @@ static unsigned int arch_scale_freq_ref(int cpu)
 	return per_cpu(arch_max_freq_ref, cpu);
 }
 
-unsigned int arch_freq_get_on_cpu(int cpu)
+/*
+ * Upstream 38e480d4fca: report -EOPNOTSUPP when the average frequency
+ * cannot be read, so consumers can tell "no data" from a real 0.
+ */
+int arch_freq_get_on_cpu(int cpu)
 {
 	struct amu_cntr_sample *amu_sample;
 	u64 prev_const_cnt, prev_core_cnt;
 	u64 core_cnt, const_cnt, scale;
 	unsigned long last_update;
-	unsigned int freq = 0;
+	int freq = 0;
 
-	/*
-	 * 5.10 API returns 0 when the average frequency cannot be read
-	 * (upstream 38e480d4fca changed the prototype to signed int for
-	 * error codes; that prerequisite is not part of this tree).
-	 */
 	if (!amu_freq_invariant() || !cpumask_test_cpu(cpu, amu_fie_cpus) ||
 	    !arch_scale_freq_ref(cpu))
-		return 0;
+		return -EOPNOTSUPP;
 
 	amu_sample = per_cpu_ptr(&cpu_amu_samples, cpu);
 	last_update = amu_sample->last_scale_update;
@@ -352,7 +351,7 @@ unsigned int arch_freq_get_on_cpu(int cpu)
 
 		if (unlikely(core_cnt <= prev_core_cnt ||
 			     const_cnt <= prev_const_cnt))
-			return 0;
+			return -EOPNOTSUPP;
 
 		/*
 		 * Reversed computation to the one used in
