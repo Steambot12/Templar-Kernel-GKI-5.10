@@ -189,7 +189,12 @@ static u32 __accumulate_pelt_segments(u64 periods, u32 d1, u32 d3)
  *      d1 y^p + 1024 \Sum y^n + d3 y^0		(Step 2)
  *                     n=1
  */
-static __always_inline u32
+/*
+ * Upstream a0c755e574e3: return the period count as u64; a u32 return
+ * truncates to zero when it is a multiple of 2^32 and the caller would
+ * then skip recomputing the *_avg averages.
+ */
+static __always_inline u64
 accumulate_sum(u64 delta, struct sched_avg *sa,
 	       unsigned long load, unsigned long runnable, int running)
 {
