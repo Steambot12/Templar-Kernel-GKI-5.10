@@ -42,7 +42,15 @@
 	"IPA_CLIENT_APPS_LAN_CONS;rmnet_ipa%d;rmnet_ctl;RMNET_SHS;" \
 	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;mgmt_txrx;" \
 	"sensor_ind;wlan_wake;wlan_active_wakelock;" \
-	"fpc_ttw_wl;smp2p-sleepstate"
+	"smp2p-sleepstate"
+/*
+ * fpc_ttw_wl (fingerprint touch-to-wake) was added here to silence pocket
+ * wakes, but it breaks the primary screen-off wake path on in-display
+ * fingerprint devices: the FPC sensor is the T2W sensor, and the blocker
+ * kills its activation, so the first tap on an off screen does not
+ * register. Pocket-wake complaints get it via the runtime
+ * 'wakelock_blocker' sysfs node instead.
+ */
 
 #define LENGTH_LIST_WL				1024
 /* Both lists are sysfs-writable, so both get the full capacity. Deriving this
