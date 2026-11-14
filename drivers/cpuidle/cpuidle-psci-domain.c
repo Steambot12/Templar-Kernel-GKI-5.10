@@ -143,13 +143,24 @@ static int psci_pd_init(struct device_node *np, bool use_osi)
 	if (use_osi) {
 		pd->power_off = psci_pd_power_off;
 		pd->flags |= GENPD_FLAG_ACTIVE_WAKEUP;
+		/*
+		 * Upstream 6d3080bfe00: at probe time it is not known whether
+		 * the corresponding CPUs are online, so the domain may in fact
+		 * be powered off. Start it in the deepest idle state instead of
+		 * the default state 0 so the governor does not hold a shallower
+		 * state, and let pm_genpd_init() register it as powered off so
+		 * the first device attach powers it on normally.  5.10 has no
+		 * GENPD_FLAG_POWER_UNKNOWN/stay_on (added later), so the
+		 * equivalent is passing is_off to pm_genpd_init() directly.
+		 */
+		pd->state_idx = state_count ? state_count - 1 : 0;
 	} else
 		pd->flags |= GENPD_FLAG_ALWAYS_ON;
 
 	/* Use governor for CPU PM domains if it has some states to manage. */
 	pd_gov = state_count > 0 ? &pm_domain_cpu_gov : NULL;
 
-	ret = pm_genpd_init(pd, pd_gov, false);
+	ret = pm_genpd_init(pd, pd_gov, use_osi);
 	if (ret) {
 		psci_pd_free_states(states, state_count);
 		goto free_name;
