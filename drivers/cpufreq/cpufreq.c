@@ -732,6 +732,19 @@ static ssize_t show_scaling_cur_freq(struct cpufreq_policy *policy, char *buf)
 }
 
 /*
+ * show_cpuinfo_avg_freq - average CPU frequency as detected by hardware
+ */
+static ssize_t show_cpuinfo_avg_freq(struct cpufreq_policy *policy,
+				     char *buf)
+{
+	unsigned int avg_freq = arch_freq_get_on_cpu(policy->cpu);
+
+	if (avg_freq)
+		return sprintf(buf, "%u\n", avg_freq);
+	return -EAGAIN;
+}
+
+/*
  * cpufreq_per_cpu_attr_write() / store_##file_name() - sysfs write access
  */
 #define store_one(file_name, object)			\
@@ -927,6 +940,7 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
 }
 
 cpufreq_freq_attr_ro_perm(cpuinfo_cur_freq, 0400);
+cpufreq_freq_attr_ro(cpuinfo_avg_freq);
 cpufreq_freq_attr_ro(cpuinfo_min_freq);
 cpufreq_freq_attr_ro(cpuinfo_max_freq);
 cpufreq_freq_attr_ro(cpuinfo_transition_latency);
@@ -1060,6 +1074,19 @@ static int cpufreq_add_dev_interface(struct cpufreq_policy *policy)
 		if (ret)
 			return ret;
 	}
+
+	/*
+	 * Average-frequency readout (AMU FIE on arm64): always exposed;
+	 * the show function reports -EAGAIN until the architecture has
+	 * valid frequency-scale data, so unsupported hardware keeps a
+	 * well-defined error instead of a bogus 0. Upstream creates the
+	 * file only when arch_freq_get_on_cpu() already works, but the
+	 * AMU FIE key is enabled in a late_initcall that can race the
+	 * driver add() path on module-loaded cpufreq drivers.
+	 */
+	ret = sysfs_create_file(&policy->kobj, &cpuinfo_avg_freq.attr);
+	if (ret)
+		return ret;
 
 	ret = sysfs_create_file(&policy->kobj, &scaling_cur_freq.attr);
 	if (ret)
