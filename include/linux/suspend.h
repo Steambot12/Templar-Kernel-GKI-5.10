@@ -570,10 +570,12 @@ extern __printf(2, 3) void __pm_pr_dbg(bool defer, const char *fmt, ...);
 
 /* kernel/power/autosleep.c */
 void queue_up_suspend_work(void);
+suspend_state_t pm_autosleep_state(void);
 
 #else /* !CONFIG_PM_AUTOSLEEP */
 
 static inline void queue_up_suspend_work(void) {}
+static inline suspend_state_t pm_autosleep_state(void) { return PM_SUSPEND_ON; }
 
 #endif /* !CONFIG_PM_AUTOSLEEP */
 

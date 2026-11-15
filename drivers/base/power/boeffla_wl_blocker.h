@@ -42,6 +42,7 @@
 	"IPA_CLIENT_APPS_LAN_CONS;rmnet_ipa%d;rmnet_ctl;RMNET_SHS;" \
 	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;mgmt_txrx;" \
 	"sensor_ind;wlan_wake;wlan_active_wakelock;" \
+	"wlan_multicast_wl;wlan_multicast;wlan_rx_wake;wlan_ctrl_wake;qcom_wlan;wcnss_wlan;" \
 	"smp2p-sleepstate"
 /*
  * fpc_ttw_wl (fingerprint touch-to-wake) was added here to silence pocket
