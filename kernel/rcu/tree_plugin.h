@@ -1477,14 +1477,26 @@ static void rcu_cleanup_after_idle(void)
  */
 static int __init rcu_nocb_setup(char *str)
 {
+	static bool rcu_nocb_mask_set;
+
+	/*
+	 * First valid parse wins. The house defconfig fragment bakes in
+	 * rcu_nocbs=0-3; HOS 4 vendor bootconfig appends rcu_nocbs=0-7
+	 * after it, which used to overwrite the mask and offload every
+	 * core: per-core rcuo kthreads + lazy-flush hrtimers then keep
+	 * the whole SoC out of deep sleep during doze. The fragment is
+	 * the source of truth, so keep the first value.
+	 */
+	if (rcu_nocb_mask_set)
+		return 1;
+
 	alloc_bootmem_cpumask_var(&rcu_nocb_mask);
 	if (!strcasecmp(str, "all"))
 		cpumask_setall(rcu_nocb_mask);
 	else
-		if (cpulist_parse(str, rcu_nocb_mask)) {
-			pr_warn("rcu_nocbs= bad CPU range, all CPUs set\n");
-			cpumask_setall(rcu_nocb_mask);
-		}
+		if (cpulist_parse(str, rcu_nocb_mask))
+			return 1; /* unparseable: leave the mask untouched */
+	rcu_nocb_mask_set = true;
 	return 1;
 }
 __setup("rcu_nocbs=", rcu_nocb_setup);
