@@ -613,6 +613,33 @@ static inline u64 nap_poll_limit(u64 sleep_length_ns, u64 min_state_target_ns)
 		       NAP_POLL_LIMIT_MIN_NS, min_state_target_ns);
 }
 
+/*
+ * Deterministic deep-state fallback, in the spirit of upstream firelzrd/nap
+ * v0.6.x nap_fallback_heuristic() (its FPU/SIMD select path cannot run in
+ * 5.10 GKI with interrupts disabled).
+ *
+ * Returns the deepest enabled state whose exit latency fits the PM QoS
+ * request and whose target residency fits the predicted sleep length, or
+ * 0.  Empty body if none.
+ */
+static int nap_fallback_heuristic(struct cpuidle_driver *drv,
+				  struct cpuidle_device *dev,
+				  u64 sleep_length_ns, s64 latency_req)
+{
+	int i;
+
+	for (i = drv->state_count - 1; i > 0; i--) {
+		if (dev->states_usage[i].disable)
+			continue;
+		if (drv->states[i].exit_latency_ns > (u64)latency_req)
+			continue;
+		if (drv->states[i].target_residency_ns > sleep_length_ns)
+			continue;
+		return i;
+	}
+	return 0;
+}
+
 static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 		      bool *stop_tick)
 {
@@ -678,6 +705,25 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	nap_extract_features(d, drv, sleep_length_ns, latency_req);
 	nap_nn_forward(d);
 	idx = nap_decide(d, drv, dev, latency_req);
+
+	/*
+	 * Deep-state starvation guard.  With an ML network and a decayed
+	 * floor histogram, a CPU whose recent history is all short idles
+	 * can learn (or keep seeding) a low survival for every deep
+	 * state and stay in state 0 permanently, even on long doze
+	 * gaps.  The deterministic menu-style fallback makes C-states
+	 * reachable as soon as the predicted sleep covers their target
+	 * residency; learning then gets real deep-idle samples again.
+	 * The fallback is a lower bound only, so responsiveness on
+	 * busy CPUs is unchanged.
+	 */
+	if (idx == 0) {
+		int fb = nap_fallback_heuristic(drv, dev, sleep_length_ns,
+					       latency_req);
+
+		if (fb > 0)
+			idx = fb;
+	}
 
 	/*
 	 * Stopping the tick saves nothing when the next timer is closer
