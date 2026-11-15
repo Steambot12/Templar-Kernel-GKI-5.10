@@ -39,9 +39,9 @@
 	"wlan_pno_wl;wlan_roam_wl;wlan_ipa;netmgr_wl;NETLINK;" \
 	"a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;" \
 	"IPA_WS;IPA_CLIENT_APPS_WAN_COAL_CONS;IPA_CLIENT_APPS_WAN_LOW_LAT_CONS;" \
-	"IPA_CLIENT_APPS_LAN_CONS;rmnet_ipa%d;rmnet_ctl;RMNET_SHS;" \
+	"IPA_CLIENT_APPS_LAN_CONS;rmnet_ipa0;rmnet_ipa1;rmnet_ipa2;rmnet_ipa3;rmnet_ctl;RMNET_SHS;" \
 	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;mgmt_txrx;" \
-	"sensor_ind;wlan_wake;wlan_active_wakelock;" \
+	"sensor_ind;wlan_wake;wlan_active_wakelock;wlan_cntrl_wl;wlan_ce_wakelock;wlan_bus_wakelock;" \
 	"wlan_multicast_wl;wlan_multicast;wlan_rx_wake;wlan_ctrl_wake;qcom_wlan;wcnss_wlan;" \
 	"smp2p-sleepstate"
 /*
