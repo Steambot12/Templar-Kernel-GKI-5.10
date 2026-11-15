@@ -414,9 +414,4 @@ static int __init psci_idle_init(void)
 
 	return 0;
 }
-/*
- * Upstream 65705b18162b: attach the CPUs to their PSCI PM domains earlier
- * so devices sharing those domains can be probed, which is required for
- * the powered-off domain registration in cpuidle-psci-domain.c.
- */
-subsys_initcall(psci_idle_init);
+device_initcall(psci_idle_init);
