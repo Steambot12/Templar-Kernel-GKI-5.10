@@ -338,9 +338,16 @@ int arch_freq_get_on_cpu(int cpu)
 	 * of waiting for the next tick (upstream walks to an active CPU in
 	 * the same freq domain; 5.10 has no NOHZ_FULL here, so reading
 	 * AMU registers in place is equivalent and cheaper).
+	 *
+	 * Only sample directly if called on the target CPU itself: sysreg
+	 * reads (AMEVCNTR0_*_EL0) and init_cpu_freq_invariance_counters()
+	 * touch this-cpu registers and per-cpu state. For remote CPUs,
+	 * safely use the latest recorded freq_scale to avoid corrupting
+	 * the caller's AMU counter baseline.
 	 */
-	if (!housekeeping_cpu(cpu, HK_FLAG_TICK) ||
-	    time_is_before_jiffies(last_update + msecs_to_jiffies(AMU_SAMPLE_EXP_MS))) {
+	if (cpu == smp_processor_id() &&
+	    (!housekeeping_cpu(cpu, HK_FLAG_TICK) ||
+	     time_is_before_jiffies(last_update + msecs_to_jiffies(AMU_SAMPLE_EXP_MS)))) {
 		prev_const_cnt = amu_sample->arch_const_cycles_prev;
 		prev_core_cnt = amu_sample->arch_core_cycles_prev;
 
