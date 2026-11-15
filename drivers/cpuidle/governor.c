@@ -23,11 +23,15 @@ char param_governor[CPUIDLE_NAME_LEN];
  * cpuidle is built-in on GKI arm64, so module_param is never reached from
  * the boot command line.  Honor "cpuidle.governor=<name>" at boot: drivers
  * and governors registered afterwards switch to the named governor.
+ *
+ * First valid parse wins. The house defconfig bakes in
+ * cpuidle.governor=nap; HOS 4 vendor bootconfig can append its own value
+ * after it, which would otherwise silently override the house default.
  */
 static int __init cpuidle_governor_setup(char *str)
 {
-	if (!str[0])
-		return 0;
+	if (!str[0] || param_governor[0])
+		return 1;
 
 	strlcpy(param_governor, str, sizeof(param_governor));
 	return 1;
