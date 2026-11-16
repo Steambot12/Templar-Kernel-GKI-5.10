@@ -641,6 +641,10 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 	if (length < 1 || (size_t)length + 3 > sizeof(needle))
 		return false;	/* over-long name: fail safe, do not block */
 
+	/* Suppress WiFi multicast wakeup storms and framework multicast locks */
+	if (strstr(ws->name, "multicast") != NULL || strstr(ws->name, "Multicast") != NULL)
+		return true;
+
 	scnprintf(needle, sizeof(needle), ";%s;", ws->name);
 
 	return strstr(list_wl_search, needle) != NULL;
