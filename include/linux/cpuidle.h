@@ -279,6 +279,11 @@ struct cpuidle_governor {
 extern int cpuidle_register_governor(struct cpuidle_governor *gov);
 extern s64 cpuidle_governor_latency_req(unsigned int cpu);
 
+#ifdef CONFIG_CPU_IDLE_GOV_TEO
+unsigned long teo_cpu_get_util_threshold(int cpu);
+void teo_cpu_set_util_threshold(int cpu, unsigned long util);
+#endif
+
 #define __CPU_PM_CPU_IDLE_ENTER(low_level_idle_enter,			\
 				idx,					\
 				state,					\
