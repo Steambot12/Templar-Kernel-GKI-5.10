@@ -49,6 +49,8 @@
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/sched/clock.h>
+#include <linux/sched/cpufreq.h>
+#include <linux/sched/topology.h>
 #include <linux/tick.h>
 
 /*
@@ -105,9 +107,16 @@ struct teo_cpu {
 	struct teo_idle_state states[CPUIDLE_STATE_MAX];
 	int interval_idx;
 	u64 intervals[INTERVALS];
+	unsigned long util_threshold;
 };
 
 static DEFINE_PER_CPU(struct teo_cpu, teo_cpus);
+
+static bool teo_cpu_is_utilized(int cpu, struct teo_cpu *cpu_data)
+{
+	return arch_scale_cpu_capacity(cpu) ?
+		sched_cpu_util(cpu) > cpu_data->util_threshold : false;
+}
 
 /**
  * teo_update - Update CPU data after wakeup.
@@ -415,6 +424,16 @@ static int teo_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	}
 
 	/*
+	 * If the CPU is utilized, avoid deep idle states to reduce latency.
+	 */
+	if (idx > 0 && teo_cpu_is_utilized(dev->cpu, cpu_data)) {
+		u64 span_ns = drv->states[idx].target_residency_ns >> 1;
+
+		idx = teo_find_shallower_state(drv, dev, idx, span_ns);
+		duration_ns = span_ns;
+	}
+
+	/*
 	 * Don't stop the tick if the selected state is a polling one or if the
 	 * expected idle duration is shorter than the tick period length.
 	 */
@@ -474,6 +493,8 @@ static int teo_enable_device(struct cpuidle_driver *drv,
 
 	for (i = 0; i < INTERVALS; i++)
 		cpu_data->intervals[i] = U64_MAX;
+
+	cpu_data->util_threshold = arch_scale_cpu_capacity(dev->cpu) >> 6;
 
 	return 0;
 }

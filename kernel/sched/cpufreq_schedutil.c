@@ -1065,3 +1065,15 @@ int rfx_setattr_sugov_gki510(struct task_struct *t)
 	return sched_setattr_nocheck(t, &attr);
 }
 EXPORT_SYMBOL_GPL(rfx_setattr_sugov_gki510);
+
+/**
+ * sched_cpu_util - Return current CPU utilization metric.
+ * @cpu: Target CPU.
+ */
+unsigned long sched_cpu_util(int cpu)
+{
+	unsigned long max = arch_scale_cpu_capacity(cpu);
+
+	return schedutil_cpu_util(cpu, 0, max, FREQUENCY_UTIL, NULL);
+}
+EXPORT_SYMBOL_GPL(sched_cpu_util);

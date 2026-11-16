@@ -34,6 +34,11 @@ void rfx_get_util_gki510(int cpu, unsigned long boost,
 			 unsigned long *out_util, unsigned long *out_bw_min);
 bool rfx_dl_bw_exceeded_gki510(int cpu, unsigned long bw_min);
 int rfx_setattr_sugov_gki510(struct task_struct *t);
+#ifdef CONFIG_SMP
+unsigned long sched_cpu_util(int cpu);
+#else
+static inline unsigned long sched_cpu_util(int cpu) { return 0; }
+#endif
 #endif /* CONFIG_CPU_FREQ */
 
 #endif /* _LINUX_SCHED_CPUFREQ_H */
