@@ -8086,7 +8086,6 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 			rcu_read_unlock();
 			return idle_cpu;
 		}
-		goto unlock;
 	}
 
 	latency_sensitive = uclamp_latency_sensitive(p);
@@ -8193,7 +8192,6 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 			}
 		}
 	}
-unlock:
 	rcu_read_unlock();
 
 	if (latency_sensitive)
