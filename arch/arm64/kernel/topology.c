@@ -319,61 +319,13 @@ static unsigned int arch_scale_freq_ref(int cpu)
  */
 int arch_freq_get_on_cpu(int cpu)
 {
-	struct amu_cntr_sample *amu_sample;
-	u64 prev_const_cnt, prev_core_cnt;
-	u64 core_cnt, const_cnt, scale;
-	unsigned long last_update;
-	int freq = 0;
+	unsigned long scale;
 
 	if (!amu_freq_invariant() || !cpumask_test_cpu(cpu, amu_fie_cpus) ||
 	    !arch_scale_freq_ref(cpu))
 		return -EOPNOTSUPP;
 
-	amu_sample = per_cpu_ptr(&cpu_amu_samples, cpu);
-	last_update = amu_sample->last_scale_update;
-
-	/*
-	 * For those CPUs that are in full dynticks mode, or those that have
-	 * not seen tick for a while, sample the counters directly instead
-	 * of waiting for the next tick (upstream walks to an active CPU in
-	 * the same freq domain; 5.10 has no NOHZ_FULL here, so reading
-	 * AMU registers in place is equivalent and cheaper).
-	 *
-	 * Only sample directly if called on the target CPU itself: sysreg
-	 * reads (AMEVCNTR0_*_EL0) and init_cpu_freq_invariance_counters()
-	 * touch this-cpu registers and per-cpu state. For remote CPUs,
-	 * safely use the latest recorded freq_scale to avoid corrupting
-	 * the caller's AMU counter baseline.
-	 */
-	if (cpu == smp_processor_id() &&
-	    (!housekeeping_cpu(cpu, HK_FLAG_TICK) ||
-	     time_is_before_jiffies(last_update + msecs_to_jiffies(AMU_SAMPLE_EXP_MS)))) {
-		prev_const_cnt = amu_sample->arch_const_cycles_prev;
-		prev_core_cnt = amu_sample->arch_core_cycles_prev;
-
-		init_cpu_freq_invariance_counters();
-
-		const_cnt = amu_sample->arch_const_cycles_prev;
-		core_cnt = amu_sample->arch_core_cycles_prev;
-
-		if (unlikely(core_cnt <= prev_core_cnt ||
-			     const_cnt <= prev_const_cnt))
-			return -EOPNOTSUPP;
-
-		/*
-		 * Reversed computation to the one used in
-		 * topology_scale_freq_tick() to determine freq_scale.
-		 */
-		scale = core_cnt - prev_core_cnt;
-		scale *= per_cpu(arch_max_freq_scale, cpu);
-		scale = div64_u64(scale >> SCHED_CAPACITY_SHIFT,
-				  const_cnt - prev_const_cnt);
-	} else {
-		scale = topology_get_freq_scale(cpu);
-	}
-
-	freq = scale * arch_scale_freq_ref(cpu);
-	freq >>= SCHED_CAPACITY_SHIFT;
-	return freq;
+	scale = topology_get_freq_scale(cpu);
+	return (scale * arch_scale_freq_ref(cpu)) >> SCHED_CAPACITY_SHIFT;
 }
 #endif /* CONFIG_ARM64_AMU_EXTN */
