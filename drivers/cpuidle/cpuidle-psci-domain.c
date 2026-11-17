@@ -27,7 +27,7 @@ struct psci_pd_provider {
 };
 
 static LIST_HEAD(psci_pd_providers);
-static bool psci_pd_allow_domain_state;
+static bool psci_pd_allow_domain_state = true;
 
 static int psci_pd_power_off(struct generic_pm_domain *pd)
 {

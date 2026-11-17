@@ -510,7 +510,7 @@ static int teo_enable_device(struct cpuidle_driver *drv,
 	for (i = 0; i < INTERVALS; i++)
 		cpu_data->intervals[i] = U64_MAX;
 
-	cpu_data->util_threshold = arch_scale_cpu_capacity(dev->cpu) >> 6;
+	cpu_data->util_threshold = arch_scale_cpu_capacity(dev->cpu) >> 3;
 
 	return 0;
 }
