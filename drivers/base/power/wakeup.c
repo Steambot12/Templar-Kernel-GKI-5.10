@@ -645,21 +645,6 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 	if (strstr(ws->name, "multicast") != NULL || strstr(ws->name, "Multicast") != NULL)
 		return true;
 
-	/* Suppress background app store, download, and location framework sync wakelocks */
-	if (strstr(ws->name, "com.android.vending") != NULL ||
-	    strstr(ws->name, "com.google.android.gms") != NULL ||
-	    strstr(ws->name, "GCoreFlp") != NULL ||
-	    strstr(ws->name, "Geofencer") != NULL ||
-	    strstr(ws->name, "NlpWakeLock") != NULL ||
-	    strstr(ws->name, "NlpCollector") != NULL ||
-	    strstr(ws->name, "Finsky") != NULL ||
-	    strstr(ws->name, "DownloadManager") != NULL)
-		return true;
-
-	/* Suppress dynamic Qualcomm rmnet IPA pipe instances */
-	if (strncmp(ws->name, "rmnet_ipa", 9) == 0)
-		return true;
-
 	/* Suppress Qualcomm SLPI sensor hub background polling */
 	if (strncmp(ws->name, "sns_", 4) == 0 || strcmp(ws->name, "qcom_step_counter") == 0)
 		return true;
@@ -680,7 +665,7 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 		return true;
 
 	/* Suppress WLAN background scan / PNO offload wake locks */
-	if (strncmp(ws->name, "wlan_pno", 8) == 0 || strncmp(ws->name, "wlan_scan", 9) == 0)
+	if (strncmp(ws->name, "wlan_pno_rx", 11) == 0 || strncmp(ws->name, "wlan_scan", 9) == 0)
 		return true;
 
 	scnprintf(needle, sizeof(needle), ";%s;", ws->name);

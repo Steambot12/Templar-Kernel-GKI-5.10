@@ -1072,8 +1072,6 @@ EXPORT_SYMBOL_GPL(rfx_setattr_sugov_gki510);
  */
 unsigned long sched_cpu_util(int cpu)
 {
-	unsigned long max = arch_scale_cpu_capacity(cpu);
-
-	return schedutil_cpu_util(cpu, 0, max, FREQUENCY_UTIL, NULL);
+	return cpu_util_cfs(cpu_rq(cpu));
 }
 EXPORT_SYMBOL_GPL(sched_cpu_util);
