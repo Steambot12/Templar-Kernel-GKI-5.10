@@ -16,6 +16,7 @@
 #include <linux/hardirq.h>
 #include <linux/init.h>
 #include <linux/irqflags.h>
+#include <linux/kasan.h>
 #include <linux/kprobes.h>
 #include <linux/uaccess.h>
 #include <linux/page-flags.h>

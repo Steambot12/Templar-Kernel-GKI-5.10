@@ -622,23 +622,6 @@ nfsd4_create(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 	if (status)
 		return status;
 
-	/* Sanitize cr_type to avoid returning ATTRNOTSUPP. */
-	switch (create->cr_type) {
-	case NF4LNK:
-	case NF4BLK:
-	case NF4CHR:
-	case NF4SOCK:
-	case NF4FIFO:
-	case NF4DIR:
-		break;
-	default:
-		status = nfserr_badtype;
-		goto out_aftermask;
-	}
-
-	status = nfsd4_acl_to_attr(create->cr_type, create->cr_acl, &attrs);
-	if (status != nfs_ok)
-		goto out_aftermask;
 	current->fs->umask = create->cr_umask;
 	switch (create->cr_type) {
 	case NF4LNK:
@@ -709,8 +692,6 @@ out:
 	fh_put(&resfh);
 out_umask:
 	current->fs->umask = 0;
-out_aftermask:
-	nfsd_attrs_free(&attrs);
 	return status;
 }
 
@@ -1527,8 +1508,11 @@ nfsd4_copy(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 			status = nfserr_notsupp;
 			goto out;
 		}
-		status = nfsd4_setup_inter_ssc(rqstp, cstate, copy);
+		status = nfsd4_setup_inter_ssc(rqstp, cstate, copy,
+				&copy->ss_mnt);
 		if (status) {
+			if (copy->nf_dst)
+				nfsd_file_put(copy->nf_dst);
 			status = nfserr_offload_denied;
 			goto out;
 		}

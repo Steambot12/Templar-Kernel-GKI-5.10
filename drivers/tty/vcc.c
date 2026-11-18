@@ -1039,6 +1039,7 @@ static int vcc_install(struct tty_driver *driver, struct tty_struct *tty)
 static void vcc_cleanup(struct tty_struct *tty)
 {
 	struct vcc_port *port;
+	unsigned long flags;
 
 	if (unlikely(!tty)) {
 		pr_err("VCC: cleanup: Invalid TTY handle\n");
@@ -1047,8 +1048,9 @@ static void vcc_cleanup(struct tty_struct *tty)
 
 	port = vcc_get(tty->index, true);
 	if (port) {
-		scoped_guard(spinlock_irqsave, &port->lock)
-			port->tty = NULL;
+		spin_lock_irqsave(&port->lock, flags);
+		port->tty = NULL;
+		spin_unlock_irqrestore(&port->lock, flags);
 
 		if (port->removed) {
 			vcc_table_remove(tty->index);

@@ -5495,11 +5495,13 @@ static void tcpm_pd_event_handler(struct kthread_work *work)
 			 * be true.
 			 *
 			 * When TCPM_FRS_EVENT and TCPM_SOURCING_VBUS arrive simultaneously,
-			 * handling TCPM_FRS_EVENT above transitions the state to FR_SWAP_SEND.
+			 * handling TCPM_FRS_EVENT above transitions the state to AMS_START
+			 * with upcoming_state FR_SWAP_SEND.
 			 */
 
 			if (tcpm_port_is_source(port) ||
 			    tcpm_port_is_debug_source(port) ||
+			    (port->state == AMS_START && port->upcoming_state == FR_SWAP_SEND) ||
 			    port->state == FR_SWAP_SEND ||
 			    port->state == FR_SWAP_SEND_TIMEOUT ||
 			    port->state == FR_SWAP_SNK_SRC_TRANSITION_TO_OFF ||

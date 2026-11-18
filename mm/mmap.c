@@ -3484,6 +3484,16 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	 * A merge violates this, so in this case disallow a self-merge. A
 	 * self-merge can only occur if the new range is immediately adjacent to
 	 * the source VMA, so simply do not attempt to merge in that case.
+	 *
+	 * There is 3 cases to manage here in
+	 *     AAAA            AAAA              AAAA              AAAA
+	 * PPPP....      PPPP......NNNN      PPPP....NNNN      PP........NN
+	 * PPPPPPPP(A)   PPPP..NNNNNNNN(B)   PPPPPPPPPPPP(1)       NULL
+	 *                                   PPPPPPPPNNNN(2)
+	 *                                   PPPPNNNNNNNN(3)
+	 *
+	 * new_vma == prev in case A,1,2
+	 * new_vma == next in case B,3
 	 */
 	if (can_self_merge && keep_source &&
 	    (addr == vma->vm_end || vma->vm_start == addr + len))

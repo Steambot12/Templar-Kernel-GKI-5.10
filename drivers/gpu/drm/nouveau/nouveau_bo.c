@@ -139,7 +139,7 @@ nouveau_bo_del_ttm(struct ttm_buffer_object *bo)
 	struct drm_device *dev = drm->dev;
 	struct nouveau_bo *nvbo = nouveau_bo(bo);
 
-	WARN_ON(nvbo->bo.pin_count > 0);
+	WARN_ON(nvbo->pin_refcnt > 0);
 	nouveau_bo_del_io_reserve_lru(bo);
 	nv10_bo_put_tile_region(dev, nvbo->tile, NULL);
 
@@ -421,8 +421,9 @@ nouveau_bo_placement_set(struct nouveau_bo *nvbo, uint32_t domain,
 {
 	struct nouveau_drm *drm = nouveau_bdev(nvbo->bo.bdev);
 	struct ttm_placement *pl = &nvbo->placement;
-	uint32_t flags = nvbo->force_coherent ? TTM_PL_FLAG_UNCACHED :
-						TTM_PL_MASK_CACHING;
+	uint32_t flags = (nvbo->force_coherent ? TTM_PL_FLAG_UNCACHED :
+						 TTM_PL_MASK_CACHING) |
+			 (nvbo->pin_refcnt ? TTM_PL_FLAG_NO_EVICT : 0);
 
 	pl->placement = nvbo->placements;
 	set_placement_list(drm, nvbo->placements, &pl->num_placement,
@@ -456,7 +457,7 @@ nouveau_bo_pin(struct nouveau_bo *nvbo, uint32_t domain, bool contig)
 		}
 	}
 
-	if (nvbo->bo.pin_count) {
+	if (nvbo->pin_refcnt) {
 		bool error = evict;
 
 		switch (bo->mem.mem_type) {
@@ -475,7 +476,7 @@ nouveau_bo_pin(struct nouveau_bo *nvbo, uint32_t domain, bool contig)
 				 bo->mem.mem_type, domain);
 			ret = -EBUSY;
 		} else {
-			ttm_bo_pin(&nvbo->bo);
+			nvbo->pin_refcnt++;
 		}
 		goto out;
 	}
@@ -487,12 +488,18 @@ nouveau_bo_pin(struct nouveau_bo *nvbo, uint32_t domain, bool contig)
 			goto out;
 	}
 
+	nvbo->pin_refcnt++;
 	nouveau_bo_placement_set(nvbo, domain, 0);
+
+	/* drop pin_refcnt temporarily, so we don't trip the assertion
+	 * in nouveau_bo_move() that makes sure we're not trying to
+	 * move a pinned buffer
+	 */
+	nvbo->pin_refcnt--;
 	ret = nouveau_bo_validate(nvbo, false, false);
 	if (ret)
 		goto out;
-
-	ttm_bo_pin(&nvbo->bo);
+	nvbo->pin_refcnt++;
 
 	switch (bo->mem.mem_type) {
 	case TTM_PL_VRAM:
@@ -517,14 +524,30 @@ nouveau_bo_unpin(struct nouveau_bo *nvbo)
 {
 	struct nouveau_drm *drm = nouveau_bdev(nvbo->bo.bdev);
 	struct ttm_buffer_object *bo = &nvbo->bo;
-	int ret;
+	int ret, ref;
 
 	ret = ttm_bo_reserve(bo, false, false, NULL);
 	if (ret)
 		return ret;
 
-	ttm_bo_unpin(&nvbo->bo);
-	if (!nvbo->bo.pin_count) {
+	ref = --nvbo->pin_refcnt;
+	WARN_ON_ONCE(ref < 0);
+	if (ref)
+		goto out;
+
+	switch (bo->mem.mem_type) {
+	case TTM_PL_VRAM:
+		nouveau_bo_placement_set(nvbo, NOUVEAU_GEM_DOMAIN_VRAM, 0);
+		break;
+	case TTM_PL_TT:
+		nouveau_bo_placement_set(nvbo, NOUVEAU_GEM_DOMAIN_GART, 0);
+		break;
+	default:
+		break;
+	}
+
+	ret = nouveau_bo_validate(nvbo, false, false);
+	if (ret == 0) {
 		switch (bo->mem.mem_type) {
 		case TTM_PL_VRAM:
 			drm->gem.vram_available += bo->mem.size;
@@ -537,8 +560,9 @@ nouveau_bo_unpin(struct nouveau_bo *nvbo)
 		}
 	}
 
+out:
 	ttm_bo_unreserve(bo);
-	return 0;
+	return ret;
 }
 
 int
@@ -1055,7 +1079,7 @@ nouveau_bo_move(struct ttm_buffer_object *bo, bool evict,
 	if (ret)
 		return ret;
 
-	if (nvbo->bo.pin_count)
+	if (nvbo->pin_refcnt)
 		NV_WARN(drm, "Moving pinned object %p!\n", nvbo);
 
 	if (drm->client.device.info.family < NV_DEVICE_INFO_V0_TESLA) {

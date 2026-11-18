@@ -837,7 +837,7 @@ static int max3100_remove(struct spi_device *spi)
 
 			s->force_end_work = 1;
 			/* Only the timer callback can rearm it after port removal. */
-			timer_delete_sync(&s->timer);
+			del_timer_sync(&s->timer);
 			if (s->workqueue) {
 				free_irq(s->irq, s);
 				cancel_work_sync(&s->work);

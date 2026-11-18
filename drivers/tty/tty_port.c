@@ -387,25 +387,6 @@ void tty_port_tty_hangup(struct tty_port *port, bool check_clocal)
 EXPORT_SYMBOL_GPL(tty_port_tty_hangup);
 
 /**
- * tty_port_tty_vhangup - helper to hang up a tty synchronously
- * @port: tty port
- */
-void tty_port_tty_vhangup(struct tty_port *port)
-{
-	struct tty_struct *tty;
-
-	mutex_lock(&port->mutex);
-	tty = tty_port_tty_get(port);
-	mutex_unlock(&port->mutex);
-
-	if (tty) {
-		tty_vhangup(tty);
-		tty_kref_put(tty);
-	}
-}
-EXPORT_SYMBOL_GPL(tty_port_tty_vhangup);
-
-/**
  * tty_port_tty_wakeup - helper to wake up a tty
  *
  * @port: tty port
