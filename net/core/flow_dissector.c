@@ -1635,12 +1635,6 @@ void __skb_get_hash(struct sk_buff *skb)
 }
 EXPORT_SYMBOL(__skb_get_hash);
 
-void __skb_get_hash(struct sk_buff *skb)
-{
-	__skb_get_hash_net(NULL, skb);
-}
-EXPORT_SYMBOL(__skb_get_hash);
-
 __u32 skb_get_hash_perturb(const struct sk_buff *skb,
 			   const siphash_key_t *perturb)
 {

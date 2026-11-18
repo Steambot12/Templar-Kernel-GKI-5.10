@@ -2448,6 +2448,14 @@ static __latent_entropy struct task_struct *copy_process(
 			 */
 			p->signal->has_child_subreaper = p->real_parent->signal->has_child_subreaper ||
 							 p->real_parent->signal->is_child_subreaper;
+#ifdef CONFIG_SCHED_BORE
+			/*
+			 * 7.0.0: the sibling list is walked RCU-side from the
+			 * thread-group inheritance pass, so add RCU to keep
+			 * that walk safe against a concurrently exiting child.
+			 */
+			list_add_tail_rcu(&p->sibling, &p->real_parent->children);
+#else
 			list_add_tail(&p->sibling, &p->real_parent->children);
 #endif /* CONFIG_SCHED_BORE */
 			list_add_tail_rcu(&p->tasks, &init_task.tasks);
