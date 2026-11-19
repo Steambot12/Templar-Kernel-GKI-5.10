@@ -645,10 +645,6 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 	if (strstr(ws->name, "multicast") != NULL || strstr(ws->name, "Multicast") != NULL)
 		return true;
 
-	/* Suppress Qualcomm SLPI sensor hub background polling */
-	if (strncmp(ws->name, "sns_", 4) == 0 || strcmp(ws->name, "qcom_step_counter") == 0)
-		return true;
-
 	/* Suppress Qualcomm voice activation detection idle locks */
 	if (strstr(ws->name, "qcom_vad") != NULL || strstr(ws->name, "qcom-vad") != NULL)
 		return true;
@@ -660,7 +656,7 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 	/* Suppress ecosystem telemetry, cloud sync, and discovery polling */
 	if (strstr(ws->name, "mi_connect") != NULL || strstr(ws->name, "mi_link") != NULL ||
 	    strstr(ws->name, "MiSmartHub") != NULL || strstr(ws->name, "MiShare") != NULL ||
-	    strstr(ws->name, "PowerKeeper") != NULL || strstr(ws->name, "AnalyticsCore") != NULL ||
+	    strstr(ws->name, "AnalyticsCore") != NULL ||
 	    strstr(ws->name, "CloudService") != NULL || strstr(ws->name, "FindDevice") != NULL)
 		return true;
 

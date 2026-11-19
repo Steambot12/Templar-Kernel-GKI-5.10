@@ -38,11 +38,11 @@
 	"DIAG_WS;qcom_rx_wakelock;rx_wakelock;wlan;wlan_extscan_wl;" \
 	"NETLINK;a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;bluetooth_timer;" \
 	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;mgmt_txrx;" \
-	"sensor_ind;sns_wl;sns_async_ws;qcom_step_counter;wlan_wake;wlan_active_wakelock;" \
+	"wlan_wake;wlan_active_wakelock;" \
 	"wlan_multicast_wl;wlan_multicast;WifiMulticast;WifiMulticastKeeper;*wal*;" \
 	"wlan_rx_wake;wlan_ctrl_wake;qcom_wlan;wcnss_wlan;" \
 	"qcom_vad_wakelock;qcom-vad;wlan_pno_rx_wl;wlan_scan_wl;" \
-	"mi_connect;mi_link;MiSmartHub;MiShare;PowerKeeper;AnalyticsCore;CloudService;FindDevice"
+	"mi_connect;mi_link;MiSmartHub;MiShare;AnalyticsCore;CloudService;FindDevice"
 /*
  * fpc_ttw_wl (fingerprint touch-to-wake) was added here to silence pocket
  * wakes, but it breaks the primary screen-off wake path on in-display
