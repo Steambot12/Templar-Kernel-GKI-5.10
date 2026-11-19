@@ -704,15 +704,20 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 
 	/*
 	 * Deep-state starvation guard: promote to deeper state when predicted
-	 * sleep length comfortably amortizes target residency.  Require 2x the
-	 * target (margin factor NAP_FB_AMORTIZE_X): a marginal 1.1x prediction
-	 * would enter a PSCI power-collapse that cannot pay for its ~ms entry/
-	 * exit latency, producing deep-state churn and wake-overshoots.  Long
-	 * doze gaps (hundreds of ms) still pass and reach the deepest state.
+	 * sleep length amortizes target residency.  Short idles (<1 tick)
+	 * need 2x coverage (NAP_FB_AMORTIZE_X) so a marginal 1.1x prediction
+	 * cannot enter a PSCI power-collapse that cannot pay for its entry/
+	 * exit latency.  Idles of at least one tick amortize that latency
+	 * even at 1x coverage -- the fb scan already guarantees sleep >=
+	 * target -- and on screen-off (gaming_mode=0 daily) that is the
+	 * common case: gating those on 2x kept deep C-states out until the
+	 * doze gap grew many ticks long.
 	 */
 	fb = nap_fallback_heuristic(drv, dev, sleep_length_ns, latency_req);
-	if (fb > idx && sleep_length_ns >=
-	    (u64)NAP_FB_AMORTIZE_X * drv->states[fb].target_residency_ns)
+	if (fb > idx &&
+	    (sleep_length_ns >=
+	     (u64)NAP_FB_AMORTIZE_X * drv->states[fb].target_residency_ns ||
+	     sleep_length_ns >= TICK_NSEC))
 		idx = fb;
 
 	/*
