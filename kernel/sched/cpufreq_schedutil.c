@@ -984,9 +984,11 @@ cpufreq_governor_init(schedutil_gov);
  * the RT-runnable shortcut is dropped. See the comment in the body. Every
  * other term, and the order they are applied in, matches.
  *
- * The 25% margin stays here because Vorpal maps util->freq itself (fmax *
- * util / cap) rather than through map_util_freq(), which is where that
- * margin normally lives.
+ * No DVFS headroom margin: Vorpal applies its own cluster-specific headroom
+ * in rfx_apply_headroom() after the util->freq mapping (fmax * util / cap).
+ * A fixed +25% here inflated every frequency target by one quarter and
+ * kept idle clusters above fmin (the 20%/hr active drain), so the raw
+ * util is handed over unmodified.
  */
 void rfx_get_util_gki510(int cpu, unsigned long boost,
 			 unsigned long *out_util, unsigned long *out_bw_min)
@@ -1024,9 +1026,6 @@ void rfx_get_util_gki510(int cpu, unsigned long boost,
 boosted:
 	if (boost > util)
 		util = boost;
-
-	/* 25% DVFS headroom — equivalent to map_util_perf() in newer kernels */
-	util = util + (util >> 2);
 
 	*out_util = min(util, max_cap);
 }
