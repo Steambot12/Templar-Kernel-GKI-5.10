@@ -159,6 +159,17 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 #define RFX_G_SUSTAINED_WINDOW_MS	100
 #define RFX_G_SUSTAINED_CLEAR_DWELL_MS	180
 
+/* Gaming thermal energy accumulator (leaky bucket) */
+#define RFX_G_THERMAL_ACCUM_PCT		68
+#define RFX_G_THERMAL_RATE_BASE		8
+#define RFX_G_THERMAL_LEAK_BASE		32
+#define RFX_G_THERMAL_ACC_MAX		100000
+/* Progressive trim stage thresholds: lightest (0) ... deepest (3) */
+#define RFX_G_THERMAL_STAGE0_ACC	20000
+#define RFX_G_THERMAL_STAGE1_ACC	45000
+#define RFX_G_THERMAL_STAGE2_ACC	75000
+#define RFX_G_THERMAL_STAGE3_ACC	100000
+
 /* Gaming feature defaults */
 #define RFX_G_HISPEED_PCT_DEFAULT	48
 #define RFX_G_GO_HISPEED_PCT_DEFAULT	86
@@ -749,9 +760,11 @@ static unsigned int rfx_effective_cap(struct rfx_policy *p, unsigned int fceil,
 	if (p->is_little) {
 		unsigned int pct = RFX_G_LITTLE_CAP_PCT;
 
-		if (p->thermal_energy_acc >= 75000)
+		if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE3_ACC)
+			pct = max(pct - 10, 50U);
+		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE2_ACC)
 			pct = max(pct - 8, 54U);
-		else if (p->thermal_energy_acc >= 40000)
+		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE1_ACC)
 			pct = max(pct - 4, 58U);
 
 		return rfx_pct(fceil, pct);
@@ -761,9 +774,11 @@ static unsigned int rfx_effective_cap(struct rfx_policy *p, unsigned int fceil,
 			(demand_pct >= 70 ? RFX_G_PRIME_BURST_CAP_PCT : RFX_G_PRIME_CAP_PCT);
 		unsigned int pcap;
 
-		if (p->thermal_energy_acc >= 75000)
+		if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE3_ACC)
+			pct = p->gaming_sustained_cap ? 48U : 54U;
+		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE2_ACC)
 			pct = p->gaming_sustained_cap ? 50U : 58U;
-		else if (p->thermal_energy_acc >= 40000)
+		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE1_ACC)
 			pct = p->gaming_sustained_cap ? 54U : 62U;
 
 		pcap = rfx_pct(fceil, pct);
@@ -779,9 +794,11 @@ static unsigned int rfx_effective_cap(struct rfx_policy *p, unsigned int fceil,
 			RFX_G_BIG_CAP_PCT : RFX_G_BIG_BURST_CAP_PCT;
 		unsigned int bcap;
 
-		if (p->thermal_energy_acc >= 75000)
+		if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE3_ACC)
+			pct = p->gaming_sustained_cap ? 64U : 74U;
+		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE2_ACC)
 			pct = p->gaming_sustained_cap ? 68U : 76U;
-		else if (p->thermal_energy_acc >= 40000)
+		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE1_ACC)
 			pct = p->gaming_sustained_cap ? 72U : 80U;
 
 		bcap = rfx_pct(fceil, pct);
@@ -836,25 +853,35 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 
 		/*
 		 * Leaky-bucket thermal energy accumulator:
-		 * Tracks sustained load to apply sweet-spot cap trims during prolonged high demand.
+		 * Tracks sustained load to apply progressive cap trims during
+		 * prolonged high demand.  Accumulation starts well below
+		 * saturation and the leak is fast, so brief bursts decay to
+		 * zero between actions; rapid repeated taps build load
+		 * gradually instead of slamming the caps hard.
 		 */
 		{
-			u64 delta_ms = p->last_acc_time ? (rfx_elapsed(time, p->last_acc_time) / NSEC_PER_MSEC) : 0;
+			u64 delta_ms = p->last_acc_time ?
+				(rfx_elapsed(time, p->last_acc_time) / NSEC_PER_MSEC) : 0;
 
 			if (delta_ms > 0 && delta_ms < 5000) {
 				p->last_acc_time += (u64)delta_ms * NSEC_PER_MSEC;
-				if (demand_pct >= 75) {
-					p->thermal_energy_acc += (u64)(demand_pct - 70) * delta_ms;
-					if (p->thermal_energy_acc > 100000)
-						p->thermal_energy_acc = 100000;
-				} else if (demand_pct < 50) {
-					u64 leak = (u64)(50 - demand_pct) * delta_ms * 2;
+				if (demand_pct >= RFX_G_THERMAL_ACCUM_PCT)
+					p->thermal_energy_acc +=
+						(u64)(demand_pct -
+							RFX_G_THERMAL_ACCUM_PCT + 1) *
+						RFX_G_THERMAL_RATE_BASE * delta_ms;
+				else {
+					/* Leaks faster the cooler the core is */
+					u64 leak = (u64)(RFX_G_THERMAL_ACCUM_PCT - demand_pct) *
+						RFX_G_THERMAL_LEAK_BASE * delta_ms;
 
 					if (p->thermal_energy_acc > leak)
 						p->thermal_energy_acc -= leak;
 					else
 						p->thermal_energy_acc = 0;
 				}
+				if (p->thermal_energy_acc > RFX_G_THERMAL_ACC_MAX)
+					p->thermal_energy_acc = RFX_G_THERMAL_ACC_MAX;
 			} else if (!p->last_acc_time || delta_ms >= 5000) {
 				p->last_acc_time = time;
 			}
