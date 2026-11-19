@@ -647,7 +647,7 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	ktime_t delta_tick;
 	u64 sleep_length_ns;
 	s64 latency_req;
-	int idx, min_state;
+	int idx, min_state, fb;
 
 	if (unlikely(!d->initialized || drv->state_count <= 1)) {
 		*stop_tick = false;
@@ -661,17 +661,6 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	sleep_length_ns = ktime_to_ns(tick_nohz_get_sleep_length(&delta_tick));
 	min_state = nap_get_min_valid_state(d, drv, dev, latency_req);
 
-	/*
-	 * Fast path: with no C-state able to amortize its target residency
-	 * within the predicted sleep length the answer is deterministically
-	 * the shallowest state, so skip inference entirely.  nap_reflect drops
-	 * these events, keeping them out of the training distribution.
-	 *
-	 * Maintain tick on State 0 (WFI) unless tick is already stopped.
-	 * Stopping the tick on WFI when State 0 lacks CPUIDLE_FLAG_TIMER_STOP
-	 * stops the local arch timer without arming the broadcast timer,
-	 * causing the CPU to enter an indefinite hang (sleep-of-death) on AOSP/AOSPA.
-	 */
 	if (min_state == 0 ||
 	    sleep_length_ns < drv->states[min_state].target_residency_ns) {
 		if (min_state > 0)
@@ -681,7 +670,7 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 			dev->poll_limit_ns = max_t(u64, sleep_length_ns,
 						   NAP_POLL_LIMIT_MIN_NS);
 
-		*stop_tick = tick_nohz_tick_stopped();
+		*stop_tick = false;
 		d->short_circuited = true;
 		d->stats.total_selects++;
 		return 0;
@@ -707,38 +696,20 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 	idx = nap_decide(d, drv, dev, latency_req);
 
 	/*
-	 * Deep-state starvation guard.  With an ML network and a decayed
-	 * floor histogram, a CPU whose recent history is all short idles
-	 * can learn (or keep seeding) a low survival for every deep
-	 * state and stay in state 0 permanently, even on long doze
-	 * gaps.  The deterministic menu-style fallback makes C-states
-	 * reachable as soon as the predicted sleep covers their target
-	 * residency; learning then gets real deep-idle samples again.
-	 * The fallback is a lower bound only, so responsiveness on
-	 * busy CPUs is unchanged.
+	 * Deep-state starvation guard: promote to deeper state when predicted
+	 * sleep length comfortably amortizes target residency.
 	 */
-	if (idx == 0) {
-		int fb = nap_fallback_heuristic(drv, dev, sleep_length_ns,
-					       latency_req);
-
-		if (fb > 0)
-			idx = fb;
-	}
+	fb = nap_fallback_heuristic(drv, dev, sleep_length_ns, latency_req);
+	if (fb > idx)
+		idx = fb;
 
 	/*
-	 * Stopping the tick saves nothing when the next timer is closer
-	 * than one tick period, and the slow restart delays the wakeup
-	 * (about 100 us on average in a 1 ms periodic-timer test).
-	 * If the tick is already stopped, keep it stopped to allow deep sleep.
-	 * Also retain the tick on any state without CPUIDLE_FLAG_TIMER_STOP:
-	 * cpuidle only arms the broadcast timer for TIMER_STOP states, so
-	 * stopping the tick on a plain WFI/low-power state can leave the SoC
-	 * with no timer and no IPI source -- a system-wide idle hang when
-	 * every core stops its tick (sleep-of-death).
+	 * Retain tick on State 0 (WFI), polling states, or sub-tick intervals
+	 * to prevent unserviced timer stalls. Stop tick for deep C-states.
 	 */
-	if ((drv->states[idx].flags & CPUIDLE_FLAG_POLLING ||
-	     sleep_length_ns < TICK_NSEC ||
-	     !(drv->states[idx].flags & CPUIDLE_FLAG_TIMER_STOP)) &&
+	if ((idx == 0 ||
+	     (drv->states[idx].flags & CPUIDLE_FLAG_POLLING) ||
+	     sleep_length_ns < TICK_NSEC) &&
 	    !tick_nohz_tick_stopped()) {
 		*stop_tick = false;
 
