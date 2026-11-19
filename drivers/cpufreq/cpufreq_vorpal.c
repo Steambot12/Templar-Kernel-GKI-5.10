@@ -124,6 +124,12 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 /* ---- Gaming Profile Cadence & Controls (gaming_mode=1) ---- */
 #define RFX_FAST_RATE_US		1500
 #define RFX_GAMING_DOWN_US		1500
+/*
+ * Gaming up-ramp dwell: must exceed the eval cadence so an up step spans
+ * >=2 evals and frequency climbs in graded steps instead of one OPP jump.
+ */
+#define RFX_G_BIG_UP_RAMP_US		3000
+#define RFX_G_PRIME_UP_RAMP_US		4500
 #define RFX_GAMING_DOWN_PCT_PER_2MS	2
 #define RFX_G_DOWN_FAST_PCT_DEFAULT	4
 #define RFX_G_DOWN_FAST_MS_DEFAULT	40
@@ -1265,9 +1271,15 @@ static inline void rfx_pol_up_delay(struct rfx_policy *p, bool gaming)
 		 * Anti-spike up-ramp dampening:
 		 * Filter single-tick demand spikes on Big/Prime so DVFS clock and
 		 * voltage do not chase rapid touch transients or inter-frame micro-bursts.
+		 *
+		 * Ramps must span >=2 evals (cadence RFX_FAST_RATE_US) so the up
+		 * step moves in graded OPPs instead of one big jump: a 500us/1000us
+		 * dwell under the 1500us cadence let every eval pass the delay
+		 * check, which spiked the frequency trace on single-tick demand.
 		 */
 		p->up_rate_delay_ns = p->is_little ? 0 :
-			(s64)(p->is_prime ? 1000 : 500) * NSEC_PER_USEC;
+			(s64)(p->is_prime ? RFX_G_PRIME_UP_RAMP_US :
+					 RFX_G_BIG_UP_RAMP_US) * NSEC_PER_USEC;
 	} else {
 		p->up_rate_delay_ns = (s64)(p->is_little ?
 			RFX_LITTLE_UP_US : (p->is_prime ? 2000 : RFX_BIG_UP_US)) * NSEC_PER_USEC;
@@ -1442,7 +1454,7 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 			p->dormant = false;
 			p->park_since_ns = 0;
 		} else if (!p->is_little) {
-			unsigned long park_thresh = max_cap * 14 / 100;
+			unsigned long big_park_thresh = max_cap * 14 / 100;
 			unsigned long unpark_thresh = max_cap * 22 / 100;
 
 			if (max_util >= unpark_thresh) {
@@ -1450,7 +1462,7 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 				p->parked = false;
 				p->dormant = false;
 				p->park_since_ns = 0;
-			} else if (max_util < park_thresh) {
+			} else if (max_util < big_park_thresh) {
 				if (++p->park_enter_count >= RFX_D_PARK_ENTER_EVALS) {
 					p->parked = true;
 					p->dormant = true;
@@ -2376,6 +2388,8 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_SAT_TO_MAX_DAILY_PCT > 100);
 
 	BUILD_BUG_ON(RFX_FAST_RATE_US < 1);
+	BUILD_BUG_ON(RFX_G_BIG_UP_RAMP_US <= RFX_FAST_RATE_US);
+	BUILD_BUG_ON(RFX_G_PRIME_UP_RAMP_US < RFX_G_BIG_UP_RAMP_US);
 	BUILD_BUG_ON(RFX_G_HISPEED_PCT_DEFAULT > 100);
 	BUILD_BUG_ON(RFX_G_GO_HISPEED_PCT_DEFAULT > 100);
 	BUILD_BUG_ON(RFX_G_DOWN_FAST_PCT_DEFAULT > 100);
