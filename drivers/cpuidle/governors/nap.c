@@ -65,6 +65,13 @@
 /* Bounds staleness of the cached shallowest-valid-state lookup. */
 #define NAP_MIN_STATE_REFRESH_JIFFIES	HZ
 
+/*
+ * Fallback-heuristic amortization: predicted sleep must cover the target
+ * residency at least this many times before a deep-state promotion, to keep
+ * PSCI entry/exit latency inside the idle window.
+ */
+#define NAP_FB_AMORTIZE_X		2
+
 /* ================================================================
  * Q12.20 fixed-point math
  * ================================================================ */
@@ -697,10 +704,15 @@ static int nap_select(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 
 	/*
 	 * Deep-state starvation guard: promote to deeper state when predicted
-	 * sleep length comfortably amortizes target residency.
+	 * sleep length comfortably amortizes target residency.  Require 2x the
+	 * target (margin factor NAP_FB_AMORTIZE_X): a marginal 1.1x prediction
+	 * would enter a PSCI power-collapse that cannot pay for its ~ms entry/
+	 * exit latency, producing deep-state churn and wake-overshoots.  Long
+	 * doze gaps (hundreds of ms) still pass and reach the deepest state.
 	 */
 	fb = nap_fallback_heuristic(drv, dev, sleep_length_ns, latency_req);
-	if (fb > idx)
+	if (fb > idx && sleep_length_ns >=
+	    (u64)NAP_FB_AMORTIZE_X * drv->states[fb].target_residency_ns)
 		idx = fb;
 
 	/*
