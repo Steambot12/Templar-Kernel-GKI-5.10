@@ -68,6 +68,27 @@ config CPU_IDLE_GOV_NAP_SELFTEST
 	  kernels during boot and report to dmesg.  Useful when porting to a
 	  new architecture or toolchain.  Say N for production builds.
 
+config CPU_IDLE_GOV_AEGIS
+	bool "AEGIS governor (Adaptive Energy-Gated Idle Subsystem)"
+	help
+	  An energy-ledger cpuidle governor that gates deep idle state entry
+	  on realized residency rather than heuristic prediction. Instead of
+	  demoting to shallow states when background services create runqueue
+	  noise, AEGIS checks whether the upcoming timer window can cover the
+	  energy break-even debt of deeper C-states.
+
+	  Each state maintains an adaptive debt seeded at its target residency
+	  and scaled by CPU calmness. The scheduler tick is stopped on deep
+	  entries to allow platform power rails to settle into low-power
+	  standby (10mA - 50mA), while standby affinity ensures the CPU quickly
+	  re-enters deep sleep within seconds after serving push notifications
+	  or brief wake events.
+
+	  Tunables and statistics are exposed via /sys/devices/system/cpu/aegis/.
+
+	  Select it with the cpuidle.governor=aegis kernel command line
+	  argument.
+
 config DT_IDLE_STATES
 	bool
 
