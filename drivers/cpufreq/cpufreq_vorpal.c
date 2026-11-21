@@ -79,35 +79,35 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 #define RFX_PRIME_CAP_THRESHOLD		1000
 
 /* ---- Daily Profile Cadence (gaming_mode=0) ---- */
-#define RFX_LITTLE_RATE_US		1000
-#define RFX_LITTLE_UP_US		500
-#define RFX_LITTLE_DOWN_US		2500
+#define RFX_LITTLE_RATE_US		2000
+#define RFX_LITTLE_UP_US		1000
+#define RFX_LITTLE_DOWN_US		3000
 
-#define RFX_BIG_RATE_US			1000
-#define RFX_BIG_UP_US			1000
-#define RFX_BIG_DOWN_US			3000
+#define RFX_BIG_RATE_US			2000
+#define RFX_BIG_UP_US			1500
+#define RFX_BIG_DOWN_US			4000
 
 #define RFX_D_IDLE_EVAL_US		8000
 #define RFX_D_DORMANT_EVAL_US		40000
 #define RFX_D_DORMANT_ENTER_NS		(60 * NSEC_PER_MSEC)
 #define RFX_D_LIGHT_EVAL_OPP_PCT	35
 #define RFX_D_LIGHT_EVAL_US		6000
-#define RFX_D_PARK_ENTER_EVALS		5
+#define RFX_D_PARK_ENTER_EVALS		3
 #define RFX_D_PARK_UTIL_SHIFT		2
 
 /* Daily cluster caps & sustained-load lift (% of effective ceiling) */
-#define RFX_D_LITTLE_CAP_PCT		52
-#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	64
+#define RFX_D_LITTLE_CAP_PCT		48
+#define RFX_D_LITTLE_SUSTAINED_CAP_PCT	58
 #define RFX_D_LITTLE_LIFT_PCT		60
 #define RFX_D_LITTLE_DROP_PCT		45
 
-#define RFX_D_BIG_CAP_PCT		54
-#define RFX_D_BIG_SUSTAINED_CAP_PCT	64
+#define RFX_D_BIG_CAP_PCT		50
+#define RFX_D_BIG_SUSTAINED_CAP_PCT	60
 #define RFX_D_BIG_LIFT_PCT		65
 #define RFX_D_BIG_DROP_PCT		45
 
-#define RFX_D_PRIME_CAP_PCT		38
-#define RFX_D_PRIME_SUSTAINED_CAP_PCT	48
+#define RFX_D_PRIME_CAP_PCT		36
+#define RFX_D_PRIME_SUSTAINED_CAP_PCT	44
 
 /* Timed wake-up interaction floor for Little cluster */
 #define RFX_D_LITTLE_FLOOR_PCT		15
@@ -119,7 +119,7 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 #define RFX_D_ENERGY_AWARE		1
 #define RFX_D_ENERGY_AWARE_MIN_PCT	15
 #define RFX_D_LITTLE_MIN_SAMPLE_US	3000
-#define RFX_D_BIG_MIN_SAMPLE_US		3000
+#define RFX_D_BIG_MIN_SAMPLE_US		4000
 
 /* ---- Gaming Profile Cadence & Controls (gaming_mode=1) ---- */
 #define RFX_FAST_RATE_US		1500
@@ -131,47 +131,51 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 #define RFX_G_BIG_UP_RAMP_US		3000
 #define RFX_G_PRIME_UP_RAMP_US		4500
 #define RFX_GAMING_DOWN_PCT_PER_2MS	2
-#define RFX_G_DOWN_FAST_PCT_DEFAULT	4
+#define RFX_G_DOWN_FAST_PCT_DEFAULT	3
 #define RFX_G_DOWN_FAST_MS_DEFAULT	40
 #define RFX_G_MIN_SAMPLE_US_DEFAULT	1500
 #define RFX_G_ENERGY_AWARE_DEFAULT	0
 #define RFX_G_UP_DELAY_US		500
 
+/* Graded up-slew pacing (% of fceil per 2ms) to filter rapid tap spikes */
+#define RFX_G_BIG_UP_PCT_PER_2MS	8
+#define RFX_G_PRIME_UP_PCT_PER_2MS	6
+
 /* Gaming floors (% of effective ceiling) */
 #define RFX_G_PRIME_FLOOR_PCT		25
-#define RFX_G_BIG_FLOOR_PCT		42
+#define RFX_G_BIG_FLOOR_PCT		38
 #define RFX_G_LITTLE_FLOOR_PCT		25
 #define RFX_G_IDLE_FLOOR_PCT		20
-#define RFX_G_WARMUP_FLOOR_PCT		48
+#define RFX_G_WARMUP_FLOOR_PCT		44
 
-/* Gaming cluster caps (% of effective ceiling) */
-#define RFX_G_LITTLE_CAP_PCT		62
-#define RFX_G_PRIME_CAP_PCT		58
-#define RFX_G_BIG_CAP_PCT		76
+/* Gaming cluster caps (% of effective ceiling) — bounded for <= 44C hard limit */
+#define RFX_G_LITTLE_CAP_PCT		54
+#define RFX_G_PRIME_CAP_PCT		40
+#define RFX_G_BIG_CAP_PCT		60
 
-/* Gaming burst caps (prior to sustained load, <=100ms) */
-#define RFX_G_BIG_BURST_CAP_PCT		86
-#define RFX_G_PRIME_BURST_CAP_PCT	68
+/* Gaming burst caps (prior to sustained load, <=80ms) */
+#define RFX_G_BIG_BURST_CAP_PCT		70
+#define RFX_G_PRIME_BURST_CAP_PCT	48
 
 /* Gaming sustained thermal pacer */
-#define RFX_G_SUSTAINED_TRIGGER_PCT	58
-#define RFX_G_SUSTAINED_CLEAR_PCT	38
-#define RFX_G_SUSTAINED_WINDOW_MS	100
-#define RFX_G_SUSTAINED_CLEAR_DWELL_MS	180
+#define RFX_G_SUSTAINED_TRIGGER_PCT	54
+#define RFX_G_SUSTAINED_CLEAR_PCT	36
+#define RFX_G_SUSTAINED_WINDOW_MS	80
+#define RFX_G_SUSTAINED_CLEAR_DWELL_MS	200
 
 /* Gaming thermal energy accumulator (leaky bucket) */
-#define RFX_G_THERMAL_ACCUM_PCT		68
-#define RFX_G_THERMAL_RATE_BASE		8
-#define RFX_G_THERMAL_LEAK_BASE		32
+#define RFX_G_THERMAL_ACCUM_PCT		58
+#define RFX_G_THERMAL_RATE_BASE		10
+#define RFX_G_THERMAL_LEAK_BASE		2
 #define RFX_G_THERMAL_ACC_MAX		100000
 /* Progressive trim stage thresholds: lightest (0) ... deepest (3) */
-#define RFX_G_THERMAL_STAGE0_ACC	20000
-#define RFX_G_THERMAL_STAGE1_ACC	45000
-#define RFX_G_THERMAL_STAGE2_ACC	75000
-#define RFX_G_THERMAL_STAGE3_ACC	100000
+#define RFX_G_THERMAL_STAGE0_ACC	15000
+#define RFX_G_THERMAL_STAGE1_ACC	35000
+#define RFX_G_THERMAL_STAGE2_ACC	65000
+#define RFX_G_THERMAL_STAGE3_ACC	90000
 
 /* Gaming feature defaults */
-#define RFX_G_HISPEED_PCT_DEFAULT	48
+#define RFX_G_HISPEED_PCT_DEFAULT	44
 #define RFX_G_GO_HISPEED_PCT_DEFAULT	86
 #define RFX_G_HISPEED_HOLD_US_DEFAULT	3000
 
@@ -200,17 +204,17 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 #define RFX_G_RISK_BOOST_NS		(60 * NSEC_PER_MSEC)
 #define RFX_G_DESCEND_DROP_PCT		12
 #define RFX_G_DESCEND_FROM_PCT		60
-#define RFX_G_DESCEND_HOLD_NS		(25 * NSEC_PER_MSEC)
+#define RFX_G_DESCEND_HOLD_NS		(35 * NSEC_PER_MSEC)
 
 /* Gaming anti-spike render load band */
-#define RFX_G_STABILIZE_DEMAND_PCT	62
-#define RFX_G_STABILIZE_CLEAR_PCT	42
-#define RFX_G_STABILIZE_DWELL_NS	(25 * NSEC_PER_MSEC)
+#define RFX_G_STABILIZE_DEMAND_PCT	60
+#define RFX_G_STABILIZE_CLEAR_PCT	40
+#define RFX_G_STABILIZE_DWELL_NS	(35 * NSEC_PER_MSEC)
 
 /* Gaming thermal relief band */
 #define RFX_G_COOL_ENTER_PCT		80
 #define RFX_G_COOL_EXIT_PCT		90
-#define RFX_G_COOL_STEADY_FLOOR_PCT	32
+#define RFX_G_COOL_STEADY_FLOOR_PCT	30
 #define RFX_G_COOL_DEEP_PCT		60
 #define RFX_G_COOL_CAP_PCT		82
 #define RFX_G_COOL_PRIME_CAP_PCT	70
@@ -218,15 +222,15 @@ extern unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 /* Utilization EMA decay settings */
 #define RFX_EMA_DECAY_PERIOD_NS		500000
 #define RFX_EMA_GAMING_DIVISOR		80
-#define RFX_EMA_DAILY_DIVISOR		28
+#define RFX_EMA_DAILY_DIVISOR		8
 #define RFX_EMA_MAX_STEPS		20
 
 /* Headroom settings */
-#define RFX_HEADROOM_DAILY_HIGH		16
+#define RFX_HEADROOM_DAILY_HIGH		6
 #define RFX_HEADROOM_GAMING		4
 #define RFX_HEADROOM_GAMING_GATE	65
 #define RFX_SAT_TO_MAX_GAMING_PCT	100
-#define RFX_SAT_TO_MAX_DAILY_PCT	88
+#define RFX_SAT_TO_MAX_DAILY_PCT	98
 
 /* Effective ceiling filter */
 #define RFX_CEIL_RISE_PCT_PER_2MS	1
@@ -325,6 +329,7 @@ struct rfx_policy {
 	u64 little_floor_end_ns;
 	unsigned int little_prev_demand;
 	bool big_cap_lifted;
+	unsigned int big_unpark_count;
 	bool parked;
 	bool dormant;
 	unsigned int park_enter_count;
@@ -761,11 +766,13 @@ static unsigned int rfx_effective_cap(struct rfx_policy *p, unsigned int fceil,
 		unsigned int pct = RFX_G_LITTLE_CAP_PCT;
 
 		if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE3_ACC)
-			pct = max(pct - 10, 50U);
+			pct = max(pct - 8, 46U);
 		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE2_ACC)
-			pct = max(pct - 8, 54U);
+			pct = max(pct - 6, 48U);
 		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE1_ACC)
-			pct = max(pct - 4, 58U);
+			pct = max(pct - 4, 50U);
+		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE0_ACC)
+			pct = max(pct - 2, 52U);
 
 		return rfx_pct(fceil, pct);
 	} else if (p->is_prime) {
@@ -775,11 +782,13 @@ static unsigned int rfx_effective_cap(struct rfx_policy *p, unsigned int fceil,
 		unsigned int pcap;
 
 		if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE3_ACC)
-			pct = p->gaming_sustained_cap ? 48U : 54U;
+			pct = p->gaming_sustained_cap ? 28U : 34U;
 		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE2_ACC)
-			pct = p->gaming_sustained_cap ? 50U : 58U;
+			pct = p->gaming_sustained_cap ? 32U : 38U;
 		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE1_ACC)
-			pct = p->gaming_sustained_cap ? 54U : 62U;
+			pct = p->gaming_sustained_cap ? 36U : 42U;
+		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE0_ACC)
+			pct = p->gaming_sustained_cap ? 38U : 44U;
 
 		pcap = rfx_pct(fceil, pct);
 		if (depth) {
@@ -795,11 +804,13 @@ static unsigned int rfx_effective_cap(struct rfx_policy *p, unsigned int fceil,
 		unsigned int bcap;
 
 		if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE3_ACC)
-			pct = p->gaming_sustained_cap ? 64U : 74U;
+			pct = p->gaming_sustained_cap ? 48U : 54U;
 		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE2_ACC)
-			pct = p->gaming_sustained_cap ? 68U : 76U;
+			pct = p->gaming_sustained_cap ? 52U : 58U;
 		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE1_ACC)
-			pct = p->gaming_sustained_cap ? 72U : 80U;
+			pct = p->gaming_sustained_cap ? 56U : 62U;
+		else if (p->thermal_energy_acc >= RFX_G_THERMAL_STAGE0_ACC)
+			pct = p->gaming_sustained_cap ? 58U : 66U;
 
 		bcap = rfx_pct(fceil, pct);
 		if (depth) {
@@ -1027,6 +1038,20 @@ static unsigned int rfx_target_freq(struct rfx_policy *p, unsigned long util,
 		if (down_step < fceil && p->next_freq > (unsigned int)down_step &&
 		    freq < p->next_freq - (unsigned int)down_step)
 			freq = p->next_freq - (unsigned int)down_step;
+
+		/*
+		 * Graded up-slew pacing for Big & Prime:
+		 * Filter rapid tap transients and prevent multi-OPP frequency leaps.
+		 */
+		if (!little && freq > p->next_freq) {
+			unsigned int up_pct = prime ? RFX_G_PRIME_UP_PCT_PER_2MS :
+						      RFX_G_BIG_UP_PCT_PER_2MS;
+			u64 up_step = (u64)rfx_pct(fceil, up_pct) *
+				      slew_ns / (2 * NSEC_PER_MSEC);
+
+			if (up_step && freq > p->next_freq + (unsigned int)up_step)
+				freq = p->next_freq + (unsigned int)up_step;
+		}
 
 		if (hold && freq < p->next_freq) {
 			unsigned int hold_floor = fl;
@@ -1481,15 +1506,18 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 			p->dormant = false;
 			p->park_since_ns = 0;
 		} else if (!p->is_little) {
-			unsigned long big_park_thresh = max_cap * 14 / 100;
-			unsigned long unpark_thresh = max_cap * 22 / 100;
+			unsigned long big_park_thresh = max_cap * 20 / 100;
+			unsigned long unpark_thresh = max_cap * 35 / 100;
 
 			if (max_util >= unpark_thresh) {
-				p->park_enter_count = 0;
-				p->parked = false;
-				p->dormant = false;
-				p->park_since_ns = 0;
+				if (++p->big_unpark_count >= 2) {
+					p->park_enter_count = 0;
+					p->parked = false;
+					p->dormant = false;
+					p->park_since_ns = 0;
+				}
 			} else if (max_util < big_park_thresh) {
+				p->big_unpark_count = 0;
 				if (++p->park_enter_count >= RFX_D_PARK_ENTER_EVALS) {
 					p->parked = true;
 					p->dormant = true;
@@ -1498,7 +1526,8 @@ static unsigned int rfx_next_freq(struct rfx_cpu *rfx_c, u64 time, bool gaming)
 					return fmin;
 				}
 			} else {
-				/* In deadband (14% - 22%): retain current park state, reset dwell count */
+				/* In deadband (20% - 35%): retain current park state, reset counters */
+				p->big_unpark_count = 0;
 				p->park_enter_count = 0;
 				if (p->parked) {
 					p->pending_raw_freq = fmin;
@@ -1691,6 +1720,7 @@ static void rfx_reset_policy_locked(struct rfx_policy *p)
 	p->risk_high = false;
 	p->little_cap_lifted = false;
 	p->big_cap_lifted = false;
+	p->big_unpark_count = 0;
 	p->little_floor_end_ns = 0;
 	p->little_prev_demand = 0;
 	p->parked = true;
@@ -2420,6 +2450,11 @@ static int __init vorpal_gov_init(void)
 	BUILD_BUG_ON(RFX_G_HISPEED_PCT_DEFAULT > 100);
 	BUILD_BUG_ON(RFX_G_GO_HISPEED_PCT_DEFAULT > 100);
 	BUILD_BUG_ON(RFX_G_DOWN_FAST_PCT_DEFAULT > 100);
+	BUILD_BUG_ON(RFX_G_BIG_UP_PCT_PER_2MS < 1 || RFX_G_BIG_UP_PCT_PER_2MS > 100);
+	BUILD_BUG_ON(RFX_G_PRIME_UP_PCT_PER_2MS < 1 || RFX_G_PRIME_UP_PCT_PER_2MS > 100);
+	BUILD_BUG_ON(RFX_G_THERMAL_STAGE0_ACC >= RFX_G_THERMAL_STAGE1_ACC);
+	BUILD_BUG_ON(RFX_G_THERMAL_STAGE1_ACC >= RFX_G_THERMAL_STAGE2_ACC);
+	BUILD_BUG_ON(RFX_G_THERMAL_STAGE2_ACC >= RFX_G_THERMAL_STAGE3_ACC);
 	BUILD_BUG_ON(RFX_G_ENERGY_AWARE_DEFAULT > 1);
 
 	pr_info("Vorpal Governor v%s by %s\n", CPUFREQ_VORPAL_VERSION,
