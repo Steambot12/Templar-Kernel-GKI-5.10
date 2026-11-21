@@ -7,5 +7,4 @@ obj-$(CONFIG_CPU_IDLE_GOV_LADDER) += ladder.o
 obj-$(CONFIG_CPU_IDLE_GOV_MENU) += menu.o
 obj-$(CONFIG_CPU_IDLE_GOV_TEO) += teo.o
 obj-$(CONFIG_CPU_IDLE_GOV_HALTPOLL) += haltpoll.o
-obj-$(CONFIG_CPU_IDLE_GOV_NAP) += nap.o
 obj-$(CONFIG_CPU_IDLE_GOV_AEGIS) += aegis.o

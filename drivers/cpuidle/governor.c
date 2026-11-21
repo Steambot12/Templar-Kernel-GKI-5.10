@@ -25,7 +25,7 @@ char param_governor[CPUIDLE_NAME_LEN];
  * and governors registered afterwards switch to the named governor.
  *
  * First valid parse wins. The house defconfig bakes in
- * cpuidle.governor=nap; HOS 4 vendor bootconfig can append its own value
+ * cpuidle.governor=<name>; HOS 4 vendor bootconfig can append its own value
  * after it, which would otherwise silently override the house default.
  */
 static int __init cpuidle_governor_setup(char *str)
