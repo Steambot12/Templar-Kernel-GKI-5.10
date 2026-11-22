@@ -1009,8 +1009,10 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 			/* Try get exclusive access under lock */
 			if (!skip_updated) {
 				skip_updated = true;
-				if (test_and_set_skip(cc, page, low_pfn))
+				if (test_and_set_skip(cc, page, low_pfn)) {
+					low_pfn = end_pfn;
 					goto isolate_abort;
+				}
 			}
 
 			/* Recheck PageLRU and PageCompound under lock */
