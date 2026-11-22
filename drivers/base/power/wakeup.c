@@ -641,10 +641,6 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 	if (length < 1 || (size_t)length + 3 > sizeof(needle))
 		return false;	/* over-long name: fail safe, do not block */
 
-	/* Suppress WiFi multicast wakeup storms and framework multicast locks */
-	if (strstr(ws->name, "multicast") != NULL || strstr(ws->name, "Multicast") != NULL)
-		return true;
-
 	/* Suppress Qualcomm voice activation detection idle locks */
 	if (strstr(ws->name, "qcom_vad") != NULL || strstr(ws->name, "qcom-vad") != NULL)
 		return true;
@@ -660,8 +656,8 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 	    strstr(ws->name, "CloudService") != NULL || strstr(ws->name, "FindDevice") != NULL)
 		return true;
 
-	/* Suppress WLAN background scan / PNO offload wake locks */
-	if (strncmp(ws->name, "wlan_pno_rx", 11) == 0 || strncmp(ws->name, "wlan_scan", 9) == 0)
+	/* Suppress WLAN background scan wake locks */
+	if (strncmp(ws->name, "wlan_scan", 9) == 0)
 		return true;
 
 	scnprintf(needle, sizeof(needle), ";%s;", ws->name);

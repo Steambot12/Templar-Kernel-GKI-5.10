@@ -35,11 +35,10 @@
  *               real deauth/wake still fires via the hard-event path.
  */
 #define LIST_WL_DEFAULT \
-	"DIAG_WS;wlan_extscan_wl;wlan_pno_wl;wlan_wow_wl;" \
+	"DIAG_WS;wlan_extscan_wl;wlan_pno_wl;" \
 	"a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;bluetooth_timer;" \
-	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;mgmt_txrx;" \
-	"wlan_multicast_wl;wlan_multicast;WifiMulticast;WifiMulticastKeeper;*wal*;" \
-	"qcom_vad_wakelock;qcom-vad;wlan_pno_rx_wl;wlan_scan_wl;" \
+	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;" \
+	"qcom_vad_wakelock;qcom-vad;" \
 	"mi_connect;mi_link;MiSmartHub;MiShare;AnalyticsCore;CloudService;FindDevice"
 /*
  * fpc_ttw_wl (fingerprint touch-to-wake) was added here to silence pocket
