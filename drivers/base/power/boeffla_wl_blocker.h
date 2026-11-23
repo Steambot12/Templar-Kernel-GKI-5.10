@@ -18,27 +18,23 @@
 
 /*
  * Default block list. Portable across MTK/QCOM: every entry is either
- * vendor-namespaced (inert where the SoC differs) or a WLAN/BT background
+ * vendor-namespaced (inert where the SoC differs) or a BT background
  * idle-poll wakelock (connectivity still works; only the high-frequency
  * firmware poll that keeps the SoC out of deep sleep is suppressed).
  * No alarmtimer/[timerfd] -- those break RTC alarms and their numbering
  * is not portable. No input/i2c/spi nodes -- those break wake-on-touch.
  * No modem keep-alive (mtk_md, mtk_md_wl) -- the 5G modem requires the
  * link to stay up through idle; blocking it drops the data connection.
+ * WLAN scan and multicast locks (wlan_scan_wl, WifiMulticast) remain
+ * unblocked to prevent off-channel dwell timeouts and connection stalls.
  * Per-device offenders go in the runtime sysfs 'wakelock_blocker' node.
  *
- * Q6BIOS_WLAN : QCOM WLAN firmware idle poll (WiFi stays associated)
- * mtk_wmt_top : MTK Wireless Module Top idle poll (inert on QCOM)
  * btsdio_wl   : QCOM/MTK BT controller idle poll (BT stays paired)
- * mgmt_txrx   : WLAN mgmt-frame TX/RX idle poll -- beacon/probe/assoc
- *               churn; association is kept by the firmware WoW offload, a
- *               real deauth/wake still fires via the hard-event path.
  */
 #define LIST_WL_DEFAULT \
-	"DIAG_WS;wlan_extscan_wl;wlan_scan_wl;" \
-	"WifiMulticastKeeper;WifiMulticast;" \
+	"DIAG_WS;" \
 	"a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;bluetooth_timer;" \
-	"Q6BIOS_WLAN;mtk_wmt_top;btsdio_wl;" \
+	"btsdio_wl;" \
 	"qcom_vad_wakelock;qcom-vad;" \
 	"mi_connect;mi_link;MiSmartHub;MiShare;AnalyticsCore;CloudService;FindDevice"
 /*

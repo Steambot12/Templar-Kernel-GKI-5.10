@@ -656,11 +656,6 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 	    strstr(ws->name, "CloudService") != NULL || strstr(ws->name, "FindDevice") != NULL)
 		return true;
 
-	/* Suppress WLAN background scan wake locks to eliminate ping jitter */
-	if (strncmp(ws->name, "wlan_scan", 9) == 0 ||
-	    strncmp(ws->name, "wlan_extscan", 12) == 0)
-		return true;
-
 	scnprintf(needle, sizeof(needle), ";%s;", ws->name);
 
 	return strstr(list_wl_search, needle) != NULL;
