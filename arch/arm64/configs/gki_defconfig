@@ -78,7 +78,7 @@ CONFIG_SETEND_EMULATION=y
 CONFIG_RANDOMIZE_BASE=y
 # CONFIG_RANDOMIZE_MODULE_REGION_FULL is not set
 # CONFIG_STACKPROTECTOR_PER_TASK is not set
-CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cgroup.memory=nokmem noirqdebug audit=0 loglevel=3 rcu_nocbs=0-3 timer_migration=1 nohz=on transparent_hugepage=madvise workqueue.power_efficient=1 cpuidle.governor=aegis"
+CONFIG_CMDLINE="kasan=off stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cgroup.memory=nokmem noirqdebug audit=0 loglevel=3 timer_migration=1 nohz=on transparent_hugepage=madvise workqueue.power_efficient=1 cpuidle.governor=aegis"
 CONFIG_CMDLINE_EXTEND=y
 # CONFIG_DMI is not set
 CONFIG_HIBERNATION=y
@@ -103,6 +103,7 @@ CONFIG_CPU_FREQ_DEFAULT_GOV_VORPAL=y
 CONFIG_CPU_FREQ_GOV_POWERSAVE=y
 CONFIG_CPU_FREQ_GOV_ONDEMAND=y
 CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y
+CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
 CONFIG_CPU_FREQ_GOV_SCHEDHORIZON=y
 CONFIG_ARM_SCPI_CPUFREQ=y
 CONFIG_ARM_SCMI_CPUFREQ=y
