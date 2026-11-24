@@ -645,6 +645,10 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 	if (strstr(ws->name, "qcom_vad") != NULL || strstr(ws->name, "qcom-vad") != NULL)
 		return true;
 
+	/* Suppress Qualcomm QUP UART Bluetooth idle poll locks across all SoC addresses */
+	if (strstr(ws->name, ".qcom,qup_uart") != NULL)
+		return true;
+
 	/* Suppress Bluetooth idle timer churn */
 	if (strcmp(ws->name, "bluetooth_timer") == 0)
 		return true;

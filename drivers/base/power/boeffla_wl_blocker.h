@@ -33,7 +33,7 @@
  */
 #define LIST_WL_DEFAULT \
 	"DIAG_WS;" \
-	"a600000.ssusb;998000.qcom,qup_uart;hal_bluetooth_lock;bluetooth_timer;" \
+	"a600000.ssusb;998000.qcom,qup_uart;894000.qcom,qup_uart;hal_bluetooth_lock;bluetooth_timer;" \
 	"btsdio_wl;" \
 	"qcom_vad_wakelock;qcom-vad;" \
 	"mi_connect;mi_link;MiSmartHub;MiShare;AnalyticsCore;CloudService;FindDevice"
