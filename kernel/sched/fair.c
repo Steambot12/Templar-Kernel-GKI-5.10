@@ -7905,7 +7905,11 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 	 * allowed_cap == cpu_cap so the expression is a no-op and cold
 	 * behavior is unchanged.
 	 */
-	allowed_cap -= arch_scale_thermal_pressure(cpumask_first(pd_mask));
+	{
+		unsigned long press = arch_scale_thermal_pressure(cpumask_first(pd_mask));
+
+		allowed_cap = (press < cpu_cap) ? (cpu_cap - press) : 0;
+	}
 
 	/*
 	 * The capacity state of CPUs of the current rd can be driven by CPUs
