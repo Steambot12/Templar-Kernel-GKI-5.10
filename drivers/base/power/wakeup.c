@@ -945,6 +945,22 @@ void pm_wakeup_ws_event(struct wakeup_source *ws, unsigned int msec, bool hard)
 		goto unlock;
 	}
 
+#ifdef CONFIG_PM_AUTOSLEEP
+	/*
+	 * Clamp transient network RX wakelock hold duration during screen-off autosleep.
+	 * Incoming packet delivery to the networking stack completes in <1ms; holding the
+	 * wake lock for 200-500ms on high-frequency multicast/broadcast traffic prevents
+	 * the SoC from entering sleep. Clamping to 50ms ensures packets are cleanly
+	 * ingested while allowing the platform to suspend promptly between bursts.
+	 */
+	if (pm_autosleep_state() > PM_SUSPEND_ON) {
+		if (strcmp(ws->name, "qcom_rx_wakelock") == 0 ||
+		    strcmp(ws->name, "rx_wakelock") == 0 ||
+		    strcmp(ws->name, "wlan_rx_wake") == 0)
+			msec = min(msec, 50U);
+	}
+#endif
+
 	expires = jiffies + msecs_to_jiffies(msec);
 	if (!expires)
 		expires = 1;
