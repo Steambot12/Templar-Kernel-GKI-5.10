@@ -640,8 +640,8 @@ static inline bool task_is_bore_eligible(struct task_struct *p)
 
 	/*
 	 * Protect latency-sensitive, boosted, and high-priority tasks (e.g. Android top-app
-	 * foreground gaming threads, RenderThread, and SurfaceFlinger) from BORE burst demotion.
-	 * Demoting continuous render/game threads collapses their CFS weight,
+	 * foreground rendering threads, RenderThread, and SurfaceFlinger) from BORE burst demotion.
+	 * Demoting continuous render threads collapses their CFS weight,
 	 * causing background preemption spikes, missed VSYNCs, and frame stutters.
 	 */
 	if (uclamp_latency_sensitive(p) || uclamp_boosted(p) || task_nice(p) < 0)
@@ -4986,8 +4986,10 @@ static inline int util_fits_cpu(unsigned long util,
 	if (capacity_orig) {
 		capacity_orig_thermal = capacity_orig;
 	} else {
+		unsigned long th_pressure = arch_scale_thermal_pressure(cpu);
+
 		capacity_orig = capacity_orig_of(cpu);
-		capacity_orig_thermal = capacity_orig - arch_scale_thermal_pressure(cpu);
+		capacity_orig_thermal = (capacity_orig > th_pressure) ? (capacity_orig - th_pressure) : 1;
 	}
 
 	/*
@@ -7908,7 +7910,7 @@ compute_energy(struct task_struct *p, int dst_cpu, struct perf_domain *pd)
 	{
 		unsigned long press = arch_scale_thermal_pressure(cpumask_first(pd_mask));
 
-		allowed_cap = (press < cpu_cap) ? (cpu_cap - press) : 0;
+		allowed_cap = (press < cpu_cap) ? (cpu_cap - press) : 1;
 	}
 
 	/*
