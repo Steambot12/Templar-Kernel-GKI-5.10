@@ -8030,42 +8030,15 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 
 	/*
 	 * BACKPORT (Linux 6.12 EAS fast-path):
-	 * Energy optimization: Only short-circuit if prev_cpu is in the energy-efficient
-	 * (Little) performance domain, or if the task exceeds the Little domain's
-	 * capacity. This ensures small/light tasks that previously touched Big/Prime
-	 * cores are evaluated by EAS and packed onto Little cores rather than keeping
-	 * Big/Prime cores awake and burning active power.
+	 * If prev_cpu is idle (or has 0 running tasks) and comfortably fits the
+	 * waking task's capacity requirement, bypass the expensive multi-domain
+	 * compute_energy() traversal and settle on prev_cpu immediately.
 	 */
 	if ((available_idle_cpu(prev_cpu) || cpu_rq(prev_cpu)->nr_running == 0) &&
 	    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
 	    task_fits_cpu(p, prev_cpu)) {
-		struct perf_domain *min_pd = pd;
-		unsigned long min_cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(pd)));
-
-		/* In DynamIQ, the first pd is the energy-efficient Little cluster */
-		if (cpumask_test_cpu(prev_cpu, perf_domain_span(pd))) {
-			rcu_read_unlock();
-			return prev_cpu;
-		}
-
-		{
-			struct perf_domain *it_pd;
-
-			for (it_pd = pd->next; it_pd; it_pd = it_pd->next) {
-				unsigned long cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(it_pd)));
-
-				if (cap < min_cap) {
-					min_cap = cap;
-					min_pd = it_pd;
-				}
-			}
-		}
-
-		if (cpumask_test_cpu(prev_cpu, perf_domain_span(min_pd)) ||
-		    !task_fits_cpu(p, cpumask_first(perf_domain_span(min_pd)))) {
-			rcu_read_unlock();
-			return prev_cpu;
-		}
+		rcu_read_unlock();
+		return prev_cpu;
 	}
 
 	/*
@@ -8214,17 +8187,6 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 	 * CPU clusters over tiny marginal energy deltas.
 	 */
 	if (prev_delta == ULONG_MAX)
-		return best_energy_cpu;
-
-	/*
-	 * Unpenalized down-migration: when best_energy_cpu is in a lower-capacity
-	 * performance domain than prev_cpu (e.g. migrating from Big/Prime down to Little)
-	 * and task_fits_cpu() confirms the task fits comfortably, don't penalize it
-	 * with system base_energy margin. Any positive energy savings (prev_delta > best_delta)
-	 * immediately returns best_energy_cpu, eliminating core trapping for light wakees.
-	 */
-	if (arch_scale_cpu_capacity(best_energy_cpu) < arch_scale_cpu_capacity(prev_cpu) &&
-	    task_fits_cpu(p, best_energy_cpu) && prev_delta > best_delta)
 		return best_energy_cpu;
 
 	{
