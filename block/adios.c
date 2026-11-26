@@ -80,8 +80,9 @@
  */
 
 // Balanced latency windows for UFS + eMMC (ns)
-static u64 default_global_latency_window = 12000000ULL;  // 12ms (was 8ms)
-static u8  default_bq_refill_below_ratio = 25;  // Balanced refill (was 40)
+// Reduced window for faster dispatch during game loading
+static u64 default_global_latency_window = 8000000ULL;  // 8ms (was 12ms)
+static u8  default_bq_refill_below_ratio = 40;  // More aggressive refill
 static u64 default_lat_model_latency_limit = 500 * NSEC_PER_MSEC;  // 500ms cap (eMMC-safe)
 static u64 default_batch_order = 0;
 
@@ -108,18 +109,18 @@ enum adios_optype {
 };
 
 // Balanced latency targets (async only; sync writes bypass via Tier-2)
-// Balanced write latency target for UFS Hibern8 deep sleep and sequential coalescing
+// Lower write latency target for game asset loading responsiveness
 static u64 default_latency_target[ADIOS_OPTYPES] = {
 	[ADIOS_READ]    =    2ULL * NSEC_PER_MSEC,  // 2ms
-	[ADIOS_WRITE]   =  250ULL * NSEC_PER_MSEC,  // 250ms (was 150ms): coalesce writeback, save power
+	[ADIOS_WRITE]   =  150ULL * NSEC_PER_MSEC,  // 150ms (was 250ms): faster writeback
 	[ADIOS_DISCARD] = 5000ULL * NSEC_PER_MSEC,  // 5s
 	[ADIOS_OTHER]   =    0ULL * NSEC_PER_MSEC,
 };
 
-// Batch limits: balanced limits for throughput and deep sleep
+// Batch limits: higher limits for game loading bursts
 static u32 default_batch_limit[ADIOS_OPTYPES] = {
-	[ADIOS_READ]    = 32,  // Balanced read batch (was 48)
-	[ADIOS_WRITE]   = 64,  // Balanced write batch (was 96)
+	[ADIOS_READ]    = 48,  // Was 32 - handle asset loading bursts
+	[ADIOS_WRITE]   = 96,  // Was 64 - faster writeback
 	[ADIOS_DISCARD] =  1,
 	[ADIOS_OTHER]   =  1,
 };
