@@ -51,13 +51,18 @@ static pud_t *get_old_pud(struct mm_struct *mm, unsigned long addr)
 	return pud;
 }
 
-static pmd_t *get_old_pmd(struct mm_struct *mm, unsigned long addr)
+static pmd_t *get_old_pmd(struct vm_area_struct *vma, unsigned long addr)
 {
+	struct mm_struct *mm = vma->vm_mm;
 	pud_t *pud;
 	pmd_t *pmd;
 
 	pud = get_old_pud(mm, addr);
 	if (!pud)
+		return NULL;
+
+	split_huge_pud(vma, pud, addr);
+	if (pud_none_or_clear_bad(pud))
 		return NULL;
 
 	pmd = pmd_offset(pud, addr);
@@ -512,7 +517,7 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 		}
 
 		extent = get_extent(NORMAL_PMD, old_addr, old_end, new_addr);
-		old_pmd = get_old_pmd(vma->vm_mm, old_addr);
+		old_pmd = get_old_pmd(vma, old_addr);
 		if (!old_pmd)
 			continue;
 		new_pmd = alloc_new_pmd(vma->vm_mm, vma, new_addr);
