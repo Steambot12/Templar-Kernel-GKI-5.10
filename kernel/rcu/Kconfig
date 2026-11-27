@@ -266,7 +266,7 @@ config RCU_LAZY
 	  offloaded cores, while non-offloaded cores keep immediate
 	  submission.
 
-	  Use enable_rcu_lazy=0 to turn it off at boot time.
+	  Use rcutree.enable_rcu_lazy=0 to turn it off at boot time.
 
 config RCU_LAZY_DEFAULT_OFF
 	bool "Turn RCU lazy invocation off by default"
