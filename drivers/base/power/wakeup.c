@@ -641,23 +641,8 @@ static bool wl_blocker_listed(struct wakeup_source *ws)
 	if (length < 1 || (size_t)length + 3 > sizeof(needle))
 		return false;	/* over-long name: fail safe, do not block */
 
-	/* Suppress Qualcomm voice activation detection idle locks */
-	if (strstr(ws->name, "qcom_vad") != NULL || strstr(ws->name, "qcom-vad") != NULL)
-		return true;
-
 	/* Suppress Qualcomm QUP UART Bluetooth idle poll locks across all SoC addresses */
 	if (strstr(ws->name, ".qcom,qup_uart") != NULL)
-		return true;
-
-	/* Suppress Bluetooth idle timer churn */
-	if (strcmp(ws->name, "bluetooth_timer") == 0)
-		return true;
-
-	/* Suppress ecosystem telemetry, cloud sync, and discovery polling */
-	if (strstr(ws->name, "mi_connect") != NULL || strstr(ws->name, "mi_link") != NULL ||
-	    strstr(ws->name, "MiSmartHub") != NULL || strstr(ws->name, "MiShare") != NULL ||
-	    strstr(ws->name, "AnalyticsCore") != NULL ||
-	    strstr(ws->name, "CloudService") != NULL || strstr(ws->name, "FindDevice") != NULL)
 		return true;
 
 	scnprintf(needle, sizeof(needle), ";%s;", ws->name);
