@@ -36,7 +36,7 @@ static int __init cpuidle_governor_setup(char *str)
 	strlcpy(param_governor, str, sizeof(param_governor));
 	return 1;
 }
-__setup("cpuidle.governor", cpuidle_governor_setup);
+__setup("cpuidle.governor=", cpuidle_governor_setup);
 
 LIST_HEAD(cpuidle_governors);
 struct cpuidle_governor *cpuidle_curr_governor;
