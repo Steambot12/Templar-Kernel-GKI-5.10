@@ -3236,7 +3236,6 @@ static int sd_revalidate_disk(struct gendisk *disk)
 		blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, q);
 		blk_queue_flag_clear(QUEUE_FLAG_IO_STAT, q);
 		blk_queue_flag_set(QUEUE_FLAG_SAME_COMP, q);
-		blk_queue_flag_set(QUEUE_FLAG_SAME_FORCE, q);
 
 		if (scsi_device_supports_vpd(sdp)) {
 			sd_read_block_provisioning(sdkp);
@@ -3299,7 +3298,6 @@ static int sd_revalidate_disk(struct gendisk *disk)
 	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, q);
 	blk_queue_flag_clear(QUEUE_FLAG_IO_STAT, q);
 	blk_queue_flag_set(QUEUE_FLAG_SAME_COMP, q);
-	blk_queue_flag_set(QUEUE_FLAG_SAME_FORCE, q);
 
 	/*
 	 * For a zoned drive, revalidating the zones can be done only once

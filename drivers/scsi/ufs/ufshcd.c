@@ -4972,12 +4972,11 @@ static int ufshcd_slave_configure(struct scsi_device *sdev)
 	 * Tune UFS request queue for minimal CPU overhead & high throughput:
 	 * - Disable iostats accounting overhead
 	 * - Disable contributing to random entropy pool
-	 * - Force completions on the requesting CPU (rq_affinity = 2) for cache locality
+	 * - Complete on same cache domain (rq_affinity = 1) without cross-cluster IPIs
 	 */
 	blk_queue_flag_clear(QUEUE_FLAG_IO_STAT, q);
 	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, q);
 	blk_queue_flag_set(QUEUE_FLAG_SAME_COMP, q);
-	blk_queue_flag_set(QUEUE_FLAG_SAME_FORCE, q);
 
 	trace_android_vh_ufs_update_sdev(sdev);
 

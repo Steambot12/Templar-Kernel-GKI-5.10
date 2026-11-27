@@ -2298,7 +2298,6 @@ static int zram_add(void)
 
 	blk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES, zram->disk->queue);
 	blk_queue_flag_set(QUEUE_FLAG_SAME_COMP, zram->disk->queue);
-	blk_queue_flag_set(QUEUE_FLAG_SAME_FORCE, zram->disk->queue);
 	blk_queue_flag_clear(QUEUE_FLAG_IO_STAT, zram->disk->queue);
 	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, zram->disk->queue);
 	device_add_disk(NULL, zram->disk, zram_disk_attr_groups);

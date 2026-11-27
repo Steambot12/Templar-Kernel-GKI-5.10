@@ -196,9 +196,8 @@ static u64 workingset_protection_prev_totalram __read_mostly = 0;
 
 /*
  * From 0 .. 200.  Higher means more swappy.
- * Default 100 for optimal zRAM performance on mobile devices.
  */
-int vm_swappiness = 100;
+int vm_swappiness = 60;
 
 struct kcompress_t kcompress_data[MAX_NUMNODES];
 
