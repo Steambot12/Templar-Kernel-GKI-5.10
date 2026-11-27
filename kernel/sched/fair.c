@@ -8030,43 +8030,65 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 		return cpu;
 	}
 
-	/*
-	 * BACKPORT (Linux 6.12 EAS fast-path):
-	 * If prev_cpu is idle (or has 0 running tasks) and comfortably fits the
-	 * waking task's capacity requirement, bypass the expensive multi-domain
-	 * compute_energy() traversal and settle on prev_cpu immediately.
-	 */
-	if ((available_idle_cpu(prev_cpu) || cpu_rq(prev_cpu)->nr_running == 0) &&
-	    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
-	    task_fits_cpu(p, prev_cpu)) {
-		rcu_read_unlock();
-		return prev_cpu;
-	}
+	{
+		struct perf_domain *min_pd = pd, *it_pd;
+		unsigned long min_cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(pd)));
 
-	/*
-	 * Energy-aware wake-up happens on the lowest sched_domain starting
-	 * from sd_asym_cpucapacity spanning over this_cpu and prev_cpu.
-	 */
-	sd = rcu_dereference(*this_cpu_ptr(&sd_asym_cpucapacity));
-	while (sd && !cpumask_test_cpu(prev_cpu, sched_domain_span(sd)))
-		sd = sd->parent;
-	if (!sd)
-		goto fail;
+		for (it_pd = pd->next; it_pd; it_pd = it_pd->next) {
+			unsigned long cap = arch_scale_cpu_capacity(cpumask_first(perf_domain_span(it_pd)));
 
-	if (!task_util_est(p) && p_util_min == 0) {
-		int idle_cpu = -1;
-
-		for_each_cpu_and(cpu, perf_domain_span(pd), sched_domain_span(sd)) {
-			if (!cpumask_test_cpu(cpu, p->cpus_ptr))
-				continue;
-			if (available_idle_cpu(cpu)) {
-				idle_cpu = cpu;
-				break;
+			if (cap < min_cap) {
+				min_cap = cap;
+				min_pd = it_pd;
 			}
 		}
-		if (idle_cpu >= 0) {
-			rcu_read_unlock();
-			return idle_cpu;
+
+		/*
+		 * Short-circuit to idle prev_cpu only if it is in the most
+		 * energy-efficient performance domain (min_pd), if the task cannot
+		 * run on min_pd, or if it exceeds min_pd capacity. Otherwise let
+		 * EAS evaluate energy savings to avoid pinning light tasks on
+		 * Big/Prime cores.
+		 */
+		if (available_idle_cpu(prev_cpu) &&
+		    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
+		    task_fits_cpu(p, prev_cpu)) {
+			int min_cpu = cpumask_first_and(perf_domain_span(min_pd),
+							p->cpus_ptr);
+
+			if (cpumask_test_cpu(prev_cpu, perf_domain_span(min_pd)) ||
+			    min_cpu >= nr_cpu_ids ||
+			    !task_fits_cpu(p, min_cpu)) {
+				rcu_read_unlock();
+				return prev_cpu;
+			}
+		}
+
+		/*
+		 * Energy-aware wake-up happens on the lowest sched_domain starting
+		 * from sd_asym_cpucapacity spanning over this_cpu and prev_cpu.
+		 */
+		sd = rcu_dereference(*this_cpu_ptr(&sd_asym_cpucapacity));
+		while (sd && !cpumask_test_cpu(prev_cpu, sched_domain_span(sd)))
+			sd = sd->parent;
+		if (!sd)
+			goto fail;
+
+		if (!task_util_est(p) && p_util_min == 0) {
+			int idle_cpu = -1;
+
+			for_each_cpu_and(cpu, perf_domain_span(min_pd), sched_domain_span(sd)) {
+				if (!cpumask_test_cpu(cpu, p->cpus_ptr))
+					continue;
+				if (available_idle_cpu(cpu)) {
+					idle_cpu = cpu;
+					break;
+				}
+			}
+			if (idle_cpu >= 0) {
+				rcu_read_unlock();
+				return idle_cpu;
+			}
 		}
 	}
 
