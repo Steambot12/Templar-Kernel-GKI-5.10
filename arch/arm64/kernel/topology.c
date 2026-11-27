@@ -19,7 +19,7 @@
 #include <linux/jiffies.h>
 #include <linux/percpu.h>
 #include <linux/sched.h>
-#include <linux/sched/isolation.h>
+#include <linux/smp.h>
 
 #include <asm/cpu.h>
 #include <asm/cputype.h>
@@ -105,7 +105,6 @@ static cpumask_var_t amu_fie_cpus;
 struct amu_cntr_sample {
 	u64		arch_const_cycles_prev;
 	u64		arch_core_cycles_prev;
-	unsigned long	last_scale_update;
 };
 
 static DEFINE_PER_CPU_SHARED_ALIGNED(struct amu_cntr_sample, cpu_amu_samples);
@@ -120,25 +119,32 @@ void init_cpu_freq_invariance_counters(void)
 		read_sysreg_s(SYS_AMEVCNTR0_CONST_EL0);
 }
 
+static void amu_init_counters_ipi(void *unused)
+{
+	init_cpu_freq_invariance_counters();
+}
+
 static int validate_cpu_freq_invariance_counters(int cpu)
 {
 	u64 max_freq_hz, ratio;
+	struct amu_cntr_sample *amu_sample;
 
 	if (!cpu_has_amu_feat(cpu)) {
 		pr_debug("CPU%d: counters are not supported.\n", cpu);
 		return -EINVAL;
 	}
 
-	init_cpu_freq_invariance_counters();
+	if (cpu == smp_processor_id())
+		init_cpu_freq_invariance_counters();
+	else if (!cpu_online(cpu) ||
+		 smp_call_function_single(cpu, amu_init_counters_ipi, NULL, 1))
+		return -EINVAL;
 
-	{
-		struct amu_cntr_sample *amu_sample = per_cpu_ptr(&cpu_amu_samples, cpu);
-
-		if (unlikely(!amu_sample->arch_const_cycles_prev ||
-			     !amu_sample->arch_core_cycles_prev)) {
-			pr_debug("CPU%d: cycle counters are not enabled.\n", cpu);
-			return -EINVAL;
-		}
+	amu_sample = per_cpu_ptr(&cpu_amu_samples, cpu);
+	if (unlikely(!amu_sample->arch_const_cycles_prev ||
+		     !amu_sample->arch_core_cycles_prev)) {
+		pr_debug("CPU%d: cycle counters are not enabled.\n", cpu);
+		return -EINVAL;
 	}
 
 	/* Convert maximum frequency from KHz to Hz and validate */
@@ -302,11 +308,7 @@ void topology_scale_freq_tick(void)
 
 	scale = min_t(unsigned long, scale, SCHED_CAPACITY_SCALE);
 	this_cpu_write(freq_scale, (unsigned long)scale);
-
-	amu_sample->last_scale_update = jiffies;
 }
-
-#define AMU_SAMPLE_EXP_MS	20
 
 static unsigned int arch_scale_freq_ref(int cpu)
 {
