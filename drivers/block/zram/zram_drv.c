@@ -1678,16 +1678,6 @@ compress_again:
 	 * from the slow path and handle has already been allocated.
 	 */
 	if (!handle) {
-		/*
-		 * BACKPORT (v6.12): Free old slot memory early before allocating
-		 * the new handle. This prevents holding both old and new compressed
-		 * objects simultaneously in zsmalloc, directly reducing pool memory
-		 * spikes, fragmentation, and writestalls under heavy memory pressure.
-		 */
-		zram_slot_lock(zram, index);
-		zram_free_page(zram, index);
-		zram_slot_unlock(zram, index);
-
 		handle = zs_malloc(zram->mem_pool, comp_len,
 				__GFP_KSWAPD_RECLAIM |
 				__GFP_NOWARN |
@@ -1729,9 +1719,7 @@ compress_again:
 	atomic64_add(comp_len, &zram->stats.compr_data_size);
 out:
 	zram_slot_lock(zram, index);
-	/* If we came from the same-page fastpath, free previous sector now */
-	if (flags & ZRAM_SAME)
-		zram_free_page(zram, index);
+	zram_free_page(zram, index);
 
 	if (comp_len == PAGE_SIZE) {
 		zram_set_flag(zram, index, ZRAM_HUGE);
