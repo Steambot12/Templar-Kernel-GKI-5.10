@@ -294,7 +294,7 @@ static bool wq_disable_numa;
 module_param_named(disable_numa, wq_disable_numa, bool, 0444);
 
 /* see the comment above the definition of WQ_POWER_EFFICIENT */
-static bool wq_power_efficient = true;
+static bool wq_power_efficient = IS_ENABLED(CONFIG_WQ_POWER_EFFICIENT_DEFAULT);
 module_param_named(power_efficient, wq_power_efficient, bool, 0444);
 
 static bool wq_online;			/* can kworkers be created yet? */
@@ -1388,6 +1388,21 @@ static bool is_chained_work(struct workqueue_struct *wq)
  * by wq_unbound_cpumask.  Otherwise, round robin among the allowed ones to
  * avoid perturbing sensitive tasks.
  */
+static unsigned long wq_little_cap_limit(void)
+{
+	unsigned long min_cap = ULONG_MAX;
+	int target;
+
+	for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
+		unsigned long cap = arch_scale_cpu_capacity(target);
+
+		if (cap < min_cap)
+			min_cap = cap;
+	}
+
+	return min_cap == ULONG_MAX ? 0 : min_cap + (min_cap >> 3);
+}
+
 static int wq_select_unbound_cpu(int cpu)
 {
 	static bool printed_dbg_warning;
@@ -1401,16 +1416,17 @@ static int wq_select_unbound_cpu(int cpu)
 		 * big or prime cores awake.
 		 */
 		if (wq_power_efficient) {
+			unsigned long cap_limit = wq_little_cap_limit();
 			int target;
 			int fallback = -1;
 
 			if (cpumask_test_cpu(cpu, wq_unbound_cpumask) &&
-			    arch_scale_cpu_capacity(cpu) <= 614)
+			    arch_scale_cpu_capacity(cpu) <= cap_limit)
 				return cpu;
 
 			/* Fast-path: find an idle LITTLE CPU */
 			for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
-				if (arch_scale_cpu_capacity(target) <= 614) {
+				if (arch_scale_cpu_capacity(target) <= cap_limit) {
 					if (available_idle_cpu(target))
 						return target;
 					if (fallback < 0)
@@ -1424,13 +1440,13 @@ static int wq_select_unbound_cpu(int cpu)
 				int count = 0, idx, pick = 0;
 
 				for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
-					if (arch_scale_cpu_capacity(target) <= 614)
+					if (arch_scale_cpu_capacity(target) <= cap_limit)
 						count++;
 				}
 				if (count > 1) {
 					idx = (unsigned int)atomic_inc_return(&wq_little_cursor) % count;
 					for_each_cpu_and(target, wq_unbound_cpumask, cpu_online_mask) {
-						if (arch_scale_cpu_capacity(target) <= 614) {
+						if (arch_scale_cpu_capacity(target) <= cap_limit) {
 							if (pick++ == idx)
 								return target;
 						}
