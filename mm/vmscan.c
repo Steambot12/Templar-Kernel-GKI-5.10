@@ -2587,6 +2587,8 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 	unsigned long nr_reclaimed = 0;
 	unsigned long nr_to_reclaim = sc->nr_to_reclaim;
 	bool proportional_reclaim;
+	bool saved_clean_min = sc->clean_below_min;
+	bool saved_anon_min = sc->anon_below_min;
 	struct blk_plug plug;
 
 	get_scan_count(lruvec, sc, nr);
@@ -2599,14 +2601,9 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 	 * one notch and the next pass reads the same watermarks and
 	 * zeroes again -- the loop burns out and OOM is the only exit.
 	 *
-	 * Only the *all-zero* case is a real deadlock. The previous code
-	 * refilled per-LRU (rescanned any single zeroed LRU that still
-	 * held pages), which defeated the soft clean_low/anon tiers --
-	 * get_scan_count() intentionally zeroes one LRU to steer reclaim
-	 * to the other (SCAN_FILE/SCAN_ANON), and the refill undid that,
-	 * reclaiming clean file pages that clean_low was meant to protect.
-	 * Gate the even rescan on all targets being zero so the watermarks
-	 * can never deadlock the node without breaking the soft protection.
+	 * Only the *all-zero* case is a real deadlock. When refilling, we must
+	 * also drop the below_min gates for this pass so shrink_page_list()
+	 * does not bounce all isolated pages back to keep_locked.
 	 */
 	{
 		bool all_zero = true;
@@ -2618,12 +2615,23 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 			}
 		}
 		if (all_zero) {
+			struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+			bool can_swap = sc->may_swap &&
+					mem_cgroup_get_nr_swap_pages(memcg) > 0;
+
 			for_each_evictable_lru(lru) {
-				if (lruvec_lru_size(lruvec, lru, sc->reclaim_idx))
-					nr[lru] = lruvec_lru_size(lruvec, lru,
-								   sc->reclaim_idx) /
-						  (1UL << sc->priority);
+				unsigned long size;
+
+				if (!is_file_lru(lru) && !can_swap)
+					continue;
+				size = lruvec_lru_size(lruvec, lru,
+						       sc->reclaim_idx);
+				if (size)
+					nr[lru] = max(1UL, size >> sc->priority);
 			}
+			sc->clean_below_min = 0;
+			if (can_swap)
+				sc->anon_below_min = 0;
 		}
 	}
 
@@ -2715,6 +2723,8 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 		nr[lru] -= min(nr[lru], nr_scanned);
 	}
 	blk_finish_plug(&plug);
+	sc->clean_below_min = saved_clean_min;
+	sc->anon_below_min = saved_anon_min;
 	sc->nr_reclaimed += nr_reclaimed;
 
 	/*
