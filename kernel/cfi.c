@@ -359,7 +359,8 @@ EXPORT_SYMBOL(cfi_failure_handler);
 void __cfi_slowpath(uint64_t id, void *ptr, void *diag);
 void __cfi_slowpath(uint64_t id, void *ptr, void *diag)
 {
-	__cfi_slowpath_diag(id, ptr, diag);
+	(void)diag;
+	__cfi_slowpath_diag(id, ptr, NULL);
 }
 EXPORT_SYMBOL(__cfi_slowpath);
 
