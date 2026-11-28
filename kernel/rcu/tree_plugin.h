@@ -1735,13 +1735,17 @@ __setup("rcu_lazy_flush_ms=", setup_rcu_lazy_flush_ms);
 static void wake_nocb_gp_defer(struct rcu_data *rdp, int waketype,
 			       const char *reason)
 {
-	if (waketype == RCU_NOCB_WAKE_LAZY &&
-	    rdp->nocb_defer_wakeup == RCU_NOCB_WAKE_NOT) {
-		mod_timer(&rdp->nocb_timer, jiffies + rcu_get_jiffies_lazy_flush());
-		WRITE_ONCE(rdp->nocb_defer_wakeup, waketype);
+	if (waketype == RCU_NOCB_WAKE_LAZY) {
+		if (rdp->nocb_defer_wakeup == RCU_NOCB_WAKE_NOT) {
+			mod_timer(&rdp->nocb_timer, jiffies + rcu_get_jiffies_lazy_flush());
+			WRITE_ONCE(rdp->nocb_defer_wakeup, waketype);
+		}
 	} else if (waketype == RCU_NOCB_WAKE_BYPASS) {
-		mod_timer(&rdp->nocb_timer, jiffies + 2);
-		WRITE_ONCE(rdp->nocb_defer_wakeup, waketype);
+		if (rdp->nocb_defer_wakeup < RCU_NOCB_WAKE_BYPASS ||
+		    rdp->nocb_defer_wakeup == RCU_NOCB_WAKE_LAZY) {
+			mod_timer(&rdp->nocb_timer, jiffies + 2);
+			WRITE_ONCE(rdp->nocb_defer_wakeup, waketype);
+		}
 	} else {
 		if (rdp->nocb_defer_wakeup < RCU_NOCB_WAKE)
 			mod_timer(&rdp->nocb_timer, jiffies + 1);

@@ -236,9 +236,7 @@ static int boeffla_wl_blocker_init(void)
 {
 	int ret;
 
-	// initialize default list and search string first
-	if (list_wl_default[0] == '\0')
-		strcpy(list_wl_default, LIST_WL_DEFAULT);
+	// initialize default search string
 	build_search_string(list_wl_default, list_wl);
 
 	// register boeffla wakelock blocker control device with attribute groups
