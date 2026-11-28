@@ -16,7 +16,6 @@
 #include <linux/cacheinfo.h>
 #include <linux/cpufreq.h>
 #include <linux/init.h>
-#include <linux/jiffies.h>
 #include <linux/percpu.h>
 #include <linux/sched.h>
 #include <linux/smp.h>
@@ -134,11 +133,15 @@ static int validate_cpu_freq_invariance_counters(int cpu)
 		return -EINVAL;
 	}
 
-	if (cpu == smp_processor_id())
+	if (cpu == get_cpu()) {
 		init_cpu_freq_invariance_counters();
-	else if (!cpu_online(cpu) ||
-		 smp_call_function_single(cpu, amu_init_counters_ipi, NULL, 1))
-		return -EINVAL;
+		put_cpu();
+	} else {
+		put_cpu();
+		if (!cpu_online(cpu) ||
+		    smp_call_function_single(cpu, amu_init_counters_ipi, NULL, 1))
+			return -EINVAL;
+	}
 
 	amu_sample = per_cpu_ptr(&cpu_amu_samples, cpu);
 	if (unlikely(!amu_sample->arch_const_cycles_prev ||

@@ -477,11 +477,7 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #endif /* CONFIG_NO_HZ_COMMON */
 
 /*
- * BACKPORT (Linux 6.12):
- * Make sugov_should_update_freq() ignore the rate limit when DL/RT,
- * iowait boost, or latency-sensitive/boosted tasks request higher
- * CPU capacity. Prevents frame drops and UI jitter by allowing
- * immediate frequency ramp-up.
+ * Trigger an immediate frequency re-evaluation when deadline bandwidth changes.
  */
 static inline void ignore_dl_rate_limit(struct sugov_cpu *sg_cpu,
 					struct sugov_policy *sg_policy)

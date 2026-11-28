@@ -498,10 +498,11 @@ struct sched_entity {
 	ANDROID_KABI_USE(1, u64 burst_time);
 	_ANDROID_KABI_REPLACE(_ANDROID_KABI_RESERVE(2),
 		struct {
-			u8 prev_burst_penalty;
-			u8 curr_burst_penalty;
-			u8 burst_penalty;
+			u16 prev_burst_penalty;
+			u16 curr_burst_penalty;
+			u16 burst_penalty;
 			u8 burst_score;
+			u8 __bore_pad;
 		}
 	);
 	/*

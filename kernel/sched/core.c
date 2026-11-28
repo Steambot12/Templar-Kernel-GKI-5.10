@@ -8049,31 +8049,38 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 		sched_online_group(tg, parent);
 
 #ifdef CONFIG_UCLAMP_TASK_GROUP
-	/* Propagate the effective uclamp value for the new group */
-	mutex_lock(&uclamp_mutex);
-	rcu_read_lock();
+	{
+		const char *name = (css->cgroup && css->cgroup->kn) ?
+					css->cgroup->kn->name : NULL;
+		bool is_top_app = name && !strcmp(name, "top-app");
+		bool is_bg = name && (!strcmp(name, "background") ||
+				      !strcmp(name, "system-background"));
 
-	if (css->cgroup && css->cgroup->kn && css->cgroup->kn->name) {
-		const char *name = css->cgroup->kn->name;
+		/* static_branch_enable() may sleep; acquire before locks/RCU. */
+		if (is_bg)
+			static_branch_enable(&sched_uclamp_used);
 
-		if (!strcmp(name, "top-app")) {
+		/* Propagate the effective uclamp value for the new group */
+		mutex_lock(&uclamp_mutex);
+		rcu_read_lock();
+
+		if (is_top_app) {
 			/*
 			 * Foreground UI app: mark latency-sensitive so EAS targets the lowest
 			 * exit-latency idle CPU immediately without synthetic clamp floor inflating
 			 * idle utilization or delaying deep sleep.
 			 */
 			tg->latency_sensitive = 1;
-		} else if (!strcmp(name, "background") || !strcmp(name, "system-background")) {
+		} else if (is_bg) {
 			/* Background work: capped to avoid burning power and heating CPU */
-			static_branch_enable(&sched_uclamp_used);
 			uclamp_se_set(&tg->uclamp_req[UCLAMP_MAX], 307, false);
 			tg->uclamp_pct[UCLAMP_MAX] = 3000;
 		}
-	}
 
-	cpu_util_update_eff(css);
-	rcu_read_unlock();
-	mutex_unlock(&uclamp_mutex);
+		cpu_util_update_eff(css);
+		rcu_read_unlock();
+		mutex_unlock(&uclamp_mutex);
+	}
 #endif
 
 	trace_android_rvh_cpu_cgroup_online(css);

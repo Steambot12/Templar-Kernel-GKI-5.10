@@ -942,10 +942,14 @@ void task_fork_bore(struct task_struct *p, struct task_struct *parent,
 	p->futex_waiting = false;
 	p->stop_bore_update = false;
 
-	if (!static_branch_likely(&sched_bore_key) || !task_is_bore_eligible(p))
+	if (!static_branch_likely(&sched_bore_key))
 		return;
 
 	rcu_read_lock();
+	if (!task_is_bore_eligible(p)) {
+		rcu_read_unlock();
+		return;
+	}
 	if (clone_flags & CLONE_THREAD) {
 		struct task_struct *leader = p->group_leader;
 
@@ -1071,8 +1075,7 @@ int sched_burst_protect_slice_lv_update_handler(struct ctl_table *table,
 	if (ret || !write)
 		return ret;
 
-	if (sched_burst_protect_slice_lv == 1 ||
-	    sched_burst_protect_slice_lv == 2)
+	if (sched_burst_protect_slice_lv >= 1)
 		static_branch_enable(&sched_burst_protect_slice_cond_key);
 	else
 		static_branch_disable(&sched_burst_protect_slice_cond_key);
@@ -7676,14 +7679,6 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	if (!sd)
 		return target;
 
-	/*
-	 * BACKPORT (v6.12 fast-path): If target is already an available idle CPU,
-	 * return it immediately to avoid expensive LLC domain scanning and
-	 * reduce task wakeup dispatch latency.
-	 */
-	if (available_idle_cpu(target))
-		return target;
-
 	i = select_idle_core(p, sd, target);
 	if ((unsigned)i < nr_cpumask_bits)
 		return i;
@@ -8050,7 +8045,7 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu, int sy
 		 * EAS evaluate energy savings to avoid pinning light tasks on
 		 * Big/Prime cores.
 		 */
-		if (available_idle_cpu(prev_cpu) &&
+		if (!uclamp_boosted(p) && available_idle_cpu(prev_cpu) &&
 		    cpumask_test_cpu(prev_cpu, p->cpus_ptr) &&
 		    task_fits_cpu(p, prev_cpu)) {
 			int min_cpu = cpumask_first_and(perf_domain_span(min_pd),
@@ -9714,14 +9709,15 @@ static void update_cpu_capacity(struct sched_domain *sd, int cpu)
 	 *     equally.
 	 */
 	if (static_branch_unlikely(&sched_asym_cpucapacity)) {
-		unsigned long inv_cap = capacity_orig - thermal_load_avg(rq);
+		unsigned long therm = thermal_load_avg(rq);
+		unsigned long inv_cap = capacity_orig > therm ? capacity_orig - therm : 0;
 		struct perf_domain *pd = rcu_dereference(rq->rd->pd);
 
 		rq->cpu_capacity_inverted = 0;
 
 		for (; pd; pd = pd->next) {
 			struct cpumask *pd_span = perf_domain_span(pd);
-			unsigned long pd_cap_orig, pd_cap;
+			unsigned long pd_cap_orig, pd_therm, pd_cap;
 
 			cpu = cpumask_any(pd_span);
 			pd_cap_orig = arch_scale_cpu_capacity(cpu);
@@ -9736,7 +9732,8 @@ static void update_cpu_capacity(struct sched_domain *sd, int cpu)
 			 * inversion.
 			 */
 			if (capacity_orig == pd_cap_orig) {
-				pd_cap = pd_cap_orig - thermal_load_avg(cpu_rq(cpu));
+				pd_therm = thermal_load_avg(cpu_rq(cpu));
+				pd_cap = pd_cap_orig > pd_therm ? pd_cap_orig - pd_therm : 0;
 
 				if (pd_cap > inv_cap) {
 					rq->cpu_capacity_inverted = inv_cap;
