@@ -35,7 +35,7 @@ static int set_zstdn_compression_level(const char *buf, const struct kernel_para
 	if (ret)
 		return ret;
 
-	if (temp < zstd_min_clevel() || temp > zstd_max_clevel())
+	if (temp < zstd_min_clevel() || temp > -1)
 		return -EINVAL;
 
 	return param_set_int(buf, kp);
@@ -57,9 +57,10 @@ struct zstdn_ctx {
 	bool is_oplus;
 };
 
-static zstd_parameters zstdn_params(void)
+static zstd_parameters zstdn_params_for_level(int level)
 {
-	zstd_parameters params = zstd_get_params(zstdn_compression_level, PAGE_SIZE);
+	zstd_parameters params = zstd_get_params(clamp(level, zstd_min_clevel(), -1),
+						 PAGE_SIZE);
 
 	/* Clamped to single 4KB page window */
 	if (params.cParams.windowLog > 12)
@@ -73,9 +74,10 @@ static zstd_parameters zstdn_params(void)
 	return params;
 }
 
-static zstd_parameters zstdn_o_params(void)
+static zstd_parameters zstdn_o_params_for_level(int level)
 {
-	zstd_parameters params = zstd_get_params(zstdn_o_compression_level, PAGE_SIZE);
+	zstd_parameters params = zstd_get_params(clamp(level, zstd_min_clevel(), -1),
+						 PAGE_SIZE);
 
 	/* Clamped to single 4KB page window */
 	if (params.cParams.windowLog > 12)
@@ -93,10 +95,23 @@ static zstd_parameters zstdn_o_params(void)
 	return params;
 }
 
+static zstd_parameters zstdn_params(void)
+{
+	return zstdn_params_for_level(READ_ONCE(zstdn_compression_level));
+}
+
+static zstd_parameters zstdn_o_params(void)
+{
+	return zstdn_o_params_for_level(READ_ONCE(zstdn_o_compression_level));
+}
+
 static int zstdn_comp_init(struct zstdn_ctx *ctx)
 {
 	const zstd_parameters params = ctx->is_oplus ? zstdn_o_params() : zstdn_params();
-	const size_t wksp_size = zstd_cctx_workspace_bound(&params.cParams);
+	const zstd_parameters max_params = ctx->is_oplus ?
+		zstdn_o_params_for_level(-1) : zstdn_params_for_level(-1);
+	const size_t wksp_size = max(zstd_cctx_workspace_bound(&params.cParams),
+				     zstd_cctx_workspace_bound(&max_params.cParams));
 
 	ctx->cwksp = vzalloc(wksp_size);
 	if (!ctx->cwksp)

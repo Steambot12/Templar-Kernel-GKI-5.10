@@ -1173,6 +1173,7 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
 		return 0;
 	if (zram_test_flag(zram, index, ZRAM_SAME) ||
 	    zram_test_flag(zram, index, ZRAM_WB) ||
+	    zram_test_flag(zram, index, ZRAM_UNDER_WB) ||
 	    zram_test_flag(zram, index, ZRAM_HUGE) ||
 	    zram_test_flag(zram, index, ZRAM_INCOMPRESSIBLE))
 		return 0;
