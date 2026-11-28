@@ -546,7 +546,7 @@ static int nm_hijacked_unlink(struct inode *dir, struct dentry *dentry)
     if (unlikely(!nm_iop || !nm_inode_is_virtual(inode) || nm_is_uid_blocked(fsuid)))
         goto do_real_unlink;
 
-    if (!mutex_trylock(&nm_mutex)) return -EBUSY;
+    if (mutex_lock_interruptible(&nm_mutex)) return -ERESTARTSYS;
     dir_node = rcu_dereference_protected(nm_iop->dir_node, lockdep_is_held(&nm_mutex));
     leaf = nm_find_leaf_in_dir(dir_node, dentry->d_name.name, dentry->d_name.len);
     if (unlikely(!leaf || !(rule = nm_select_rule(leaf, fsuid)) || (!rule->target_uid && !rule->uid_end))) {

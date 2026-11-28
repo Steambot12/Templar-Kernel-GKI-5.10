@@ -293,12 +293,13 @@ int sync_file_range(struct file *file, loff_t offset, loff_t nbytes,
 	ret = 0;
 
 	/*
-	 * BACKPORT (Linux 6.12):
-	 * Fast path: if the address space has no dirty pages and no in-flight
-	 * writeback, skip scanning and waiting. Greatly reduces unnecessary VFS
-	 * locking overhead for frequent defensive sync_file_range calls.
+	 * Fast path: if neither wait flag is set and the address space has no
+	 * dirty or writeback pages, skip write scanning. When WAIT_BEFORE or
+	 * WAIT_AFTER is requested, still invoke file_fdatawait_range() so
+	 * pending writeback errors in wb_err are never silently swallowed.
 	 */
-	if (!mapping_tagged(mapping, PAGECACHE_TAG_DIRTY) &&
+	if (!(flags & (SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WAIT_AFTER)) &&
+	    !mapping_tagged(mapping, PAGECACHE_TAG_DIRTY) &&
 	    !mapping_tagged(mapping, PAGECACHE_TAG_WRITEBACK))
 		goto out;
 
