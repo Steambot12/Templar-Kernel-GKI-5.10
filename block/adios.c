@@ -197,6 +197,7 @@ struct latency_model {
 	spinlock_t update_lock;
 	struct latency_model_params __rcu *params;
 
+	struct lm_buckets *aggr_buckets;
 	struct lm_buckets __percpu *pcpu_buckets;
 	struct lm_buckets __percpu *pcpu_snapshot;
 
@@ -252,8 +253,6 @@ struct adios_data {
 	spinlock_t bq_lock;
 	spinlock_t barrier_lock;
 	struct list_head barrier_queue;
-
-	struct lm_buckets *aggr_buckets;
 
 	struct latency_model latency_model[ADIOS_OPTYPES];
 	struct timer_list update_timer;
@@ -467,7 +466,7 @@ static void latency_model_update(
 	u64 small_weight, large_weight;
 	bool time_elapsed;
 	bool small_processed = false, large_processed = false;
-	struct lm_buckets *aggr = ad->aggr_buckets;
+	struct lm_buckets *aggr = model->aggr_buckets;
 	struct latency_bucket_small *asb;
 	struct latency_bucket_large *alb;
 	struct lm_buckets *pcpu_b, *snap;
@@ -682,8 +681,8 @@ static inline u32 eval_this_adios_state(u32 state, u32 shift)
 static inline u32 eval_adios_state(struct adios_data *ad, u32 shift)
 { return eval_this_adios_state(get_adios_state(ad), shift); }
 
-// Add request to deadline tree
-static void add_to_dl_tree(
+// Add request to deadline tree; returns false on GFP_ATOMIC slab failure.
+static bool add_to_dl_tree(
 		struct adios_data *ad, bool dl_idx, struct request *rq) {
 	struct rb_root_cached *root = &ad->dl_tree[dl_idx];
 	struct rb_node **link = &(root->rb_root.rb_node), *parent = NULL;
@@ -725,7 +724,7 @@ static void add_to_dl_tree(
 	if (!dlg || dlg->deadline != deadline) {
 		dlg = kmem_cache_zalloc(adios_dl_group_cache, GFP_ATOMIC);
 		if (!dlg)
-			return;
+			return false;
 		dlg->deadline = deadline;
 		INIT_LIST_HEAD(&dlg->rqs);
 		rb_link_node(&dlg->node, parent, link);
@@ -737,6 +736,8 @@ found:
 
 	if (was_empty)
 		set_adios_state(ad, ADIOS_STATE_DL, dl_idx, true);
+
+	return true;
 }
 
 // Remove request from deadline tree
@@ -795,6 +796,9 @@ static void adios_depth_updated(struct blk_mq_hw_ctx *hctx) {
 	sbitmap_queue_min_shallow_depth(tags->bitmap_tags, ad->async_depth);
 }
 
+static void insert_to_prio_queue(struct adios_data *ad,
+				 struct request *rq, bool pq_idx);
+
 // Handle request merge
 static void adios_request_merged(struct request_queue *q, struct request *req,
 				  enum elv_merge type) {
@@ -802,7 +806,8 @@ static void adios_request_merged(struct request_queue *q, struct request *req,
 	struct adios_data *ad = q->elevator->elevator_data;
 
 	del_from_dl_tree(ad, dl_idx, req);
-	add_to_dl_tree(ad, dl_idx, req);
+	if (!add_to_dl_tree(ad, dl_idx, req))
+		insert_to_prio_queue(ad, req, 0);
 }
 
 // Handle merged requests
@@ -843,7 +848,8 @@ static bool merge_or_insert_to_dl_tree(struct adios_data *ad,
 		return true;
 
 	bool dl_idx = adios_optype_not_read(rq);
-	add_to_dl_tree(ad, dl_idx, rq);
+	if (!add_to_dl_tree(ad, dl_idx, rq))
+		insert_to_prio_queue(ad, rq, 0);
 
 	if (rq_mergeable(rq)) {
 		elv_rqhash_add(q, rq);
@@ -1395,16 +1401,10 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 		for (optype = 0; optype < ADIOS_OPTYPES; optype++)
 			INIT_LIST_HEAD(&ad->batch_queue[page][optype]);
 
-	ad->aggr_buckets = kzalloc(sizeof(*ad->aggr_buckets), GFP_KERNEL);
-	if (!ad->aggr_buckets) {
-		pr_err("adios: Failed to allocate aggregation buckets\n");
-		goto destroy_rq_data_pool;
-	}
-
 	ad->pcpu_completion = alloc_percpu(struct adios_pcpu_completion);
 	if (!ad->pcpu_completion) {
 		pr_err("adios: Failed to allocate per-CPU completion data\n");
-		goto free_aggr_buckets;
+		goto destroy_rq_data_pool;
 	}
 
 	for (optype = 0; optype < ADIOS_OPTYPES; optype++) {
@@ -1420,9 +1420,17 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 		params->last_update_jiffies = jiffies;
 		RCU_INIT_POINTER(model->params, params);
 
+		model->aggr_buckets = kzalloc(sizeof(*model->aggr_buckets), GFP_KERNEL);
+		if (!model->aggr_buckets) {
+			pr_err("adios: Failed to allocate aggregation buckets\n");
+			kfree(params);
+			goto free_buckets;
+		}
+
 		model->pcpu_buckets = alloc_percpu(struct lm_buckets);
 		if (!model->pcpu_buckets) {
 			pr_err("adios: Failed to allocate per-CPU buckets\n");
+			kfree(model->aggr_buckets);
 			kfree(params);
 			goto free_buckets;
 		}
@@ -1431,6 +1439,7 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 		if (!model->pcpu_snapshot) {
 			pr_err("adios: Failed to allocate per-CPU snapshot\n");
 			free_percpu(model->pcpu_buckets);
+			kfree(model->aggr_buckets);
 			kfree(params);
 			goto free_buckets;
 		}
@@ -1478,10 +1487,9 @@ free_buckets:
 		kfree(rcu_access_pointer(prev_model->params));
 		free_percpu(prev_model->pcpu_snapshot);
 		free_percpu(prev_model->pcpu_buckets);
+		kfree(prev_model->aggr_buckets);
 	}
 	free_percpu(ad->pcpu_completion);
-free_aggr_buckets:
-	kfree(ad->aggr_buckets);
 destroy_rq_data_pool:
 	mempool_destroy(ad->rq_data_pool);
 free_ad:
@@ -1511,12 +1519,12 @@ static void adios_exit_sched(struct elevator_queue *e) {
 
 		free_percpu(model->pcpu_snapshot);
 		free_percpu(model->pcpu_buckets);
+		kfree(model->aggr_buckets);
 	}
 
 	synchronize_rcu();
 
 	free_percpu(ad->pcpu_completion);
-	kfree(ad->aggr_buckets);
 
 	mempool_destroy(ad->rq_data_pool);
 
@@ -1549,6 +1557,8 @@ static void sideload_latency_model(
 	new_params->large_sum_bsize = 1024;
 
 	lm_reset_pcpu_buckets(model);
+	if (model->aggr_buckets)
+		reset_buckets(model->aggr_buckets);
 
 	rcu_assign_pointer(model->params, new_params);
 	spin_unlock_irqrestore(&model->update_lock, flags);
@@ -1584,7 +1594,6 @@ static ssize_t adios_lat_model_##name##_store( \
 	if (ret != 2) \
 		return -EINVAL; \
 	sideload_latency_model(model, base, slope); \
-	reset_buckets(ad->aggr_buckets); \
 	return count; \
 } \
 static ssize_t adios_lat_target_##name##_show( \
@@ -1762,7 +1771,6 @@ static ssize_t adios_reset_lat_model_store(
 			sideload_latency_model(model, params[i][0], params[i][1]);
 		}
 	}
-	reset_buckets(ad->aggr_buckets);
 
 	return count;
 }
