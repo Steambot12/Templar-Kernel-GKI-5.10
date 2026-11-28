@@ -432,7 +432,7 @@ static u64 bbr_rate_bytes_per_sec(struct sock *sk, u64 rate, int gain,
 	rate >>= BW_SCALE;
 	if (margin)
 		rate -= (rate * margin) / 100;
-	return rate;
+	return max(rate, 1ULL);
 }
 
 static u64 bbr_bw_bytes_per_sec(struct sock *sk, u64 rate)
@@ -491,11 +491,13 @@ static void bbr_set_pacing_rate(struct sock *sk, u32 bw, int gain)
 
 	rate = bbr_bw_to_pacing_rate(sk, bw, gain);
 
-	/* Enforce a safe minimum pacing rate floor (at least 1.2 Mbps / 150 KB/s)
-	 * so internal pacing with hrtimers never stalls transmissions.
+	/*
+	 * Enforce a lightweight floor (~12 KB/s) to avoid timer stalls on near-zero
+	 * estimates without causing bufferbloat/ping spikes on slow links, while
+	 * still honoring explicit SO_MAX_PACING_RATE caps.
 	 */
-	min_rate = (unsigned long)tp->mss_cache * bbr_param(sk, cwnd_min_target) * 25;
-	min_rate = max_t(unsigned long, min_rate, 150000UL);
+	min_rate = min_t(unsigned long, 12000UL,
+			 READ_ONCE(sk->sk_max_pacing_rate));
 	rate = max(rate, min_rate);
 
 	if (bbr_full_bw_reached(sk) || rate > READ_ONCE(sk->sk_pacing_rate))
